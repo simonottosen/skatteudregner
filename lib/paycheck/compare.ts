@@ -109,15 +109,26 @@ export function comparePaycheckToCalculation(
     }
   )
 
-  // Discrepancies
+  // Discrepancies — use BASE projections (without adjustments) so suggestions
+  // reflect the recurring salary trajectory, not one-off bonuses
+  const projectedBaseTax =
+    monthsElapsed > 0
+      ? Math.round(paycheck.ytd.taxPaid * (12 / monthsElapsed))
+      : 0
+  const projectedBaseAm =
+    monthsElapsed > 0
+      ? Math.round(paycheck.ytd.amContribution * (12 / monthsElapsed))
+      : 0
+
   const discrepancies = detectDiscrepancies(
     input,
     result,
     paycheck,
     monthsElapsed,
-    projectedAnnualIncome,
-    projectedAnnualTax,
-    projectedAnnualAm
+    projectedBaseIncome,
+    projectedBaseTax,
+    projectedBaseAm,
+    totalAdjustments
   )
 
   return {
@@ -140,77 +151,60 @@ export function comparePaycheckToCalculation(
   }
 }
 
+/**
+ * Detect discrepancies — only for ACTIONABLE fields the user can change
+ * on skat.dk (lønindkomst, pension). AM-bidrag and indkomstskat are
+ * consequences and not directly editable, so they're omitted.
+ */
 function detectDiscrepancies(
   input: TaxInput,
-  result: TaxResult,
+  _result: TaxResult,
   paycheck: PaycheckData,
   monthsElapsed: number,
-  projectedAnnualIncome: number,
-  projectedAnnualTax: number,
-  projectedAnnualAm: number
+  projectedBaseIncome: number,
+  _projectedBaseTax: number,
+  _projectedBaseAm: number,
+  totalAdjustments: number
 ): Discrepancy[] {
   const discrepancies: Discrepancy[] = []
   const threshold = 0.05
+  const fmt = (n: number) => Math.round(n).toLocaleString("da-DK")
+  const hasAdjustments = totalAdjustments > 0
+  const recommendedIncome = projectedBaseIncome + totalAdjustments
 
-  // Income comparison
+  // ── Lønindkomst ──
+  // This is the main field the user controls on skat.dk
   const calculatorIncome = input.workIncome
-  if (
-    calculatorIncome > 0 &&
-    projectedAnnualIncome > 0 &&
-    Math.abs(projectedAnnualIncome - calculatorIncome) / calculatorIncome >
-      threshold
-  ) {
-    discrepancies.push({
-      field: "workIncome",
-      label: "Lønindkomst",
-      paycheckValue: projectedAnnualIncome,
-      calculatorValue: calculatorIncome,
-      difference: projectedAnnualIncome - calculatorIncome,
-      suggestion:
-        projectedAnnualIncome > calculatorIncome
-          ? `Din faktiske indkomst ser ud til at være højere end din forskudsopgørelse. Overvej at opdatere lønindkomst til ${Math.round(projectedAnnualIncome).toLocaleString("da-DK")} kr.`
-          : `Din faktiske indkomst ser ud til at være lavere end din forskudsopgørelse. Overvej at opdatere lønindkomst til ${Math.round(projectedAnnualIncome).toLocaleString("da-DK")} kr.`,
-    })
+  if (calculatorIncome > 0 && recommendedIncome > 0) {
+    const diff = recommendedIncome - calculatorIncome
+    const pctDiff = Math.abs(diff) / calculatorIncome
+
+    if (pctDiff > threshold) {
+      let suggestion: string
+      if (hasAdjustments) {
+        suggestion =
+          `Din grundløn fremskrives til ${fmt(projectedBaseIncome)} kr.`
+        if (projectedBaseIncome !== recommendedIncome) {
+          suggestion += ` Med forventede tillæg på ${fmt(totalAdjustments)} kr. bliver den samlede forventede indkomst ${fmt(recommendedIncome)} kr.`
+        }
+        suggestion += ` Opdatér "Lønindkomst" på skat.dk til ${fmt(recommendedIncome)} kr.`
+      } else {
+        suggestion = `Opdatér "Lønindkomst" på skat.dk til ${fmt(recommendedIncome)} kr.`
+      }
+
+      discrepancies.push({
+        field: "workIncome",
+        label: "Lønindkomst",
+        paycheckValue: recommendedIncome,
+        calculatorValue: calculatorIncome,
+        difference: diff,
+        suggestion,
+      })
+    }
   }
 
-  // AM-bidrag comparison
-  const calculatorAm = result.amBidragTotal
-  if (
-    calculatorAm > 0 &&
-    projectedAnnualAm > 0 &&
-    Math.abs(projectedAnnualAm - calculatorAm) / calculatorAm > threshold
-  ) {
-    discrepancies.push({
-      field: "amBidrag",
-      label: "AM-bidrag",
-      paycheckValue: projectedAnnualAm,
-      calculatorValue: calculatorAm,
-      difference: projectedAnnualAm - calculatorAm,
-      suggestion: `Forventet AM-bidrag (${Math.round(projectedAnnualAm).toLocaleString("da-DK")} kr.) afviger fra beregnet (${Math.round(calculatorAm).toLocaleString("da-DK")} kr.). Tjek om din AM-pligtige indkomst er korrekt.`,
-    })
-  }
-
-  // Tax comparison
-  const calculatorTax = result.totalIncomeTax
-  if (
-    calculatorTax > 0 &&
-    projectedAnnualTax > 0 &&
-    Math.abs(projectedAnnualTax - calculatorTax) / calculatorTax > threshold
-  ) {
-    discrepancies.push({
-      field: "tax",
-      label: "Indkomstskat",
-      paycheckValue: projectedAnnualTax,
-      calculatorValue: calculatorTax,
-      difference: projectedAnnualTax - calculatorTax,
-      suggestion:
-        projectedAnnualTax > calculatorTax
-          ? `Du betaler mere skat end forventet. Du kan ende med at få penge tilbage ved årsopgørelsen, eller din forskudsopgørelse mangler indkomst.`
-          : `Du betaler mindre skat end forventet. Du kan ende med at skylde skat ved årsopgørelsen. Overvej at opdatere din forskudsopgørelse.`,
-    })
-  }
-
-  // Pension comparison
+  // ── Medarbejderpension ──
+  // Also an editable field on skat.dk
   const projectedEmployeePension =
     monthsElapsed > 0
       ? Math.round(paycheck.ytd.employeePension * (12 / monthsElapsed))
@@ -229,7 +223,7 @@ function detectDiscrepancies(
       paycheckValue: projectedEmployeePension,
       calculatorValue: calculatorPension,
       difference: projectedEmployeePension - calculatorPension,
-      suggestion: `Din medarbejderpension afviger fra forskudsopgørelsen. Overvej at opdatere til ${Math.round(projectedEmployeePension).toLocaleString("da-DK")} kr.`,
+      suggestion: `Opdatér "Pension (eget bidrag)" på skat.dk til ${fmt(projectedEmployeePension)} kr.`,
     })
   }
 

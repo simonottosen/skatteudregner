@@ -506,47 +506,80 @@ export function PaycheckComparison({
                 )}
               </div>
 
-              {/* Discrepancies */}
+              {/* Actionable changes + tax consequence */}
               {comparison.discrepancies.length > 0 && (
                 <>
                   <Separator />
                   <div>
-                    <h3 className="mb-2 text-sm font-medium">
-                      Afvigelser fundet
+                    <h3 className="mb-1 text-sm font-medium">
+                      Foreslåede ændringer på skat.dk
                     </h3>
+                    <p className="mb-3 text-xs text-muted-foreground">
+                      Baseret på din lønseddel bør du opdatere følgende felter
+                      i din forskudsopgørelse:
+                    </p>
                     <div className="space-y-2">
                       {comparison.discrepancies.map((d, i) => (
                         <div
                           key={i}
                           className="rounded-md border bg-muted/50 p-3"
                         >
-                          <div className="flex justify-between text-sm">
+                          <div className="flex items-baseline justify-between text-sm">
                             <span className="font-medium">{d.label}</span>
-                            <span
-                              className={
-                                d.difference > 0
-                                  ? "text-red-600 dark:text-red-400"
-                                  : "text-green-600 dark:text-green-400"
-                              }
-                            >
-                              {d.difference >= 0 ? "+" : ""}
-                              {formatDKK(d.difference)}
-                            </span>
+                            <div className="text-right">
+                              <span className="font-semibold">
+                                {formatDKK(d.paycheckValue)}
+                              </span>
+                              <span className="text-muted-foreground text-xs ml-1">
+                                (nu: {formatDKK(d.calculatorValue)})
+                              </span>
+                            </div>
                           </div>
-                          <div className="text-muted-foreground mt-1 flex justify-between text-xs">
-                            <span>
-                              Lønseddel: {formatDKK(d.paycheckValue)}
-                            </span>
-                            <span>
-                              Beregner: {formatDKK(d.calculatorValue)}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                          <p className="mt-1.5 text-xs text-amber-700 dark:text-amber-400">
                             {d.suggestion}
                           </p>
                         </div>
                       ))}
                     </div>
+
+                    {/* Tax consequence */}
+                    {(() => {
+                      const taxDiff =
+                        comparison.projectedAnnualTax +
+                        comparison.projectedAnnualAm -
+                        (comparison.calculatedAnnualTax +
+                          comparison.calculatedAnnualAm)
+                      const isOwing = taxDiff < 0
+                      return (
+                        <div
+                          className={`mt-3 rounded-md border p-3 ${
+                            isOwing
+                              ? "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950"
+                              : "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950"
+                          }`}
+                        >
+                          <p className="text-sm font-medium">
+                            {isOwing
+                              ? "Forventet restskat ved årsopgørelsen"
+                              : "Forventet tilbagebetaling ved årsopgørelsen"}
+                          </p>
+                          <p
+                            className={`text-lg font-bold ${
+                              isOwing
+                                ? "text-red-600 dark:text-red-400"
+                                : "text-green-600 dark:text-green-400"
+                            }`}
+                          >
+                            ca. {formatDKK(Math.abs(taxDiff))}
+                          </p>
+                          <p className="text-muted-foreground mt-1 text-xs">
+                            {isOwing
+                              ? "Uden ændring af din forskudsopgørelse kan du forvente at skylde dette beløb. Opdatér felterne ovenfor for at undgå restskat."
+                              : "Med nuværende trækprocent betaler du mere end nødvendigt. Du kan opdatere din forskudsopgørelse for at få højere løn hver måned."}
+                          </p>
+                        </div>
+                      )
+                    })()}
                   </div>
                 </>
               )}
