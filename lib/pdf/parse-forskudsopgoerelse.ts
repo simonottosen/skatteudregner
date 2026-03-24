@@ -1,5 +1,15 @@
 import type { TaxInput, TaxYear, PropertyInput } from "@/lib/tax/types"
 import { getMunicipalityList } from "@/lib/tax/municipalities"
+import {
+  normalizeDanish,
+  parseSkatNumber,
+  extractNumbersFromLine,
+  extractNumber,
+  extractFirstNumber,
+  extractTextFromPDF,
+} from "./pdf-utils"
+
+export { parseSkatNumber }
 
 export type ParsedTaxData = Omit<Partial<TaxInput>, "property" | "summerHouse"> & {
   property?: Partial<PropertyInput>
@@ -10,165 +20,6 @@ export interface ParseResult {
   data: ParsedTaxData
   warnings: string[]
   fieldsFound: string[]
-}
-
-/**
- * Normalize garbled Danish characters from PDF extraction.
- * Many SKAT PDFs use non-standard encoding where:
- *   » (U+00BB) → ø  (e.g., "K»benhavn" = "København")
- *   } (U+007D) → å  (e.g., "p}" = "på", "S}dan" = "Sådan")
- *   { (U+007B) → æ  (e.g., "v{rdiskat" = "værdiskat")
- */
-function normalizeDanish(text: string): string {
-  return text
-    .replace(/»/g, "ø")
-    .replace(/\}/g, "å")
-    .replace(/\{/g, "æ")
-}
-
-/**
- * Parse a number from SKAT's PDF format.
- * SKAT uses spaces as thousands separators and comma for decimals:
- * "1. 600. 000" or "1.600.000" or "128. 000, 00" or "130.000"
- * Also handles negative numbers prefixed with "- " or "-".
- */
-export function parseSkatNumber(raw: string): number | null {
-  if (!raw || raw.trim() === "") return null
-
-  let s = raw.trim()
-
-  // Check for negative prefix
-  const isNegative = s.startsWith("-") || s.startsWith("- ")
-  if (isNegative) {
-    s = s.replace(/^-\s*/, "")
-  }
-
-  // Remove all spaces
-  s = s.replace(/\s+/g, "")
-
-  // Remove trailing decimal part if comma-separated (e.g. ",00")
-  s = s.replace(/,\d{2}$/, "")
-
-  // Remove dots (thousands separators)
-  s = s.replace(/\./g, "")
-
-  const num = parseInt(s, 10)
-  if (isNaN(num)) return null
-
-  return isNegative ? -num : num
-}
-
-/**
- * Extract text lines from a forskudsopgørelse PDF using pdfjs-dist.
- */
-async function extractTextFromPDF(file: File): Promise<string[]> {
-  const pdfjsLib = await import("pdfjs-dist")
-
-  // Set worker source
-  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-    "pdfjs-dist/build/pdf.worker.mjs",
-    import.meta.url
-  ).toString()
-
-  const arrayBuffer = await file.arrayBuffer()
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-
-  const allLines: string[] = []
-
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i)
-    const textContent = await page.getTextContent()
-
-    // Group text items by their y-position to reconstruct lines
-    const lineMap = new Map<number, { x: number; str: string }[]>()
-    for (const item of textContent.items) {
-      if (!("str" in item)) continue
-      const y = Math.round(item.transform[5]) // y position
-      const x = item.transform[4] // x position
-      if (!lineMap.has(y)) lineMap.set(y, [])
-      lineMap.get(y)!.push({ x, str: item.str })
-    }
-
-    // Sort by y (descending, since PDF y=0 is bottom) then by x within each line
-    const sortedYs = [...lineMap.keys()].sort((a, b) => b - a)
-    for (const y of sortedYs) {
-      const items = lineMap.get(y)!.sort((a, b) => a.x - b.x)
-      // Join items with spacing based on x-distance
-      let line = ""
-      for (let j = 0; j < items.length; j++) {
-        if (j > 0) {
-          const gap = items[j].x - (items[j - 1].x + items[j - 1].str.length * 4)
-          line += gap > 20 ? "  " : " "
-        }
-        line += items[j].str
-      }
-      if (line.trim()) {
-        allLines.push(line.trim())
-      }
-    }
-  }
-
-  return allLines
-}
-
-/**
- * Split a line into number segments.
- * SKAT numbers use spaces within (e.g. "1. 600.000") but are separated by 2+ spaces.
- * This splits the line by 2+ spaces and parses each segment as a potential number.
- */
-function extractNumbersFromLine(line: string): number[] {
-  // Split by 2+ whitespace characters (separating columns)
-  const segments = line.split(/\s{2,}/).map((s) => s.trim())
-  const results: number[] = []
-  for (const seg of segments) {
-    // Try to parse as a SKAT number (must start with digit or minus)
-    if (/^[-\d]/.test(seg)) {
-      const parsed = parseSkatNumber(seg)
-      if (parsed !== null) results.push(parsed)
-    }
-  }
-  return results
-}
-
-/**
- * Extract a number from lines matching a pattern.
- * Returns the LAST number on the matching line (typically the rightmost column).
- */
-function extractNumber(
-  lines: string[],
-  pattern: RegExp | string
-): number | null {
-  const regex = typeof pattern === "string" ? new RegExp(pattern, "i") : pattern
-  for (const line of lines) {
-    if (regex.test(line)) {
-      const numbers = extractNumbersFromLine(line)
-      if (numbers.length > 0) {
-        return numbers[numbers.length - 1]
-      }
-    }
-  }
-  return null
-}
-
-/**
- * Extract the "Før AM-bidrag" column value from income lines.
- * These lines have format: "Label    1. 600.000    128. 000    1. 472. 000"
- * We want the FIRST number (Før AM-bidrag column).
- */
-function extractFirstNumber(
-  lines: string[],
-  pattern: RegExp | string
-): number | null {
-  const regex = typeof pattern === "string" ? new RegExp(pattern, "i") : pattern
-  for (const line of lines) {
-    if (regex.test(line)) {
-      const numbers = extractNumbersFromLine(line)
-      if (numbers.length > 0) {
-        return numbers[0]
-      }
-    }
-  }
-  return null
 }
 
 /**

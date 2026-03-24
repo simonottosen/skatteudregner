@@ -2,6 +2,7 @@
 
 import { TaxForm } from "@/components/tax-calculator/tax-form"
 import { TaxResults } from "@/components/tax-calculator/tax-results"
+import { PaycheckComparison } from "@/components/tax-calculator/paycheck-comparison"
 import { useTaxCalculator } from "@/hooks/use-tax-calculator"
 
 export default function Page() {
@@ -32,6 +33,8 @@ export default function Page() {
           <TaxResults result={result} />
         </div>
       </div>
+
+      <PaycheckComparison input={input} result={result} />
 
       <footer className="text-muted-foreground mt-8 text-center text-xs">
         Denne beregner er et estimat og erstatter ikke SKATs officielle
