@@ -1,19 +1,42 @@
-import { Button } from "@/components/ui/button"
+"use client"
+
+import { TaxForm } from "@/components/tax-calculator/tax-form"
+import { TaxResults } from "@/components/tax-calculator/tax-results"
+import { useTaxCalculator } from "@/hooks/use-tax-calculator"
 
 export default function Page() {
+  const { input, result, setField, setPropertyField, toggleProperty, importData } =
+    useTaxCalculator()
+
   return (
-    <div className="flex min-h-svh p-6">
-      <div className="flex max-w-md min-w-0 flex-col gap-4 text-sm leading-loose">
-        <div>
-          <h1 className="font-medium">Project ready!</h1>
-          <p>You may now add components and start building.</p>
-          <p>We&apos;ve already added the button component for you.</p>
-          <Button className="mt-2">Button</Button>
+    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+      <header className="mb-6">
+        <h1 className="text-2xl font-bold">Skatteberegner</h1>
+        <p className="text-muted-foreground text-sm">
+          Beregn din danske skat for {input.year}
+        </p>
+      </header>
+
+      <div className="flex flex-col gap-6 lg:flex-row">
+        <div className="min-w-0 flex-1 lg:max-w-2xl">
+          <TaxForm
+            input={input}
+            setField={setField}
+            setPropertyField={setPropertyField}
+            toggleProperty={toggleProperty}
+            onImport={importData}
+          />
         </div>
-        <div className="font-mono text-xs text-muted-foreground">
-          (Press <kbd>d</kbd> to toggle dark mode)
+
+        <div className="w-full lg:w-96 lg:shrink-0">
+          <TaxResults result={result} />
         </div>
       </div>
+
+      <footer className="text-muted-foreground mt-8 text-center text-xs">
+        Denne beregner er et estimat og erstatter ikke SKATs officielle
+        beregning. Tryk <kbd>d</kbd> for at skifte mørk tilstand.
+      </footer>
     </div>
   )
 }
