@@ -18,6 +18,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { PaycheckChart } from "./paycheck-chart"
+import { CommuteDeduction } from "./commute-deduction"
 import { comparePaycheckToCalculation } from "@/lib/paycheck/compare"
 import { generateOptimizationPrompt } from "@/lib/paycheck/generate-prompt"
 import { formatDKK } from "@/lib/format"
@@ -506,6 +507,14 @@ export function PaycheckComparison({
                 )}
               </div>
 
+              {/* Commute deduction */}
+              <Separator />
+              <CommuteDeduction
+                input={input}
+                parsedEmployeeAddress={paycheck.employeeAddress}
+                parsedEmployerAddress={paycheck.employerAddress}
+              />
+
               {/* Actionable changes + tax consequence */}
               {comparison.discrepancies.length > 0 && (
                 <>
@@ -544,12 +553,10 @@ export function PaycheckComparison({
 
                     {/* Tax consequence */}
                     {(() => {
-                      const taxDiff =
-                        comparison.projectedAnnualTax +
-                        comparison.projectedAnnualAm -
-                        (comparison.calculatedAnnualTax +
-                          comparison.calculatedAnnualAm)
-                      const isOwing = taxDiff < 0
+                      const restskat = comparison.estimatedRestskat
+                      const isOwing = restskat > 0
+                      const isSignificant = Math.abs(restskat) > 500
+                      if (!isSignificant) return null
                       return (
                         <div
                           className={`mt-3 rounded-md border p-3 ${
@@ -570,7 +577,7 @@ export function PaycheckComparison({
                                 : "text-green-600 dark:text-green-400"
                             }`}
                           >
-                            ca. {formatDKK(Math.abs(taxDiff))}
+                            ca. {formatDKK(Math.abs(restskat))}
                           </p>
                           <p className="text-muted-foreground mt-1 text-xs">
                             {isOwing

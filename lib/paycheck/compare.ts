@@ -131,6 +131,22 @@ export function comparePaycheckToCalculation(
     totalAdjustments
   )
 
+  // ── Estimated restskat ──
+  // Tax being withheld is based on the current forskudsopgørelse (calculatedAnnualIncome).
+  // If actual income differs, extra tax is owed on the difference.
+  //
+  // taxOwed = calculatedTax + calculatedAm + marginalRate * incomeDifference
+  // taxPaid = extrapolated withholdings from paycheck
+  // restskat = taxOwed − taxPaid
+  const incomeDiff = projectedAnnualIncome - calculatedAnnualIncome
+  const marginalRate = result.marginalTaxRate // includes AM portion
+  const taxOwedOnProjectedIncome =
+    calculatedAnnualTax + calculatedAnnualAm + incomeDiff * marginalRate
+  const taxBeingWithheld = projectedAnnualTax + projectedAnnualAm
+  const estimatedRestskat = Math.round(
+    taxOwedOnProjectedIncome - taxBeingWithheld
+  )
+
   return {
     month: paycheck.month,
     monthsElapsed,
@@ -148,6 +164,7 @@ export function comparePaycheckToCalculation(
     calculatedAnnualIncome,
     monthlyData,
     discrepancies,
+    estimatedRestskat,
   }
 }
 

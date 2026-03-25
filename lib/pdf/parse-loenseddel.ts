@@ -121,6 +121,96 @@ function extractPayPeriod(
 }
 
 /**
+ * Extract employee and employer addresses from the payslip header.
+ *
+ * PDF text extraction merges the two-column layout into single lines.
+ * We scan the header for all Danish postal codes (4 digits + city name)
+ * and extract the street from the preceding text segment.
+ *
+ * The first postal code found is typically the employee's address (left column),
+ * the second is the employer's (right column).
+ */
+function extractAddresses(
+  lines: string[]
+): { employeeAddress: string | null; employerAddress: string | null } {
+  // Find header boundaries
+  const headerEnd = lines.findIndex((l) => {
+    const lower = l.toLowerCase()
+    return (
+      lower.includes("pay specification") ||
+      lower.includes("lønspecifikation") ||
+      lower.includes("paytype") ||
+      lower.includes("pay period")
+    )
+  })
+  const endBound = headerEnd > 0 ? headerEnd : Math.min(lines.length, 30)
+  const headerText = lines.slice(0, endBound).join("\n")
+
+  // Process lines to separate left/right columns and find addresses.
+  // Each merged line is split by 2+ spaces into left and right segments.
+  const headerLines = lines.slice(0, endBound)
+
+  // Find "Employee"/"Employer" marker to know where address section starts
+  let markerIdx = -1
+  for (let i = 0; i < headerLines.length; i++) {
+    const lower = headerLines[i].toLowerCase()
+    if (
+      lower.includes("employee") || lower.includes("medarbejder") ||
+      lower.includes("employer") || lower.includes("arbejdsgiver")
+    ) {
+      markerIdx = i
+      break
+    }
+  }
+  if (markerIdx < 0) {
+    return { employeeAddress: null, employerAddress: null }
+  }
+
+  // Build separate left and right column arrays from lines after the marker
+  const leftCol: string[] = []
+  const rightCol: string[] = []
+
+  for (let i = markerIdx + 1; i < headerLines.length; i++) {
+    const line = headerLines[i]
+    const parts = line.split(/\s{2,}/).map((s) => s.trim()).filter(Boolean)
+    if (parts.length >= 2) {
+      leftCol.push(parts[0])
+      rightCol.push(parts[parts.length - 1])
+    } else if (parts.length === 1) {
+      leftCol.push(parts[0])
+    }
+  }
+
+  // Danish postal code pattern
+  const postalPattern = /\b(\d{4})\s+([A-ZÆØÅa-zæøå][\wæøåÆØÅ\s]*)/
+
+  function buildAddress(col: string[]): string | null {
+    for (let i = 0; i < col.length; i++) {
+      if (postalPattern.test(col[i])) {
+        const postalLine = col[i]
+        // Look backwards for a street-like line
+        for (let j = i - 1; j >= 0; j--) {
+          const seg = col[j]
+          if (/^\d{4}\s+[A-ZÆØÅa-zæøå]/.test(seg)) continue // skip other postal codes
+          if (seg.length <= 3) continue
+          // Street typically has a number
+          if (/\d/.test(seg)) {
+            return `${seg}, ${postalLine}`
+          }
+        }
+        return postalLine
+      }
+    }
+    return null
+  }
+
+  return {
+    employeeAddress: buildAddress(leftCol),
+    employerAddress: buildAddress(rightCol),
+  }
+}
+
+/**
  * Core extraction logic for paycheck PDFs.
  * Supports both English and Danish paycheck labels.
  */
@@ -316,6 +406,11 @@ function extractPaycheckFields(
     )
   }
 
+  // --- Addresses ---
+  const { employeeAddress, employerAddress } = extractAddresses(lines)
+  if (employeeAddress) fieldsFound.push("employeeAddress")
+  if (employerAddress) fieldsFound.push("employerAddress")
+
   const data: PaycheckData = {
     payPeriod: { from: period.from, to: period.to },
     month: period.month,
@@ -335,6 +430,8 @@ function extractPaycheckFields(
       employeePension: ytdEmployeePension ?? 0,
       employerPension: ytdEmployerPension ?? 0,
     },
+    employeeAddress: employeeAddress ?? undefined,
+    employerAddress: employerAddress ?? undefined,
   }
 
   return { data, warnings, fieldsFound }

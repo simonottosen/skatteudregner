@@ -21,6 +21,10 @@ export interface PaycheckData {
     employeePension: number
     employerPension: number
   }
+
+  // Addresses parsed from payslip (may be empty)
+  employeeAddress?: string
+  employerAddress?: string
 }
 
 export interface PaycheckParseResult {
@@ -57,6 +61,12 @@ export interface ComparisonResult {
 
   // Discrepancy indicators
   discrepancies: Discrepancy[]
+
+  /**
+   * Estimated restskat (positive = user owes, negative = user gets refund).
+   * Computed as: tax owed on projected income − tax being withheld.
+   */
+  estimatedRestskat: number
 }
 
 export interface MonthlyComparisonPoint {
