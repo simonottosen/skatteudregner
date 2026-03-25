@@ -3,7 +3,6 @@ import { getMunicipalityList } from "@/lib/tax/municipalities"
 import {
   normalizeDanish,
   parseSkatNumber,
-  extractNumbersFromLine,
   extractNumber,
   extractFirstNumber,
   extractTextFromPDF,

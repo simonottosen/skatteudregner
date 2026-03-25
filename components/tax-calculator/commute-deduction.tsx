@@ -111,7 +111,8 @@ export function CommuteDeduction({
       hasAddresses
     ) {
       autoCalcDone.current = true
-      calculateDistance()
+      // Defer to avoid synchronous setState within effect body
+      queueMicrotask(() => calculateDistance())
     }
   }, [parsedEmployeeAddress, parsedEmployerAddress, hasAddresses, calculateDistance])
 

@@ -144,7 +144,6 @@ function extractAddresses(
     )
   })
   const endBound = headerEnd > 0 ? headerEnd : Math.min(lines.length, 30)
-  const headerText = lines.slice(0, endBound).join("\n")
 
   // Process lines to separate left/right columns and find addresses.
   // Each merged line is split by 2+ spaces into left and right segments.

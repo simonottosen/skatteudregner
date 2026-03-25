@@ -76,11 +76,7 @@ function isSenior(birthDate: string, year: number): boolean {
   return retAge - age <= 5 && retAge - age > 0
 }
 
-function isOverRetirementAge(birthDate: string, year: number): boolean {
-  const age = calculateAge(birthDate, year)
-  const retAge = calculateRetirementAge(birthDate)
-  return age >= retAge
-}
+
 
 export function calculateBefordringsFradrag(
   input: TaxInput,
