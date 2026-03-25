@@ -5,12 +5,21 @@ function fmt(n: number): string {
   return Math.round(n).toLocaleString("da-DK")
 }
 
+export interface CommuteInfo {
+  homeAddress: string
+  workAddress: string
+  roundTripKm: number
+  calculatedDeduction: number
+  currentKmInSchema: number
+}
+
 export function generateOptimizationPrompt(
   input: TaxInput,
   result: TaxResult,
   paycheck: PaycheckData,
   comparison: ComparisonResult,
-  adjustments: ExpectedAdjustment[] = []
+  adjustments: ExpectedAdjustment[] = [],
+  commute?: CommuteInfo
 ): string {
   const lines: string[] = []
 
@@ -115,6 +124,27 @@ export function generateOptimizationPrompt(
     lines.push(
       "These adjustments are already factored into the projected annual figures above."
     )
+    lines.push("")
+  }
+
+  // Commute deduction
+  if (commute && commute.roundTripKm > 0) {
+    lines.push("## Commute Deduction (Kørselsfradrag / Befordringsfradrag)")
+    lines.push(`- Home address: ${commute.homeAddress}`)
+    lines.push(`- Work address: ${commute.workAddress}`)
+    lines.push(`- Round-trip distance: ${commute.roundTripKm} km per day`)
+    lines.push(`- Work days per year: ${input.workDaysPerYear}`)
+    lines.push(`- Calculated annual deduction: ${fmt(commute.calculatedDeduction)} kr.`)
+    if (commute.currentKmInSchema > 0) {
+      lines.push(`- Currently in forskudsopgørelse: ${commute.currentKmInSchema} km`)
+    } else {
+      lines.push(`- Currently in forskudsopgørelse: **Not registered** (0 km)`)
+    }
+    if (commute.roundTripKm > 24 && commute.currentKmInSchema === 0) {
+      lines.push(
+        "- Note: The user is eligible for befordringsfradrag but has not added it to their forskudsopgørelse."
+      )
+    }
     lines.push("")
   }
 

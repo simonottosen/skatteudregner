@@ -21,6 +21,7 @@ import { PaycheckChart } from "./paycheck-chart"
 import { CommuteDeduction } from "./commute-deduction"
 import { comparePaycheckToCalculation } from "@/lib/paycheck/compare"
 import { generateOptimizationPrompt } from "@/lib/paycheck/generate-prompt"
+import type { CommuteInfo } from "@/lib/paycheck/generate-prompt"
 import { formatDKK } from "@/lib/format"
 import type { TaxInput, TaxResult } from "@/lib/tax/types"
 import type {
@@ -69,6 +70,7 @@ export function PaycheckComparison({
   const [copied, setCopied] = useState(false)
   const [showPrompt, setShowPrompt] = useState(false)
   const [adjustments, setAdjustments] = useState<ExpectedAdjustment[]>([])
+  const [commuteInfo, setCommuteInfo] = useState<CommuteInfo | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const comparison = useMemo(
@@ -87,10 +89,11 @@ export function PaycheckComparison({
             result,
             paycheck,
             comparison,
-            adjustments
+            adjustments,
+            commuteInfo ?? undefined
           )
         : null,
-    [input, result, paycheck, comparison, adjustments]
+    [input, result, paycheck, comparison, adjustments, commuteInfo]
   )
 
   const handleFile = useCallback(async (file: File) => {
@@ -197,6 +200,7 @@ export function PaycheckComparison({
     setPaycheck(null)
     setShowPrompt(false)
     setAdjustments([])
+    setCommuteInfo(null)
   }, [])
 
   const copyPrompt = useCallback(() => {
@@ -513,6 +517,7 @@ export function PaycheckComparison({
                 input={input}
                 parsedEmployeeAddress={paycheck.employeeAddress}
                 parsedEmployerAddress={paycheck.employerAddress}
+                onCommuteChange={setCommuteInfo}
               />
 
               {/* Actionable changes + tax consequence */}

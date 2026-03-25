@@ -220,27 +220,78 @@ function detectDiscrepancies(
     }
   }
 
-  // ── Medarbejderpension ──
-  // Also an editable field on skat.dk
+  // ── Medarbejderpension (eget bidrag) ──
   const projectedEmployeePension =
     monthsElapsed > 0
       ? Math.round(paycheck.ytd.employeePension * (12 / monthsElapsed))
       : 0
-  const calculatorPension = input.employeePension
+  const calculatorEmployeePension = input.employeePension
   if (
-    calculatorPension > 0 &&
     projectedEmployeePension > 0 &&
-    Math.abs(projectedEmployeePension - calculatorPension) /
-      calculatorPension >
-      threshold
+    (calculatorEmployeePension === 0 ||
+      Math.abs(projectedEmployeePension - calculatorEmployeePension) /
+        Math.max(calculatorEmployeePension, 1) >
+        threshold)
   ) {
     discrepancies.push({
       field: "employeePension",
-      label: "Medarbejderpension",
+      label: "Pension (eget bidrag)",
       paycheckValue: projectedEmployeePension,
-      calculatorValue: calculatorPension,
-      difference: projectedEmployeePension - calculatorPension,
-      suggestion: `Opdatér "Pension (eget bidrag)" på skat.dk til ${fmt(projectedEmployeePension)} kr.`,
+      calculatorValue: calculatorEmployeePension,
+      difference: projectedEmployeePension - calculatorEmployeePension,
+      suggestion: calculatorEmployeePension === 0
+        ? `Du indbetaler ${fmt(projectedEmployeePension)} kr./år til pension. Tilføj dette under "Pension (eget bidrag)" på skat.dk.`
+        : `Opdatér "Pension (eget bidrag)" på skat.dk til ${fmt(projectedEmployeePension)} kr.`,
+    })
+  }
+
+  // ── Arbejdsgiverpension ──
+  const projectedEmployerPension =
+    monthsElapsed > 0
+      ? Math.round(paycheck.ytd.employerPension * (12 / monthsElapsed))
+      : 0
+  const calculatorEmployerPension = input.employerPension
+  if (
+    projectedEmployerPension > 0 &&
+    (calculatorEmployerPension === 0 ||
+      Math.abs(projectedEmployerPension - calculatorEmployerPension) /
+        Math.max(calculatorEmployerPension, 1) >
+        threshold)
+  ) {
+    discrepancies.push({
+      field: "employerPension",
+      label: "Pension (arbejdsgiver)",
+      paycheckValue: projectedEmployerPension,
+      calculatorValue: calculatorEmployerPension,
+      difference: projectedEmployerPension - calculatorEmployerPension,
+      suggestion: calculatorEmployerPension === 0
+        ? `Din arbejdsgiver indbetaler ${fmt(projectedEmployerPension)} kr./år til pension. Tilføj dette under "Pension (arbejdsgiver)" på skat.dk.`
+        : `Opdatér "Pension (arbejdsgiver)" på skat.dk til ${fmt(projectedEmployerPension)} kr.`,
+    })
+  }
+
+  // ── ATP ──
+  const projectedAtp =
+    monthsElapsed > 0
+      ? Math.round(paycheck.ytd.atp * (12 / monthsElapsed))
+      : 0
+  const calculatorAtp = input.atpEmployee
+  if (
+    projectedAtp > 0 &&
+    (calculatorAtp === 0 ||
+      Math.abs(projectedAtp - calculatorAtp) /
+        Math.max(calculatorAtp, 1) >
+        threshold)
+  ) {
+    discrepancies.push({
+      field: "atpEmployee",
+      label: "ATP-bidrag",
+      paycheckValue: projectedAtp,
+      calculatorValue: calculatorAtp,
+      difference: projectedAtp - calculatorAtp,
+      suggestion: calculatorAtp === 0
+        ? `Du betaler ${fmt(projectedAtp)} kr./år i ATP. Tilføj dette under "ATP" på skat.dk.`
+        : `Opdatér "ATP" på skat.dk til ${fmt(projectedAtp)} kr.`,
     })
   }
 

@@ -15,11 +15,13 @@ import { getRates, getMunicipality } from "@/lib/tax"
 import { calculateBefordringsFradrag } from "@/lib/tax/calculations/itemized-deductions"
 import { calculateDrivingDistance } from "@/lib/geo/distance"
 import type { TaxInput } from "@/lib/tax/types"
+import type { CommuteInfo } from "@/lib/paycheck/generate-prompt"
 
 interface CommuteDeductionProps {
   input: TaxInput
   parsedEmployeeAddress?: string
   parsedEmployerAddress?: string
+  onCommuteChange?: (info: CommuteInfo | null) => void
 }
 
 type DistanceState =
@@ -32,6 +34,7 @@ export function CommuteDeduction({
   input,
   parsedEmployeeAddress,
   parsedEmployerAddress,
+  onCommuteChange,
 }: CommuteDeductionProps) {
   const [homeAddress, setHomeAddress] = useState(parsedEmployeeAddress ?? "")
   const [workAddress, setWorkAddress] = useState(parsedEmployerAddress ?? "")
@@ -111,6 +114,22 @@ export function CommuteDeduction({
       calculateDistance()
     }
   }, [parsedEmployeeAddress, parsedEmployerAddress, hasAddresses, calculateDistance])
+
+  // Report commute info to parent for prompt generation
+  useEffect(() => {
+    if (!onCommuteChange) return
+    if (roundTripKm > 0 && homeAddress && workAddress) {
+      onCommuteChange({
+        homeAddress,
+        workAddress,
+        roundTripKm,
+        calculatedDeduction: totalDeduction,
+        currentKmInSchema: input.commuteDistanceKm,
+      })
+    } else {
+      onCommuteChange(null)
+    }
+  }, [roundTripKm, homeAddress, workAddress, totalDeduction, input.commuteDistanceKm, onCommuteChange])
 
   const isNewDeduction = input.commuteDistanceKm === 0 && roundTripKm > 24
   const isChangedDeduction =
