@@ -148,49 +148,6 @@ GitHub Actions kører automatisk på hvert push og pull request til `main`:
 
 ---
 
-## Skatteberegning
-
-### Understøttede indkomstår
-
-| År | Bundskat | Mellemskat | Topskat | Top-topskat |
-|---|---|---|---|---|
-| 2024 | 12,01 % | – | – | – |
-| 2025 | 12,01 % | – | – | – |
-| 2026 | 12,01 % | 7,5 % (over 641.200 kr.) | 7,5 % (over 777.900 kr.) | 5 % (over 2.592.700 kr.) |
-
-> **Skatteloft 2026:** 44,57 %. Mellemskat er uden for skatteloftet og tillægges separat.
-
-### Beregningsflow
-
-```
-Arbejdsindkomst (brutto)
-  → AM-bidrag (8 %)
-  → Personlig indkomst
-  → + Kapitalindkomst
-  → − Ligningsmæssige fradrag
-  = Skattepligtig indkomst
-  → Bundskat + Mellemskat + Topskat
-  → + Kommuneskat + Kirkeskat
-  → − Personfradragskreditter
-  = Samlet indkomstskat
-  → + Aktieskat
-  → + Boligskat
-  = Samlet skat
-```
-
-### Fradrag der beregnes automatisk
-
-| Fradrag | Beregning (2026) |
-|---|---|
-| Beskæftigelsesfradrag | 12,75 % af AM-indkomst + ratepension, maks. 63.300 kr. |
-| Jobfradrag | 4,5 % af AM-indkomst, maks. 3.100 kr. |
-| Ekstra pensionsfradrag | 12 % af egne pensionsindbetalinger, maks. 7.860 kr. |
-| Befordringsfradrag | Km-sats afhængig af afstand og bopælszone |
-| Personfradrag (stat) | 12,01 % × 54.100 kr. |
-| Personfradrag (kommune) | Kommunesats × 54.100 kr. |
-
----
-
 ## Forskudsopgørelse import
 
 Upload din forskudsopgørelse som PDF fra [skat.dk](https://skat.dk) for automatisk at udfylde felterne.
@@ -207,17 +164,6 @@ Upload din forskudsopgørelse som PDF fra [skat.dk](https://skat.dk) for automat
 - Kirkeskat, civilstand, børn
 
 PDF-parseren håndterer SKATs PDF-format inkl. garblede danske tegn.
-
----
-
-## Kommunedata
-
-294 kommuner med data for 2024, 2025 og 2026:
-
-- Kommuneskatteprocent (23–26 %)
-- Kirkeskatteprocent (0,4–1,3 %)
-- Grundskyldspromille (3–17 ‰)
-- Landzonemarkering (påvirker befordringsfradrag)
 
 ---
 
