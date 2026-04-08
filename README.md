@@ -104,15 +104,6 @@ skatteudregner/
 
 ## Skatteberegning
 
-### Understøttede indkomstår
-
-| År | Bundskat | Mellemskat | Topskat | Top-topskat |
-|---|---|---|---|---|
-| 2024 | 12,01 % | – | – | – |
-| 2025 | 12,01 % | – | – | – |
-| 2026 | 12,01 % | 7,5 % (over 641.200 kr.) | 7,5 % (over 777.900 kr.) | 5 % (over 2.592.700 kr.) |
-
-> **Skatteloft 2026:** 44,57 %. Mellemskat er uden for skatteloftet og tillægges separat.
 
 ### Beregningsflow
 
@@ -164,16 +155,6 @@ PDF-parseren håndterer SKATs PDF-format inkl. garblede danske tegn.
 
 ---
 
-## Kommunedata
-
-294 kommuner med data for 2024, 2025 og 2026:
-
-- Kommuneskatteprocent (23–26 %)
-- Kirkeskatteprocent (0,4–1,3 %)
-- Grundskyldspromille (3–17 ‰)
-- Landzonemarkering (påvirker befordringsfradrag)
-
----
 
 ## Tests
 
