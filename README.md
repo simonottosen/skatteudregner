@@ -1,6 +1,8 @@
-# Skatteberegner
+# Skatteberegner & Budget
 
-Interaktiv dansk skatteberegner for indkomstår 2024–2026, bygget med Next.js, Tailwind CSS og shadcn/ui.
+Interaktiv dansk skatte- og budgetapp for indkomstår 2024–2026, bygget med Next.js og IBM Carbon Design System.
+
+Appen består af tre moduler — **Skat**, **Budget** og **Resultat** — der deler data: din nettoløn fra skatteberegningen kan bruges direkte i budgettet, og resultatsiden samler det hele. Data gemmes lokalt i browseren og kan synkroniseres på tværs af enheder med en (valgfri) konto.
 
 Beregneren er et estimat og erstatter ikke SKATs officielle beregning.
 
@@ -8,14 +10,37 @@ Beregneren er et estimat og erstatter ikke SKATs officielle beregning.
 
 ## Funktioner
 
+### Skat
+
 - **Fuld skatteberegning** – AM-bidrag, bundskat, mellemskat, topskat, kommuneskat, kirkeskat, aktieskat og boligskat
+- **To personer** – Beregn for en husstand med to indkomster og skift mellem dem
 - **Forskudsopgørelse import** – Upload din PDF fra SKAT og udfyld felterne automatisk
+- **Lønseddel-sammenligning** – Upload din lønseddel og se forventet vs. faktisk betalt skat hen over året, inkl. estimeret restskat/overskydende skat
+- **OCR-fallback** – Billed-baserede PDF'er (uden tekstlag) læses automatisk med tesseract.js
 - **Alle indkomsttyper** – A-indkomst, B-indkomst, overførselsindkomster, kapitalindkomst, aktieindkomst
 - **Fradrag** – Beskæftigelsesfradrag, jobfradrag, befordringsfradrag, pensionsfradrag, rentefradrag og mere
 - **Boligskat** – Ejendomsværdiskat og grundskyld for helårsbolig og sommerhus
 - **Ægtefælle-koordinering** – Uudnyttet mellemskat-bundfradrag overføres til ægtefælle
+
+### Budget
+
+- **Kategoriserede udgifter** – Grupperet i kategorier (bolig, forsikring, transport, mad …) med træk-og-slip mellem kategorier og dine egne tilpassede kategorier
+- **Husstandstyper** – Én person, to personer med delte udgifter, eller to personer med separat økonomi
+- **Indkomstkilde** – Brug nettolønnen fra skatteberegneren eller indtast den manuelt
+- **Startbudget-guide** – Generér et komplet månedsbudget ud fra danske gennemsnit. Boligudgiften anslås som renter + afdrag ud fra dine renteudgifter i skatteberegningen, og en livsstils-skala justerer valgfrie poster (mad, restaurant, ferie m.m.)
+
+### Resultat
+
+- **Nøgletal** – Indkomst, udgifter, til rådighed, opsparingsrate og effektiv skat
+- **Grafer** – Skat vs. nettoindkomst, fordeling pr. kategori og forbrug pr. kategori
+- **Indsigt** – Automatiske observationer om budget, største kategori og skattetryk
+- **Måned/år** – Skift mellem månedlige og årlige tal
+
+### Generelt
+
+- **Konto & synkronisering** – Valgfri e-mail/adgangskode-login (Supabase) gemmer dine data i skyen; ellers gemmes alt lokalt i browseren
 - **Mørk tilstand** – Tryk `d` for at skifte
-- **152 tests** – Alle beregningsmoduler er testet
+- **179 tests** – Beregnings-, budget- og PDF-moduler er testet
 
 ---
 
@@ -36,6 +61,8 @@ npm run dev
 
 Åbn [http://localhost:3000](http://localhost:3000) i din browser.
 
+Appen virker uden konfiguration — den gemmer data lokalt i browseren. Konto-login er valgfrit (se [Supabase](#supabase-valgfri)).
+
 ### Tilgængelige scripts
 
 | Script | Beskrivelse |
@@ -51,52 +78,74 @@ npm run dev
 
 ---
 
+## Supabase (valgfri)
+
+Login og synkronisering på tværs af enheder bruger Supabase. Uden konfiguration kører appen anonymt med `localStorage`, og login-siden viser en "ikke konfigureret"-besked.
+
+1. Opret et Supabase-projekt og kør `supabase/schema.sql` i SQL-editoren (opretter tabellen med Row Level Security).
+2. Kopiér `.env.local.example` til `.env.local` og udfyld:
+
+   ```bash
+   NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT-REF.supabase.co
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR-ANON-PUBLIC-KEY
+   ```
+
+Værdierne findes under **Project Settings → API**. Skat- og budgetdata gemmes som JSONB pr. bruger og flyttes automatisk fra lokal browser-lagring til kontoen ved første login.
+
+---
+
 ## Projektstruktur
 
 ```
 skatteudregner/
 ├── app/
-│   ├── layout.tsx          # Root layout med ThemeProvider
-│   └── page.tsx            # Hoved-side
+│   ├── layout.tsx          # Root layout (Carbon-tema, Theme/Auth/Tax providers)
+│   ├── page.tsx            # Forside med modul-valg
+│   ├── skat/page.tsx       # Skatteberegner
+│   ├── budget/page.tsx     # Budget
+│   ├── resultat/page.tsx   # Samlet resultat
+│   ├── login/page.tsx      # Login / opret konto
+│   └── carbon.scss         # Carbon-tema (white / g100)
 ├── components/
-│   ├── ui/                 # shadcn/ui komponenter (accordion, input, select, ...)
-│   └── tax-calculator/
-│       ├── tax-form.tsx            # Hoved-formular med accordion-sektioner
-│       ├── tax-results.tsx         # Resultater-panel (højre kolonne)
-│       ├── pdf-upload.tsx          # Upload af forskudsopgørelse
-│       ├── municipality-select.tsx # Kommunevælger med søgning
-│       ├── number-input.tsx        # Talindtastning med dansk formatering
-│       └── sections/
-│           ├── personal-info-section.tsx   # Personlige oplysninger
-│           ├── income-section.tsx          # Indkomst
-│           ├── deductions-section.tsx      # Pension og fradrag
-│           ├── capital-income-section.tsx  # Kapitalindkomst
-│           ├── stock-income-section.tsx    # Aktieindkomst
-│           └── property-section.tsx        # Bolig
+│   ├── app-header.tsx              # Navigation på tværs af moduler
+│   ├── auth-provider.tsx           # Supabase auth-kontekst
+│   ├── tax-provider.tsx            # Delt skatte-state (1–2 personer)
+│   ├── theme-provider.tsx          # Lys/mørk tilstand
+│   ├── ui/                         # card, separator
+│   ├── tax-calculator/
+│   │   ├── tax-form.tsx            # Hoved-formular
+│   │   ├── tax-results.tsx         # Resultater-panel
+│   │   ├── pdf-upload.tsx          # Upload af forskudsopgørelse/lønseddel
+│   │   ├── paycheck-comparison.tsx # Lønseddel vs. forventet skat
+│   │   ├── paycheck-chart.tsx      # Graf for året
+│   │   ├── municipality-select.tsx # Kommunevælger
+│   │   ├── number-input.tsx        # Talindtastning (dansk format)
+│   │   └── sections/               # Formular-sektioner
+│   ├── budget/
+│   │   ├── budget-planner.tsx      # Kategorier, træk-og-slip, husstandstyper
+│   │   └── budget-wizard.tsx       # Startbudget-guide
+│   └── result/
+│       ├── result-overview.tsx     # Nøgletal, indsigt, måned/år
+│       └── result-charts.tsx       # Donut- og bjælkediagrammer
 ├── hooks/
-│   └── use-tax-calculator.ts       # State management og beregnings-hook
+│   ├── use-tax-calculator.ts       # Skatte-state og beregnings-hook
+│   ├── use-budget.ts               # Budget-state (kategorier, personer)
+│   └── use-remote-sync.ts          # Debounced Supabase-synk
 ├── lib/
 │   ├── format.ts                   # Formatering (DKK, procent)
-│   ├── pdf/
-│   │   ├── parse-forskudsopgoerelse.ts     # PDF-parser
-│   │   └── __tests__/
+│   ├── budget/
+│   │   ├── categories.ts           # Standardkategorier + gæt
+│   │   └── generate-budget.ts      # Startbudget + realkredit-estimat
+│   ├── paycheck/                   # Lønseddel-sammenligning (Metode B)
+│   ├── pdf/                        # PDF-parsere + OCR-utils
+│   ├── supabase/                   # Klient + bruger-data
 │   └── tax/
-│       ├── types.ts                # TypeScript-typer
 │       ├── rates.ts                # Skattesatser 2024–2026
-│       ├── municipalities.ts       # 294 kommuner med satser
-│       ├── defaults.ts             # Standardværdier for input
+│       ├── municipalities.ts       # Kommuner med satser
 │       ├── calculator.ts           # Hoved-orkestrator
-│       ├── index.ts                # Offentlig API
-│       ├── calculations/
-│       │   ├── am-bidrag.ts        # AM-bidrag (8%)
-│       │   ├── personal-income.ts  # Personlig indkomst
-│       │   ├── capital-income.ts   # Kapitalindkomst
-│       │   ├── itemized-deductions.ts  # Ligningsmæssige fradrag
-│       │   ├── taxable-income.ts   # Skattepligtig indkomst
-│       │   ├── income-tax.ts       # Indkomstskat (stat + kommune)
-│       │   ├── stock-tax.ts        # Aktieskat
-│       │   └── property-tax.ts     # Boligskat
-│       └── __tests__/              # 13 testfiler, 152 tests
+│       └── calculations/           # Delberegninger (AM, indkomst, bolig …)
+├── supabase/schema.sql             # Database-skema + RLS
+├── middleware.ts                   # Supabase session-håndtering
 └── vitest.config.ts
 ```
 
@@ -110,6 +159,15 @@ Hent og kør det seneste image fra GitHub Container Registry:
 
 ```bash
 docker run -p 3000:3000 ghcr.io/simonottosen/skatteudregner:latest
+```
+
+For login/synkronisering: angiv Supabase-miljøvariablerne ved kørsel:
+
+```bash
+docker run -p 3000:3000 \
+  -e NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT-REF.supabase.co \
+  -e NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR-ANON-PUBLIC-KEY \
+  ghcr.io/simonottosen/skatteudregner:latest
 ```
 
 Åbn [http://localhost:3000](http://localhost:3000) i din browser.
@@ -143,17 +201,17 @@ Images er tagget med `latest` (seneste main-commit) og `sha-<commit>` for præci
 
 GitHub Actions kører automatisk på hvert push og pull request til `main`:
 
-1. **Test** – typetjek, lint og 152 unit tests
+1. **Test** – typetjek, lint og unit tests
 2. **Build & publish** – bygger et Docker image og publisher til `ghcr.io/simonottosen/skatteudregner` (kun ved push til `main`)
 
 ---
 
-## Forskudsopgørelse import
+## PDF-import
 
-Upload din forskudsopgørelse som PDF fra [skat.dk](https://skat.dk) for automatisk at udfylde felterne.
+Upload din **forskudsopgørelse** fra [skat.dk](https://skat.dk) for automatisk at udfylde skattefelterne, eller upload din **lønseddel** for at sammenligne forventet og faktisk betalt skat hen over året.
 
-**Felter der udlæses:**
-- Lønindkomst, honorarer og øvrig AM-indkomst
+**Felter der udlæses fra forskudsopgørelsen:**
+- A-indkomst, honorarer og øvrig AM-indkomst
 - Overførselsindkomster og SU
 - Pensionsindbetalinger (alle typer)
 - Kapitalindkomst og renteudgifter
@@ -163,7 +221,7 @@ Upload din forskudsopgørelse som PDF fra [skat.dk](https://skat.dk) for automat
 - Fødselsdato (fra personnummer)
 - Kirkeskat, civilstand, børn
 
-PDF-parseren håndterer SKATs PDF-format inkl. garblede danske tegn.
+PDF-parseren håndterer SKATs PDF-format inkl. garblede danske tegn. Billed-baserede PDF'er uden tekstlag læses automatisk med OCR (tesseract.js).
 
 ---
 
@@ -174,11 +232,11 @@ npm run test:run
 ```
 
 ```
-Test Files  13 passed
-Tests       152 passed
+Test Files  15 passed
+Tests       179 passed
 ```
 
-Testfiler dækker alle beregningsmoduler samt PDF-parsing og formatering. Excel-scenarierne i `excel-scenarios.test.ts` verificerer beregneren mod kendte skatteberegninger.
+Testfiler dækker skatteberegningens moduler, budget-generatoren, lønseddel-sammenligning samt PDF-parsing og formatering. Excel-scenarierne i `excel-scenarios.test.ts` verificerer beregneren mod kendte skatteberegninger.
 
 ---
 
@@ -187,10 +245,13 @@ Testfiler dækker alle beregningsmoduler samt PDF-parsing og formatering. Excel-
 | Kategori | Teknologi |
 |---|---|
 | Framework | [Next.js 16](https://nextjs.org) med App Router |
-| UI | [shadcn/ui](https://ui.shadcn.com) + [Radix UI](https://radix-ui.com) |
-| Styling | [Tailwind CSS v4](https://tailwindcss.com) |
-| Ikoner | [Lucide React](https://lucide.dev) |
-| Mørk tilstand | [next-themes](https://github.com/pacocoursey/next-themes) |
+| UI | [IBM Carbon Design System](https://carbondesignsystem.com) |
+| Styling | [Tailwind CSS v4](https://tailwindcss.com) + Sass (Carbon-tema) |
+| Ikoner | [@carbon/icons-react](https://carbondesignsystem.com/elements/icons/library/) |
+| Grafer | [Recharts](https://recharts.org) |
+| Auth & DB | [Supabase](https://supabase.com) |
 | PDF-parsing | [pdfjs-dist](https://mozilla.github.io/pdf.js/) |
+| OCR | [tesseract.js](https://tesseract.projectnaptha.com) |
+| Mørk tilstand | [next-themes](https://github.com/pacocoursey/next-themes) |
 | Tests | [Vitest](https://vitest.dev) |
 | Sprog | TypeScript |
