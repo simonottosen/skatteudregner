@@ -1,5 +1,6 @@
 "use client"
 
+import { useState } from "react"
 import {
   ResponsiveContainer,
   PieChart,
@@ -7,12 +8,21 @@ import {
   Cell,
   Tooltip,
   Legend,
+  Sankey,
+  Layer,
+  Rectangle,
 } from "recharts"
+import { ContentSwitcher, Switch } from "@carbon/react"
 import { formatDKK } from "@/lib/format"
 
 export interface Slice {
   name: string
   value: number
+}
+
+export interface SankeyData {
+  nodes: { name: string }[]
+  links: { source: number; target: number; value: number }[]
 }
 
 // Carbon categorical data-vis palette.
@@ -132,50 +142,179 @@ function CategoryBars({
   )
 }
 
+/** Custom Sankey node: a coloured bar with a name + amount label. */
+function FlowNode({
+  x = 0,
+  y = 0,
+  width = 0,
+  height = 0,
+  index = 0,
+  payload,
+  containerWidth = 0,
+  unitSuffix = "",
+}: {
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  index?: number
+  payload?: { name: string; value: number }
+  containerWidth?: number
+  unitSuffix?: string
+}) {
+  if (!payload) return null
+  const color = PALETTE[index % PALETTE.length]
+  // Label inside the chart: source/middle nodes label to the right, the
+  // right-most (terminal) nodes label to the left so text never clips.
+  const isLeft = x < containerWidth * 0.55
+  const labelX = isLeft ? x + width + 8 : x - 8
+  const anchor = isLeft ? "start" : "end"
+  return (
+    <Layer key={`flow-node-${index}`}>
+      <Rectangle
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        fill={color}
+        fillOpacity={0.95}
+      />
+      <text
+        x={labelX}
+        y={y + height / 2 - 4}
+        textAnchor={anchor}
+        className="fill-foreground"
+        fontSize={11}
+        fontWeight={500}
+      >
+        {payload.name}
+      </text>
+      <text
+        x={labelX}
+        y={y + height / 2 + 10}
+        textAnchor={anchor}
+        className="fill-muted-foreground"
+        fontSize={10}
+      >
+        {formatDKK(payload.value)}
+        {unitSuffix}
+      </text>
+    </Layer>
+  )
+}
+
+function FlowChart({
+  data,
+  unitSuffix,
+}: {
+  data: SankeyData
+  unitSuffix: string
+}) {
+  return (
+    <div className="h-[380px] w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        <Sankey
+          data={data}
+          nodeWidth={12}
+          nodePadding={28}
+          linkCurvature={0.5}
+          iterations={64}
+          margin={{ left: 8, right: 8, top: 16, bottom: 16 }}
+          node={<FlowNode unitSuffix={unitSuffix} />}
+          link={{ stroke: "none", fill: "#8a3ffc", fillOpacity: 0.18 }}
+        >
+          <Tooltip
+            formatter={(value) => `${formatDKK(Number(value))}${unitSuffix}`}
+          />
+        </Sankey>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+type ChartView = "donut" | "bars" | "flow"
+const VIEWS: ChartView[] = ["donut", "bars", "flow"]
+
 export function ResultCharts({
   taxSplit,
   categorySplit,
   categoryBars,
+  sankey,
   unitSuffix,
 }: {
   taxSplit: Slice[] | null
   categorySplit: Slice[]
   categoryBars: Slice[]
+  sankey: SankeyData | null
   unitSuffix: string
 }) {
+  const [view, setView] = useState<ChartView>("donut")
+
   return (
-    <div className="space-y-8">
-      <div className="grid gap-6 md:grid-cols-2">
-        {taxSplit && (
-          <div>
-            <h3 className="mb-2 text-sm font-medium">Skat vs. nettoindkomst</h3>
-            <Donut
-              data={taxSplit}
-              colors={["#fa4d56", "#24a148"]}
-              unitSuffix={unitSuffix}
-            />
-          </div>
-        )}
-        <div>
-          <h3 className="mb-2 text-sm font-medium">Sådan bruges din indkomst</h3>
-          <Donut
-            data={categorySplit}
-            colors={categorySplit.map((s, i) =>
-              s.name.startsWith("Til rådighed")
-                ? "#24a148"
-                : PALETTE[i % PALETTE.length]
-            )}
-            unitSuffix={unitSuffix}
-          />
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="text-sm font-medium">Sådan bruges din indkomst</h3>
+        <div className="w-72 max-w-full">
+          <ContentSwitcher
+            size="sm"
+            selectedIndex={VIEWS.indexOf(view)}
+            onChange={({ index }) => setView(VIEWS[index ?? 0])}
+          >
+            <Switch name="donut" text="Cirkel" />
+            <Switch name="bars" text="Søjler" />
+            <Switch name="flow" text="Flow" />
+          </ContentSwitcher>
         </div>
       </div>
 
-      {categoryBars.length > 0 && (
-        <div>
-          <h3 className="mb-2 text-sm font-medium">Forbrug pr. kategori</h3>
-          <CategoryBars data={categoryBars} unitSuffix={unitSuffix} />
+      {view === "donut" && (
+        <div className="grid gap-6 md:grid-cols-2">
+          {taxSplit && (
+            <div>
+              <h4 className="text-muted-foreground mb-2 text-xs font-medium">
+                Skat vs. nettoindkomst
+              </h4>
+              <Donut
+                data={taxSplit}
+                colors={["#fa4d56", "#24a148"]}
+                unitSuffix={unitSuffix}
+              />
+            </div>
+          )}
+          <div>
+            <h4 className="text-muted-foreground mb-2 text-xs font-medium">
+              Fordeling pr. kategori
+            </h4>
+            <Donut
+              data={categorySplit}
+              colors={categorySplit.map((s, i) =>
+                s.name.startsWith("Til rådighed")
+                  ? "#24a148"
+                  : PALETTE[i % PALETTE.length]
+              )}
+              unitSuffix={unitSuffix}
+            />
+          </div>
         </div>
       )}
+
+      {view === "bars" &&
+        (categoryBars.length > 0 ? (
+          <CategoryBars data={categoryBars} unitSuffix={unitSuffix} />
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            Tilføj udgifter i budgettet for at se forbrug pr. kategori.
+          </p>
+        ))}
+
+      {view === "flow" &&
+        (sankey && sankey.links.length > 0 ? (
+          <FlowChart data={sankey} unitSuffix={unitSuffix} />
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            Tilføj indkomst og udgifter for at se pengestrømmen.
+          </p>
+        ))}
     </div>
   )
 }

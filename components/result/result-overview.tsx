@@ -16,7 +16,7 @@ import { useTax } from "@/components/tax-provider"
 import { useBudget } from "@/components/budget-provider"
 import { UNCATEGORIZED_ID } from "@/lib/budget/categories"
 import { formatDKK, formatPercent } from "@/lib/format"
-import type { Slice } from "./result-charts"
+import type { Slice, SankeyData } from "./result-charts"
 
 const ResultCharts = dynamic(
   () => import("./result-charts").then((m) => m.ResultCharts),
@@ -120,6 +120,41 @@ export function ResultOverview() {
   const categoryBars: Slice[] = [...categoryTotals]
     .sort((a, b) => b.value - a.value)
     .map((c) => ({ name: c.name, value: Math.round(c.value * mult) }))
+
+  // Sankey flow: (brutto → skat + netto →) categories + til rådighed.
+  const sankey: SankeyData | null = (() => {
+    const allocations = categorySplit.filter((s) => s.value > 0)
+    if (allocations.length === 0) return null
+    const nodes: { name: string }[] = []
+    const links: { source: number; target: number; value: number }[] = []
+    const addNode = (name: string) => nodes.push({ name }) - 1
+
+    if (hasTax) {
+      const gross = Math.round(grossMonthly * mult)
+      const tax = Math.round(taxMonthly * mult)
+      const net = Math.max(0, gross - tax)
+      const grossIdx = addNode(
+        twoPeople ? "Husstandens bruttoindkomst" : "Bruttoindkomst"
+      )
+      const taxIdx = addNode("Skat & AM-bidrag")
+      const netIdx = addNode("Nettoindkomst")
+      if (tax > 0) links.push({ source: grossIdx, target: taxIdx, value: tax })
+      links.push({ source: grossIdx, target: netIdx, value: net })
+      const base = nodes.length
+      allocations.forEach((a) => addNode(a.name))
+      allocations.forEach((a, i) =>
+        links.push({ source: netIdx, target: base + i, value: a.value })
+      )
+    } else {
+      const incomeIdx = addNode("Nettoindkomst")
+      const base = nodes.length
+      allocations.forEach((a) => addNode(a.name))
+      allocations.forEach((a, i) =>
+        links.push({ source: incomeIdx, target: base + i, value: a.value })
+      )
+    }
+    return { nodes, links }
+  })()
 
   const nothingYet =
     !hasTax && budgetIncome <= 0 && positiveExpenses.length === 0
@@ -280,6 +315,7 @@ export function ResultOverview() {
                 taxSplit={taxSplit}
                 categorySplit={categorySplit}
                 categoryBars={categoryBars}
+                sankey={sankey}
                 unitSuffix={unitSuffix}
               />
             </CardContent>
