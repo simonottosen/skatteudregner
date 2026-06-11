@@ -150,7 +150,7 @@ function FlowNode({
   height = 0,
   index = 0,
   payload,
-  containerWidth = 0,
+  sourceIndices = [],
   unitSuffix = "",
 }: {
   x?: number
@@ -159,16 +159,17 @@ function FlowNode({
   height?: number
   index?: number
   payload?: { name: string; value: number }
-  containerWidth?: number
+  /** Indices of left-hand source nodes (never a link target). */
+  sourceIndices?: number[]
   unitSuffix?: string
 }) {
   if (!payload) return null
   const color = PALETTE[index % PALETTE.length]
-  // Label inside the chart: source/middle nodes label to the right, the
-  // right-most (terminal) nodes label to the left so text never clips.
-  const isLeft = x < containerWidth * 0.55
-  const labelX = isLeft ? x + width + 8 : x - 8
-  const anchor = isLeft ? "start" : "end"
+  // Source nodes (never a link target) sit on the left → label to their right;
+  // every other node labels to its left, so text stays inside the chart.
+  const isSource = sourceIndices.includes(index)
+  const labelX = isSource ? x + width + 8 : x - 8
+  const anchor = isSource ? "start" : "end"
   return (
     <Layer key={`flow-node-${index}`}>
       <Rectangle
@@ -186,6 +187,10 @@ function FlowNode({
         className="fill-foreground"
         fontSize={11}
         fontWeight={500}
+        stroke="var(--cds-layer-01, #f4f4f4)"
+        strokeWidth={3}
+        strokeLinejoin="round"
+        paintOrder="stroke"
       >
         {payload.name}
       </text>
@@ -195,6 +200,10 @@ function FlowNode({
         textAnchor={anchor}
         className="fill-muted-foreground"
         fontSize={10}
+        stroke="var(--cds-layer-01, #f4f4f4)"
+        strokeWidth={3}
+        strokeLinejoin="round"
+        paintOrder="stroke"
       >
         {formatDKK(payload.value)}
         {unitSuffix}
@@ -210,6 +219,12 @@ function FlowChart({
   data: SankeyData
   unitSuffix: string
 }) {
+  // Left-hand source nodes are those that never appear as a link target.
+  const targets = new Set(data.links.map((l) => l.target))
+  const sourceIndices = data.nodes
+    .map((_, i) => i)
+    .filter((i) => !targets.has(i))
+
   return (
     <div className="h-[380px] w-full">
       <ResponsiveContainer width="100%" height="100%">
@@ -220,8 +235,10 @@ function FlowChart({
           linkCurvature={0.5}
           iterations={64}
           margin={{ left: 8, right: 8, top: 16, bottom: 16 }}
-          node={<FlowNode unitSuffix={unitSuffix} />}
-          link={{ stroke: "none", fill: "#8a3ffc", fillOpacity: 0.18 }}
+          node={
+            <FlowNode unitSuffix={unitSuffix} sourceIndices={sourceIndices} />
+          }
+          link={{ stroke: "#a56eff", strokeOpacity: 0.4 }}
         >
           <Tooltip
             formatter={(value) => `${formatDKK(Number(value))}${unitSuffix}`}
