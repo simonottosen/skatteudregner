@@ -7,6 +7,7 @@ import "./carbon.scss"
 import { ThemeProvider } from "@/components/theme-provider"
 import { AuthProvider } from "@/components/auth-provider"
 import { TaxProvider } from "@/components/tax-provider"
+import { BudgetProvider } from "@/components/budget-provider"
 import { AppHeader } from "@/components/app-header"
 
 export const metadata: Metadata = {
@@ -26,8 +27,10 @@ export default function RootLayout({
         <ThemeProvider>
           <AuthProvider>
             <TaxProvider>
-              <AppHeader />
-              <div style={{ paddingTop: "3rem" }}>{children}</div>
+              <BudgetProvider>
+                <AppHeader />
+                <div style={{ paddingTop: "3rem" }}>{children}</div>
+              </BudgetProvider>
             </TaxProvider>
           </AuthProvider>
         </ThemeProvider>

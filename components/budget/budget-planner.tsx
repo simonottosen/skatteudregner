@@ -13,8 +13,8 @@ import {
 import { Add, TrashCan, MagicWand, Draggable } from "@carbon/icons-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { useBudget } from "@/components/budget-provider"
 import {
-  useBudget,
   type BudgetItem,
   type BudgetCategory,
   type ExpenseList,

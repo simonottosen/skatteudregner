@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useRemoteSync } from "@/hooks/use-remote-sync"
 import { useTax } from "@/components/tax-provider"
 import {
@@ -141,10 +141,17 @@ function normalizeBudget(raw: unknown): BudgetState {
   return base
 }
 
-export function useBudget() {
+/**
+ * Owns the budget state. Use it once (via {@link BudgetProvider}) so the whole
+ * app shares a single instance — don't call it directly in pages/components.
+ */
+export function useBudgetController() {
   const { monthlyNetIncome, person2MonthlyNetIncome } = useTax()
   const [state, setState] = useState<BudgetState>(defaultState)
-  const loaded = useRef(false)
+  // Becomes true once the persisted value has been restored. Gating writes on
+  // this prevents the initial default state from clobbering saved data before
+  // the restore effect's setState has been applied.
+  const [hydrated, setHydrated] = useState(false)
 
   // Sync to Supabase when signed in (debounced + flush on leave).
   useRemoteSync<BudgetState>("budget_items", state, (remote) =>
@@ -160,18 +167,18 @@ export function useBudget() {
     } catch {
       // Ignore malformed/unavailable storage.
     }
-    loaded.current = true
+    setHydrated(true)
   }, [])
 
-  // Persist after the initial load.
+  // Persist after the persisted value has been restored.
   useEffect(() => {
-    if (!loaded.current) return
+    if (!hydrated) return
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
     } catch {
       // Ignore storage write failures.
     }
-  }, [state])
+  }, [state, hydrated])
 
   // --- list helpers -------------------------------------------------------
   function mapList(
