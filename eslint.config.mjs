@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Harness git worktree copies — stale duplicates that pollute lint.
+    ".claude/**",
   ]),
 ]);
 

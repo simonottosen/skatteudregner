@@ -71,9 +71,19 @@ export function PaycheckChart({ data }: PaycheckChartProps) {
           <Line
             type="monotone"
             dataKey="expectedCumulative"
-            name="Forventet skat"
+            name="Forventet skat (din indkomst)"
             stroke="hsl(220, 70%, 55%)"
             strokeWidth={2}
+            dot={false}
+            connectNulls
+          />
+          <Line
+            type="monotone"
+            dataKey="planCumulative"
+            name="Forskudsopgørelse"
+            stroke="hsl(30, 80%, 55%)"
+            strokeWidth={2}
+            strokeDasharray="6 3"
             dot={false}
             connectNulls
           />
@@ -84,16 +94,6 @@ export function PaycheckChart({ data }: PaycheckChartProps) {
             stroke="hsl(142, 60%, 45%)"
             strokeWidth={2}
             dot={{ r: 3 }}
-            connectNulls
-          />
-          <Line
-            type="monotone"
-            dataKey="projectedCumulative"
-            name="Fremskrevet"
-            stroke="hsl(30, 80%, 55%)"
-            strokeWidth={2}
-            strokeDasharray="6 3"
-            dot={false}
             connectNulls
           />
         </ComposedChart>

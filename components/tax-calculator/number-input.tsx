@@ -1,7 +1,7 @@
 "use client"
 
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import { useId } from "react"
+import { TextInput } from "@carbon/react"
 import { cn } from "@/lib/utils"
 
 interface NumberInputProps {
@@ -25,44 +25,37 @@ export function NumberInput({
   hint,
   negative,
 }: NumberInputProps) {
-  const displayValue = String(value)
+  const id = useId()
+  const labelText = hint ? `${label} (${hint})` : label
 
   return (
-    <div className={cn("space-y-1", className)}>
-      <Label className="text-xs">
-        {label}
-        {hint && (
-          <span className="text-muted-foreground ml-1 font-normal">
-            ({hint})
-          </span>
-        )}
-      </Label>
-      <div className="relative">
-        <Input
-          type="number"
-          value={displayValue}
-          onChange={(e) => {
-            const raw = e.target.value
-            if (raw === "") {
-              onChange(0)
-              return
-            }
-            let num = parseFloat(raw)
-            if (isNaN(num)) num = 0
-            if (!negative && num < 0) num = 0
-            if (max !== undefined && num > max) num = max
-            onChange(Math.round(num))
-          }}
-          className="pr-10 text-right"
-          min={negative ? undefined : 0}
-          max={max}
-        />
-        {suffix && (
-          <span className="text-muted-foreground pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-sm">
-            {suffix}
-          </span>
-        )}
-      </div>
+    <div className={cn("relative", className)}>
+      <TextInput
+        id={id}
+        type="number"
+        size="md"
+        labelText={labelText}
+        value={String(value)}
+        min={negative ? undefined : 0}
+        max={max}
+        onChange={(e) => {
+          const raw = e.target.value
+          if (raw === "") {
+            onChange(0)
+            return
+          }
+          let num = parseFloat(raw)
+          if (isNaN(num)) num = 0
+          if (!negative && num < 0) num = 0
+          if (max !== undefined && num > max) num = max
+          onChange(Math.round(num))
+        }}
+      />
+      {suffix && (
+        <span className="text-muted-foreground pointer-events-none absolute right-3 bottom-0 flex h-10 items-center text-sm">
+          {suffix}
+        </span>
+      )}
     </div>
   )
 }

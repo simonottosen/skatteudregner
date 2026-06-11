@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { ThemeProvider as NextThemesProvider, useTheme } from "next-themes"
+import { GlobalTheme } from "@carbon/react"
 
 function ThemeProvider({
   children,
@@ -9,16 +10,28 @@ function ThemeProvider({
 }: React.ComponentProps<typeof NextThemesProvider>) {
   return (
     <NextThemesProvider
-      attribute="class"
-      defaultTheme="system"
+      attribute="data-carbon-theme"
+      value={{ light: "white", dark: "g100" }}
+      defaultTheme="light"
       enableSystem
       disableTransitionOnChange
       {...props}
     >
       <ThemeHotkey />
-      {children}
+      <CarbonThemeSync>{children}</CarbonThemeSync>
     </NextThemesProvider>
   )
+}
+
+/**
+ * Mirrors the resolved next-themes value into Carbon's React context so hooks
+ * like useTheme() and components that read the theme behave correctly. The CSS
+ * tokens are already applied via the data-carbon-theme attribute on <html>.
+ */
+function CarbonThemeSync({ children }: { children: React.ReactNode }) {
+  const { resolvedTheme } = useTheme()
+  const carbonTheme = resolvedTheme === "dark" ? "g100" : "white"
+  return <GlobalTheme theme={carbonTheme}>{children}</GlobalTheme>
 }
 
 function isTypingTarget(target: EventTarget | null) {

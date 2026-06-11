@@ -1,4 +1,5 @@
 import type { TaxInput, TaxResult } from "@/lib/tax/types"
+import { getRates } from "@/lib/tax/rates"
 import type {
   PaycheckData,
   ComparisonResult,
@@ -19,92 +20,101 @@ export function comparePaycheckToCalculation(
   adjustments: ExpectedAdjustment[] = []
 ): ComparisonResult {
   const monthsElapsed = paycheck.month
+  const rates = getRates(input.year)
 
-  // Calculator annual values (income tax = total tax minus stock/property)
+  // Calculator (forskudsopgørelse) annual values — based on the REGISTERED income
   const calculatedAnnualTax = result.totalIncomeTax
   const calculatedAnnualAm = result.amBidragTotal
-  const calculatedAnnualIncome =
-    result.amBasis + result.insuranceBasis
-
-  // YTD expected (pro-rata from annual calculator result)
-  const ytdTaxExpected = Math.round(
-    (calculatedAnnualTax / 12) * monthsElapsed
-  )
-  const ytdAmExpected = Math.round(
-    (calculatedAnnualAm / 12) * monthsElapsed
-  )
+  const calculatedAnnualIncome = result.amBasis + result.insuranceBasis
 
   // YTD actual from paycheck
   const ytdTaxPaid = paycheck.ytd.taxPaid
   const ytdAmPaid = paycheck.ytd.amContribution
 
-  // Total expected adjustments (bonuses, etc.)
-  const totalAdjustments = adjustments.reduce((sum, a) => sum + a.amount, 0)
+  // Marginal income-tax rate (excludes the 8% AM portion).
+  const incomeMarginalRate = Math.max(
+    0,
+    result.marginalTaxRate - rates.amBidragRate
+  )
 
-  // Build a map of adjustment amounts by month for the chart
-  const adjustmentByMonth = new Map<number, number>()
-  for (const a of adjustments) {
-    adjustmentByMonth.set(
-      a.month,
-      (adjustmentByMonth.get(a.month) ?? 0) + a.amount
-    )
-  }
+  // Expected changes for the rest of the year, split by kind.
+  const typeOf = (a: ExpectedAdjustment) => a.type ?? "income"
+  const incomeAdjustmentsTotal = adjustments
+    .filter((a) => typeOf(a) === "income")
+    .reduce((s, a) => s + a.amount, 0)
+  const pensionAdjustmentsTotal = adjustments
+    .filter((a) => typeOf(a) === "pension")
+    .reduce((s, a) => s + a.amount, 0)
 
-  // Projections (extrapolate YTD to full year + adjustments)
+  // Signed effect of one adjustment on the income tax owed:
+  //   income       → +amount × marginal (more tax)
+  //   pension/ded. → −amount × marginal (less tax via bortseelse/fradrag)
+  const owedDeltaOf = (a: ExpectedAdjustment) =>
+    (typeOf(a) === "income" ? 1 : -1) * a.amount * incomeMarginalRate
+
+  // Projections (extrapolate the YTD paycheck to a full year)
   const projectedBaseIncome =
     monthsElapsed > 0
       ? Math.round(paycheck.ytd.amIncome * (12 / monthsElapsed))
       : 0
-  const projectedAnnualIncome = projectedBaseIncome + totalAdjustments
-  const projectedAnnualTax =
-    monthsElapsed > 0
-      ? Math.round(paycheck.ytd.taxPaid * (12 / monthsElapsed)) +
-        Math.round(totalAdjustments * 0.38)
-      : 0
+  // Only extra income raises gross income / AM; pension & deductions don't.
+  const projectedAnnualIncome = projectedBaseIncome + incomeAdjustmentsTotal
   const projectedAnnualAm =
     monthsElapsed > 0
       ? Math.round(paycheck.ytd.amContribution * (12 / monthsElapsed)) +
-        Math.round(totalAdjustments * 0.08)
+        Math.round(incomeAdjustmentsTotal * rates.amBidragRate)
+      : 0
+  const projectedAnnualTax =
+    monthsElapsed > 0
+      ? Math.round(paycheck.ytd.taxPaid * (12 / monthsElapsed)) +
+        Math.round(incomeAdjustmentsTotal * 0.38)
       : 0
 
-  // Monthly chart data
-  const monthlyTaxPerMonth = calculatedAnnualTax / 12
+  // Income tax owed on your actual income: the calculator's income tax,
+  // adjusted by the marginal rate for (a) base income differing from the
+  // registered income and (b) each expected change. This single "owed" figure
+  // drives the KPIs, the chart and the restskat so they all reconcile.
+  const baseOwedIncomeTax =
+    calculatedAnnualTax +
+    (projectedBaseIncome - calculatedAnnualIncome) * incomeMarginalRate
+  const adjustmentsOwedDelta = adjustments.reduce(
+    (s, a) => s + owedDeltaOf(a),
+    0
+  )
+  const expectedAnnualIncomeTax = Math.max(
+    0,
+    Math.round(baseOwedIncomeTax + adjustmentsOwedDelta)
+  )
+
+  // YTD expected — pro-rata from the tax owed on ACTUAL income
+  const ytdTaxExpected = Math.round((expectedAnnualIncomeTax / 12) * monthsElapsed)
+  const ytdAmExpected = Math.round((projectedAnnualAm / 12) * monthsElapsed)
+
+  // Monthly chart data. The owed line accrues the base income tax evenly and
+  // STEPS at the month of each expected change (a bonus steps up, an extra
+  // pension payment steps down), so e.g. a December bonus is visible. The plan
+  // line is the forskudsopgørelse (even withholding); actual is paid-to-date.
+  const planTaxPerMonth = calculatedAnnualTax / 12
   const actualTaxPerMonth =
     monthsElapsed > 0 ? paycheck.ytd.taxPaid / monthsElapsed : 0
-  const projectedTaxPerMonth = actualTaxPerMonth
 
   const monthlyData: MonthlyComparisonPoint[] = MONTH_LABELS.map(
     (label, i) => {
       const month = i + 1
-      const expectedCumulative = Math.round(monthlyTaxPerMonth * month)
-
-      let actualCumulative: number | null = null
-      if (month <= monthsElapsed) {
-        actualCumulative = Math.round(actualTaxPerMonth * month)
-      }
-
-      let projectedCumulative: number | null = null
-      if (month >= monthsElapsed) {
-        // Start from actual YTD, add projected monthly tax for remaining months
-        let base = paycheck.ytd.taxPaid +
-          projectedTaxPerMonth * (month - monthsElapsed)
-
-        // Add estimated tax on adjustments for months up to this point
-        for (const [adjMonth, adjAmount] of adjustmentByMonth) {
-          if (adjMonth <= month && adjMonth > monthsElapsed) {
-            base += Math.round(adjAmount * 0.38)
-          }
-        }
-
-        projectedCumulative = Math.round(base)
-      }
-
+      const adjAccrued = adjustments
+        .filter((a) => a.month <= month)
+        .reduce((s, a) => s + owedDeltaOf(a), 0)
       return {
         month,
         label,
-        expectedCumulative,
-        actualCumulative,
-        projectedCumulative,
+        expectedCumulative: Math.round(
+          Math.max(0, baseOwedIncomeTax * (month / 12) + adjAccrued)
+        ),
+        actualCumulative:
+          month <= monthsElapsed
+            ? Math.round(actualTaxPerMonth * month)
+            : null,
+        planCumulative: Math.round(planTaxPerMonth * month),
       }
     }
   )
@@ -128,24 +138,21 @@ export function comparePaycheckToCalculation(
     projectedBaseIncome,
     projectedBaseTax,
     projectedBaseAm,
-    totalAdjustments
+    incomeAdjustmentsTotal,
+    pensionAdjustmentsTotal
   )
 
-  // ── Estimated restskat ──
-  // Tax being withheld is based on the current forskudsopgørelse (calculatedAnnualIncome).
-  // If actual income differs, extra tax is owed on the difference.
-  //
-  // taxOwed = calculatedTax + calculatedAm + marginalRate * incomeDifference
-  // taxPaid = extrapolated withholdings from paycheck
-  // restskat = taxOwed − taxPaid
-  const incomeDiff = projectedAnnualIncome - calculatedAnnualIncome
-  const marginalRate = result.marginalTaxRate // includes AM portion
-  const taxOwedOnProjectedIncome =
-    calculatedAnnualTax + calculatedAnnualAm + incomeDiff * marginalRate
-  const taxBeingWithheld = projectedAnnualTax + projectedAnnualAm
-  const estimatedRestskat = Math.round(
-    taxOwedOnProjectedIncome - taxBeingWithheld
-  )
+  // ── Estimated restskat (Model B) ──
+  // Your employer withholds according to your forskudsopgørelse (including on a
+  // bonus), so the year-end result is the tax+AM you actually OWE on your real
+  // income minus what your forskudsopgørelse is built to collect.
+  //   positive → restskat (you earn more than registered)
+  //   negative → overskydende skat (you earn less than registered)
+  // A bonus that brings your income up to the registered amount therefore drives
+  // this toward 0.
+  const owedTaxAndAm = expectedAnnualIncomeTax + projectedAnnualAm
+  const plannedTaxAndAm = calculatedAnnualTax + calculatedAnnualAm
+  const estimatedRestskat = Math.round(owedTaxAndAm - plannedTaxAndAm)
 
   return {
     month: paycheck.month,
@@ -162,6 +169,7 @@ export function comparePaycheckToCalculation(
     calculatedAnnualTax,
     calculatedAnnualAm,
     calculatedAnnualIncome,
+    expectedAnnualIncomeTax,
     monthlyData,
     discrepancies,
     estimatedRestskat,
@@ -181,7 +189,8 @@ function detectDiscrepancies(
   projectedBaseIncome: number,
   _projectedBaseTax: number,
   _projectedBaseAm: number,
-  totalAdjustments: number
+  totalAdjustments: number,
+  pensionAdjustmentsTotal: number
 ): Discrepancy[] {
   const discrepancies: Discrepancy[] = []
   const threshold = 0.05
@@ -221,10 +230,11 @@ function detectDiscrepancies(
   }
 
   // ── Medarbejderpension (eget bidrag) ──
+  // Payslip-projected own contribution + any planned extra pension payments.
   const projectedEmployeePension =
-    monthsElapsed > 0
+    (monthsElapsed > 0
       ? Math.round(paycheck.ytd.employeePension * (12 / monthsElapsed))
-      : 0
+      : 0) + pensionAdjustmentsTotal
   const calculatorEmployeePension = input.employeePension
   if (
     projectedEmployeePension > 0 &&

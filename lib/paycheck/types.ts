@@ -51,10 +51,18 @@ export interface ComparisonResult {
   projectedAnnualTax: number
   projectedAnnualAm: number
 
-  // From the calculator
+  // From the calculator (forskudsopgørelse — registered income)
   calculatedAnnualTax: number
   calculatedAnnualAm: number
   calculatedAnnualIncome: number
+
+  /**
+   * Income tax you'll actually owe on your *projected* income (the calculator's
+   * income tax adjusted by the marginal income-tax rate for the income
+   * difference). This is the figure that reconciles the YTD comparison with the
+   * estimated restskat.
+   */
+  expectedAnnualIncomeTax: number
 
   // Per-month chart data
   monthlyData: MonthlyComparisonPoint[]
@@ -72,9 +80,12 @@ export interface ComparisonResult {
 export interface MonthlyComparisonPoint {
   month: number
   label: string
+  /** Tax owed on your actual (projected) income. */
   expectedCumulative: number
+  /** Tax actually paid so far (null for future months). */
   actualCumulative: number | null
-  projectedCumulative: number | null
+  /** Tax your forskudsopgørelse is built to collect. */
+  planCumulative: number
 }
 
 export interface Discrepancy {
@@ -87,10 +98,20 @@ export interface Discrepancy {
 }
 
 /** User-supplied expected income adjustments for the rest of the year */
+/**
+ * Kind of expected change:
+ *  - "income"    extra taxable income (bonus, raise) → increases tax
+ *  - "pension"   extra pension contribution (bortseelse) → reduces tax
+ *  - "deduction" other deductible expense → reduces tax
+ */
+export type AdjustmentType = "income" | "pension" | "deduction"
+
 export interface ExpectedAdjustment {
   id: string
   label: string
   amount: number
   /** 1-12, the month the adjustment is expected */
   month: number
+  /** Defaults to "income" when missing (back-compat with saved data). */
+  type?: AdjustmentType
 }

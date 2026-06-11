@@ -1,14 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import {
-  MapPinIcon,
   ExternalLinkIcon,
   Loader2Icon,
   ChevronDownIcon,
   ChevronUpIcon,
 } from "lucide-react"
-import { Input } from "@/components/ui/input"
+import { Button, TextInput } from "@carbon/react"
 import { Separator } from "@/components/ui/separator"
 import { formatDKK } from "@/lib/format"
 import { getRates, getMunicipality } from "@/lib/tax"
@@ -46,6 +45,9 @@ export function CommuteDeduction({
   })
   const [expanded, setExpanded] = useState(false)
   const autoCalcDone = useRef(false)
+  const homeId = useId()
+  const workId = useId()
+  const kmId = useId()
 
   const rates = getRates(input.year)
   const municipality = getMunicipality(input.municipality, input.year)
@@ -178,19 +180,19 @@ export function CommuteDeduction({
 
             {/* Suggestion inline */}
             {isNewDeduction && (
-              <p className="mt-1.5 text-xs text-green-700 dark:text-green-400">
+              <p className="mt-1.5 text-success text-xs">
                 Tilføj {roundTripKm} km under &quot;Befordring&quot; på skat.dk
                 — spar ca. {formatDKK(taxSavings)} i skat.
               </p>
             )}
             {isChangedDeduction && (
-              <p className="mt-1.5 text-xs text-amber-700 dark:text-amber-400">
+              <p className="mt-1.5 text-warning text-xs">
                 Opdatér fra {input.commuteDistanceKm} km til {roundTripKm} km
                 på skat.dk (forskel: {formatDKK(totalDeduction - currentTotal)}).
               </p>
             )}
             {!isNewDeduction && !isChangedDeduction && roundTripKm === input.commuteDistanceKm && (
-              <p className="mt-1.5 text-xs text-green-700 dark:text-green-400">
+              <p className="mt-1.5 text-success text-xs">
                 Matcher din forskudsopgørelse.
               </p>
             )}
@@ -242,50 +244,37 @@ export function CommuteDeduction({
 
       {/* Address inputs */}
       <div className="space-y-2">
-        <div>
-          <label className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-            <MapPinIcon className="size-3" />
-            Hjemmeadresse
-          </label>
-          <Input
-            type="text"
-            placeholder="F.eks. Flensborggade 40, 1669 København V"
-            value={homeAddress}
-            onChange={(e) => setHomeAddress(e.target.value)}
-            className="h-8 text-sm"
-          />
-        </div>
-        <div>
-          <label className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-            <MapPinIcon className="size-3" />
-            Arbejdsadresse
-          </label>
-          <Input
-            type="text"
-            placeholder="F.eks. J.C Jacobsens Gade 12, 1799 København V"
-            value={workAddress}
-            onChange={(e) => setWorkAddress(e.target.value)}
-            className="h-8 text-sm"
-          />
-        </div>
+        <TextInput
+          id={homeId}
+          size="sm"
+          labelText="Hjemmeadresse"
+          placeholder="F.eks. Flensborggade 40, 1669 København V"
+          value={homeAddress}
+          onChange={(e) => setHomeAddress(e.target.value)}
+        />
+        <TextInput
+          id={workId}
+          size="sm"
+          labelText="Arbejdsadresse"
+          placeholder="F.eks. J.C Jacobsens Gade 12, 1799 København V"
+          value={workAddress}
+          onChange={(e) => setWorkAddress(e.target.value)}
+        />
       </div>
 
       {/* Actions */}
       <div className="mt-2 flex flex-wrap items-center gap-3">
         {hasAddresses && (
-          <button
-            onClick={calculateDistance}
-            className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
-          >
+          <Button kind="tertiary" size="sm" onClick={calculateDistance}>
             Beregn afstand
-          </button>
+          </Button>
         )}
         {googleMapsUrl && (
           <a
             href={googleMapsUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+            className="text-link inline-flex items-center gap-1.5 text-xs hover:underline"
           >
             Google Maps
             <ExternalLinkIcon className="size-3" />
@@ -295,35 +284,29 @@ export function CommuteDeduction({
 
       {/* Distance result / error */}
       {distanceState.status === "success" && (
-        <p className="mt-2 text-xs text-green-700 dark:text-green-400">
+        <p className="text-success mt-2 text-xs">
           {distanceState.oneWayKm} km hver vej ({distanceState.durationMinutes}{" "}
           min.) — {distanceState.oneWayKm * 2} km tur/retur
         </p>
       )}
       {distanceState.status === "error" && (
-        <p className="mt-2 text-xs text-red-600 dark:text-red-400">
-          {distanceState.message}
-        </p>
+        <p className="text-error mt-2 text-xs">{distanceState.message}</p>
       )}
 
       {/* Manual km input */}
-      <div className="mt-3">
-        <label className="mb-1 block text-xs text-muted-foreground">
-          Afstand tur/retur (km pr. dag)
-        </label>
-        <div className="flex items-center gap-2">
-          <Input
-            type="number"
-            placeholder="0"
-            value={roundTripKm || ""}
-            onChange={(e) =>
-              setRoundTripKm(Math.round(parseFloat(e.target.value) || 0))
-            }
-            className="h-8 w-28 text-right text-sm"
-            min={0}
-          />
-          <span className="text-xs text-muted-foreground">km</span>
-        </div>
+      <div className="mt-3 w-36">
+        <TextInput
+          id={kmId}
+          type="number"
+          size="sm"
+          labelText="Afstand tur/retur (km/dag)"
+          placeholder="0"
+          value={roundTripKm || ""}
+          min={0}
+          onChange={(e) =>
+            setRoundTripKm(Math.round(parseFloat(e.target.value) || 0))
+          }
+        />
       </div>
 
       {/* Deduction breakdown */}
@@ -352,23 +335,23 @@ export function CommuteDeduction({
             </p>
 
             {isNewDeduction && (
-              <div className="mt-2 rounded border border-green-200 bg-green-50 p-2 dark:border-green-800 dark:bg-green-950">
-                <p className="text-xs text-green-700 dark:text-green-300">
+              <div className="mt-2 border bg-muted/50 p-2">
+                <p className="text-success text-xs">
                   Tilføj {roundTripKm} km under &quot;Befordring&quot; på
                   skat.dk.
                 </p>
               </div>
             )}
             {isChangedDeduction && (
-              <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 dark:border-amber-800 dark:bg-amber-950">
-                <p className="text-xs text-amber-700 dark:text-amber-300">
+              <div className="mt-2 border bg-muted/50 p-2">
+                <p className="text-warning text-xs">
                   Opdatér fra {input.commuteDistanceKm} km til {roundTripKm} km
                   på skat.dk (nu: {formatDKK(currentTotal)}).
                 </p>
               </div>
             )}
             {!isNewDeduction && !isChangedDeduction && roundTripKm === input.commuteDistanceKm && (
-              <p className="mt-2 text-xs text-green-700 dark:text-green-400">
+              <p className="mt-2 text-success text-xs">
                 Matcher din forskudsopgørelse.
               </p>
             )}

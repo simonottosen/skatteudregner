@@ -1,0 +1,29 @@
+// Carbon Design System styles. Emits all component CSS and sets the default
+// (white) theme on :root. The g100 block below is applied when next-themes
+// switches the page into dark mode (see theme-provider.tsx, which mirrors the
+// theme onto the data-carbon-theme attribute).
+// We self-host IBM Plex via @ibm/plex-sans / @ibm/plex-mono CSS (imported in
+// layout.tsx), so Carbon must not emit its own @font-face rules — they use a
+// webpack-only "~@ibm/plex" path that Turbopack cannot resolve.
+//
+// We also disable Carbon's CSS reset, body and default element typography:
+// those are emitted *unlayered* and would beat Tailwind's layered utilities
+// (e.g. overriding text-2xl on <h1>, margins, etc.). Tailwind's own preflight
+// already provides the reset and box-sizing, so Carbon only needs to ship its
+// component (.cds--*) styles here.
+@use "@carbon/react" with (
+  $css--font-face: false,
+  $css--reset: false,
+  $css--body: false,
+  $css--default-type: false
+);
+@use "@carbon/styles/scss/theme";
+@use "@carbon/styles/scss/themes";
+
+:root[data-carbon-theme="white"] {
+  @include theme.theme(themes.$white);
+}
+
+:root[data-carbon-theme="g100"] {
+  @include theme.theme(themes.$g100);
+}

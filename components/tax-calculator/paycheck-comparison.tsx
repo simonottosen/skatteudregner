@@ -1,24 +1,38 @@
 "use client"
 
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useId, useMemo, useRef, useState } from "react"
+import { UploadIcon, FileTextIcon } from "lucide-react"
 import {
-  UploadIcon,
-  FileTextIcon,
-  CheckCircleIcon,
-  AlertCircleIcon,
-  XIcon,
-  CopyIcon,
-  CheckIcon,
-  ChevronDownIcon,
-  ChevronUpIcon,
-  PlusIcon,
-  Trash2Icon,
-} from "lucide-react"
+  Button,
+  InlineNotification,
+  Select,
+  SelectItem,
+  TextInput,
+  TextArea,
+} from "@carbon/react"
+import {
+  Add,
+  TrashCan,
+  Copy,
+  Checkmark,
+  ChevronDown,
+  ChevronUp,
+} from "@carbon/icons-react"
+import dynamic from "next/dynamic"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
-import { PaycheckChart } from "./paycheck-chart"
 import { CommuteDeduction } from "./commute-deduction"
+
+// recharts is ~400 KB of JS. The chart is only rendered after the user has
+// entered/uploaded paycheck data, so load it lazily to keep it off the
+// initial /skat critical path.
+const PaycheckChart = dynamic(
+  () => import("./paycheck-chart").then((m) => m.PaycheckChart),
+  {
+    ssr: false,
+    loading: () => <div className="h-72 w-full" />,
+  },
+)
 import { comparePaycheckToCalculation } from "@/lib/paycheck/compare"
 import { generateOptimizationPrompt } from "@/lib/paycheck/generate-prompt"
 import type { CommuteInfo } from "@/lib/paycheck/generate-prompt"
@@ -32,7 +46,7 @@ import type {
 
 type UploadState =
   | { status: "idle" }
-  | { status: "parsing" }
+  | { status: "parsing"; message?: string }
   | { status: "success"; parseResult: PaycheckParseResult }
   | { status: "error"; message: string }
 
@@ -72,6 +86,7 @@ export function PaycheckComparison({
   const [adjustments, setAdjustments] = useState<ExpectedAdjustment[]>([])
   const [commuteInfo, setCommuteInfo] = useState<CommuteInfo | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const promptFieldId = useId()
 
   const comparison = useMemo(
     () =>
@@ -112,7 +127,14 @@ export function PaycheckComparison({
       const { parseLoenseddel } = await import(
         "@/lib/pdf/parse-loenseddel"
       )
-      const parseResult = await parseLoenseddel(file)
+      const parseResult = await parseLoenseddel(file, {
+        onOcrProgress: (fraction) => {
+          setUploadState({
+            status: "parsing",
+            message: `Læser scannet lønseddel (OCR)… ${Math.round(fraction * 100)}%`,
+          })
+        },
+      })
 
       if (!parseResult.data) {
         setUploadState({
@@ -178,12 +200,17 @@ export function PaycheckComparison({
         label: "",
         amount: 0,
         month: defaultMonth,
+        type: "income",
       },
     ])
   }, [paycheck])
 
   const updateAdjustment = useCallback(
-    (id: string, field: keyof ExpectedAdjustment, value: string | number) => {
+    (
+      id: string,
+      field: keyof ExpectedAdjustment,
+      value: string | number
+    ) => {
       setAdjustments((prev) =>
         prev.map((a) => (a.id === id ? { ...a, [field]: value } : a))
       )
@@ -228,25 +255,14 @@ export function PaycheckComparison({
           {!paycheck && (
             <>
               {uploadState.status === "error" && (
-                <div className="rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950">
-                  <div className="flex items-start gap-2">
-                    <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-red-600 dark:text-red-400" />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-red-800 dark:text-red-200">
-                        Kunne ikke indlæse lønseddel
-                      </p>
-                      <p className="text-xs text-red-700 dark:text-red-300">
-                        {uploadState.message}
-                      </p>
-                    </div>
-                    <button
-                      onClick={dismiss}
-                      className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-200"
-                    >
-                      <XIcon className="size-4" />
-                    </button>
-                  </div>
-                </div>
+                <InlineNotification
+                  className="max-w-full"
+                  kind="error"
+                  lowContrast
+                  title="Kunne ikke indlæse lønseddel"
+                  subtitle={uploadState.message}
+                  onCloseButtonClick={dismiss}
+                />
               )}
 
               <div
@@ -269,7 +285,7 @@ export function PaycheckComparison({
                   <>
                     <div className="size-5 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
                     <p className="text-sm text-muted-foreground">
-                      Indlæser lønseddel...
+                      {uploadState.message ?? "Indlæser lønseddel..."}
                     </p>
                   </>
                 ) : (
@@ -308,27 +324,18 @@ export function PaycheckComparison({
           {paycheck && comparison && (
             <>
               {/* Success banner */}
-              <div className="rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-950">
-                <div className="flex items-start gap-2">
-                  <CheckCircleIcon className="mt-0.5 size-4 shrink-0 text-green-600 dark:text-green-400" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-green-800 dark:text-green-200">
-                      Lønseddel indlæst
-                    </p>
-                    <p className="text-xs text-green-700 dark:text-green-300">
-                      {paycheck.payPeriod.from} til {paycheck.payPeriod.to}
-                      {uploadState.status === "success" &&
-                        ` — ${uploadState.parseResult.fieldsFound.length} felter fundet`}
-                    </p>
-                  </div>
-                  <button
-                    onClick={dismiss}
-                    className="text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-200"
-                  >
-                    <XIcon className="size-4" />
-                  </button>
-                </div>
-              </div>
+              <InlineNotification
+                className="max-w-full"
+                kind="success"
+                lowContrast
+                title="Lønseddel indlæst"
+                subtitle={`${paycheck.payPeriod.from} til ${paycheck.payPeriod.to}${
+                  uploadState.status === "success"
+                    ? ` — ${uploadState.parseResult.fieldsFound.length} felter fundet`
+                    : ""
+                }`}
+                onCloseButtonClick={dismiss}
+              />
 
               {/* Summary KPIs */}
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -342,42 +349,40 @@ export function PaycheckComparison({
                 </div>
                 <div>
                   <p className="text-muted-foreground text-xs">
-                    Forventet skat (YTD)
+                    Forventet skat (år, din indkomst)
                   </p>
                   <p className="text-lg font-bold">
-                    {formatDKK(comparison.ytdTaxExpected)}
+                    {formatDKK(comparison.expectedAnnualIncomeTax)}
                   </p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground text-xs">Forskel</p>
-                  <p
-                    className={`text-lg font-bold ${
-                      comparison.ytdTaxDifference > 0
-                        ? "text-red-600 dark:text-red-400"
-                        : comparison.ytdTaxDifference < 0
-                          ? "text-green-600 dark:text-green-400"
-                          : ""
-                    }`}
-                  >
-                    {comparison.ytdTaxDifference >= 0 ? "+" : ""}
-                    {formatDKK(comparison.ytdTaxDifference)}
+                  <p className="text-muted-foreground text-xs">
+                    Forskudsopgørelse (skat/år)
+                  </p>
+                  <p className="text-lg font-bold">
+                    {formatDKK(comparison.calculatedAnnualTax)}
                   </p>
                 </div>
                 <div>
                   <p className="text-muted-foreground text-xs">Status</p>
+                  {/* Driven by the estimated year-end restskat (actual income),
+                      so it agrees with the restskat figure shown further down. */}
                   <p
-                    className={`text-sm font-semibold ${
-                      comparison.ytdTaxDifference > 1000
-                        ? "text-red-600 dark:text-red-400"
-                        : comparison.ytdTaxDifference < -1000
-                          ? "text-green-600 dark:text-green-400"
-                          : "text-muted-foreground"
+                    className={`text-lg font-bold ${
+                      comparison.estimatedRestskat > 1000
+                        ? "text-error"
+                        : comparison.estimatedRestskat < -1000
+                          ? "text-success"
+                          : ""
                     }`}
                   >
-                    {comparison.ytdTaxDifference > 1000
-                      ? "Overbetaler skat"
-                      : comparison.ytdTaxDifference < -1000
-                        ? "Underbetaler skat"
+                    {formatDKK(Math.abs(comparison.estimatedRestskat))}
+                  </p>
+                  <p className="text-muted-foreground text-xs">
+                    {comparison.estimatedRestskat > 1000
+                      ? "Skylder restskat"
+                      : comparison.estimatedRestskat < -1000
+                        ? "Får penge tilbage"
                         : "Ca. som forventet"}
                   </p>
                 </div>
@@ -400,13 +405,14 @@ export function PaycheckComparison({
                   <h3 className="text-sm font-medium">
                     Forventede ændringer resten af året
                   </h3>
-                  <button
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    renderIcon={Add}
                     onClick={addAdjustment}
-                    className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
-                    <PlusIcon className="size-3" />
                     Tilføj
-                  </button>
+                  </Button>
                 </div>
                 <p className="mb-3 text-xs text-muted-foreground">
                   Forventer du bonus, lønstigning, eller andre ændringer? Tilføj
@@ -418,30 +424,44 @@ export function PaycheckComparison({
                     {adjustments.map((adj) => (
                       <div
                         key={adj.id}
-                        className="flex items-end gap-2 rounded-md border bg-muted/30 p-2"
+                        className="flex flex-wrap items-end gap-2 border bg-muted/30 p-2"
                       >
-                        <div className="min-w-0 flex-1">
-                          <label className="mb-1 block text-xs text-muted-foreground">
-                            Beskrivelse
-                          </label>
-                          <Input
-                            type="text"
-                            placeholder="F.eks. Bonus, lønstigning..."
+                        <div className="min-w-[8rem] flex-1">
+                          <TextInput
+                            id={`adj-label-${adj.id}`}
+                            size="sm"
+                            labelText="Beskrivelse"
+                            placeholder="F.eks. Bonus, ekstra pension..."
                             value={adj.label}
                             onChange={(e) =>
                               updateAdjustment(adj.id, "label", e.target.value)
                             }
-                            className="h-8 text-sm"
                           />
                         </div>
+                        <div className="w-40 shrink-0">
+                          <Select
+                            id={`adj-type-${adj.id}`}
+                            size="sm"
+                            labelText="Type"
+                            value={adj.type ?? "income"}
+                            onChange={(e) =>
+                              updateAdjustment(adj.id, "type", e.target.value)
+                            }
+                          >
+                            <SelectItem value="income" text="Ekstra indkomst" />
+                            <SelectItem value="pension" text="Ekstra pension" />
+                            <SelectItem value="deduction" text="Andet fradrag" />
+                          </Select>
+                        </div>
                         <div className="w-28 shrink-0">
-                          <label className="mb-1 block text-xs text-muted-foreground">
-                            Beløb (kr.)
-                          </label>
-                          <Input
+                          <TextInput
+                            id={`adj-amount-${adj.id}`}
                             type="number"
+                            size="sm"
+                            labelText="Beløb (kr.)"
                             placeholder="0"
                             value={adj.amount || ""}
+                            min={0}
                             onChange={(e) =>
                               updateAdjustment(
                                 adj.id,
@@ -449,15 +469,13 @@ export function PaycheckComparison({
                                 Math.round(parseFloat(e.target.value) || 0)
                               )
                             }
-                            className="h-8 text-right text-sm"
-                            min={0}
                           />
                         </div>
-                        <div className="w-20 shrink-0">
-                          <label className="mb-1 block text-xs text-muted-foreground">
-                            Måned
-                          </label>
-                          <select
+                        <div className="w-24 shrink-0">
+                          <Select
+                            id={`adj-month-${adj.id}`}
+                            size="sm"
+                            labelText="Måned"
                             value={adj.month}
                             onChange={(e) =>
                               updateAdjustment(
@@ -466,48 +484,62 @@ export function PaycheckComparison({
                                 parseInt(e.target.value, 10)
                               )
                             }
-                            className="h-8 w-full rounded-md border bg-background px-2 text-sm"
                           >
                             {MONTH_OPTIONS.filter(
                               (m) => m.value > (paycheck?.month ?? 0)
                             ).map((m) => (
-                              <option key={m.value} value={m.value}>
-                                {m.label}
-                              </option>
+                              <SelectItem
+                                key={m.value}
+                                value={m.value}
+                                text={m.label}
+                              />
                             ))}
-                          </select>
+                          </Select>
                         </div>
-                        <button
+                        <Button
+                          kind="danger--ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={TrashCan}
+                          iconDescription="Fjern"
                           onClick={() => removeAdjustment(adj.id)}
-                          className="mb-0.5 shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          title="Fjern"
-                        >
-                          <Trash2Icon className="size-4" />
-                        </button>
+                        />
                       </div>
                     ))}
                     {adjustments.some((a) => a.amount > 0) && (
                       <p className="text-xs text-muted-foreground">
-                        Samlet forventet ekstra indkomst:{" "}
-                        <span className="font-medium text-foreground">
-                          {formatDKK(
-                            adjustments.reduce((s, a) => s + a.amount, 0)
-                          )}
-                        </span>{" "}
-                        — inkluderet i fremskrivningen ovenfor.
+                        {(() => {
+                          const inc = adjustments
+                            .filter((a) => (a.type ?? "income") === "income")
+                            .reduce((s, a) => s + a.amount, 0)
+                          const red = adjustments
+                            .filter((a) => (a.type ?? "income") !== "income")
+                            .reduce((s, a) => s + a.amount, 0)
+                          const parts: string[] = []
+                          if (inc > 0) parts.push(`ekstra indkomst ${formatDKK(inc)}`)
+                          if (red > 0)
+                            parts.push(`ekstra pension/fradrag ${formatDKK(red)}`)
+                          return (
+                            <>
+                              Forventet {parts.join(" og ")} — inkluderet i
+                              fremskrivningen ovenfor.
+                            </>
+                          )
+                        })()}
                       </p>
                     )}
                   </div>
                 )}
 
                 {adjustments.length === 0 && (
-                  <button
+                  <Button
+                    kind="tertiary"
+                    size="sm"
+                    renderIcon={Add}
                     onClick={addAdjustment}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-muted-foreground/25 p-3 text-xs text-muted-foreground hover:border-muted-foreground/50 hover:bg-muted/50"
                   >
-                    <PlusIcon className="size-3.5" />
                     Tilføj bonus, lønstigning eller anden ændring
-                  </button>
+                  </Button>
                 )}
               </div>
 
@@ -549,7 +581,7 @@ export function PaycheckComparison({
                               </span>
                             </div>
                           </div>
-                          <p className="mt-1.5 text-xs text-amber-700 dark:text-amber-400">
+                          <p className="text-warning mt-1.5 text-xs">
                             {d.suggestion}
                           </p>
                         </div>
@@ -563,13 +595,7 @@ export function PaycheckComparison({
                       const isSignificant = Math.abs(restskat) > 500
                       if (!isSignificant) return null
                       return (
-                        <div
-                          className={`mt-3 rounded-md border p-3 ${
-                            isOwing
-                              ? "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950"
-                              : "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950"
-                          }`}
-                        >
+                        <div className="mt-3 border bg-muted/50 p-3">
                           <p className="text-sm font-medium">
                             {isOwing
                               ? "Forventet restskat ved årsopgørelsen"
@@ -577,9 +603,7 @@ export function PaycheckComparison({
                           </p>
                           <p
                             className={`text-lg font-bold ${
-                              isOwing
-                                ? "text-red-600 dark:text-red-400"
-                                : "text-green-600 dark:text-green-400"
+                              isOwing ? "text-error" : "text-success"
                             }`}
                           >
                             ca. {formatDKK(Math.abs(restskat))}
@@ -602,38 +626,53 @@ export function PaycheckComparison({
                 <h3 className="mb-2 text-sm font-medium">
                   Årlig fremskrivning
                 </h3>
-                <div className="grid grid-cols-3 gap-4 text-sm">
+                <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-3">
                   <div>
                     <p className="text-muted-foreground text-xs">
-                      Fremskrevet indkomst
+                      Forventet årsindkomst
                     </p>
                     <p className="font-semibold">
                       {formatDKK(comparison.projectedAnnualIncome)}
                     </p>
                     <p className="text-muted-foreground text-xs">
-                      vs. {formatDKK(comparison.calculatedAnnualIncome)}
+                      registreret: {formatDKK(comparison.calculatedAnnualIncome)}
                     </p>
                   </div>
                   <div>
                     <p className="text-muted-foreground text-xs">
-                      Fremskrevet skat
+                      Skat + AM (din indkomst)
                     </p>
                     <p className="font-semibold">
-                      {formatDKK(comparison.projectedAnnualTax)}
+                      {formatDKK(
+                        comparison.expectedAnnualIncomeTax +
+                          comparison.projectedAnnualAm
+                      )}
                     </p>
                     <p className="text-muted-foreground text-xs">
-                      vs. {formatDKK(comparison.calculatedAnnualTax)}
+                      forskudsopgørelse:{" "}
+                      {formatDKK(
+                        comparison.calculatedAnnualTax +
+                          comparison.calculatedAnnualAm
+                      )}
                     </p>
                   </div>
                   <div>
                     <p className="text-muted-foreground text-xs">
-                      Fremskrevet AM
+                      {comparison.estimatedRestskat >= 0
+                        ? "Forventet restskat"
+                        : "Forventet overskydende skat"}
                     </p>
-                    <p className="font-semibold">
-                      {formatDKK(comparison.projectedAnnualAm)}
+                    <p
+                      className={`font-semibold ${
+                        comparison.estimatedRestskat > 0
+                          ? "text-error"
+                          : "text-success"
+                      }`}
+                    >
+                      {formatDKK(Math.abs(comparison.estimatedRestskat))}
                     </p>
                     <p className="text-muted-foreground text-xs">
-                      vs. {formatDKK(comparison.calculatedAnnualAm)}
+                      forskudsopgørelse + restskat = forventet
                     </p>
                   </div>
                 </div>
@@ -642,17 +681,14 @@ export function PaycheckComparison({
               {/* OpenAI prompt */}
               <Separator />
               <div>
-                <button
+                <Button
+                  kind="ghost"
+                  size="sm"
+                  renderIcon={showPrompt ? ChevronUp : ChevronDown}
                   onClick={() => setShowPrompt(!showPrompt)}
-                  className="flex w-full items-center justify-between text-sm font-medium"
                 >
-                  <span>AI-optimeringsforslag</span>
-                  {showPrompt ? (
-                    <ChevronUpIcon className="size-4" />
-                  ) : (
-                    <ChevronDownIcon className="size-4" />
-                  )}
-                </button>
+                  AI-optimeringsforslag
+                </Button>
                 {showPrompt && prompt && (
                   <div className="mt-2 space-y-2">
                     <p className="text-muted-foreground text-xs">
@@ -660,22 +696,25 @@ export function PaycheckComparison({
                       få forslag til ændringer i din forskudsopgørelse.
                     </p>
                     <div className="relative">
-                      <textarea
+                      <TextArea
+                        id={promptFieldId}
+                        labelText="AI-prompt"
+                        hideLabel
                         readOnly
+                        rows={8}
                         value={prompt}
-                        className="h-48 w-full resize-y rounded-md border bg-muted/50 p-3 font-mono text-xs"
+                        className="font-mono"
                       />
-                      <button
-                        onClick={copyPrompt}
-                        className="absolute right-2 top-2 rounded-md border bg-background p-1.5 text-muted-foreground hover:text-foreground"
-                        title="Kopiér til udklipsholder"
-                      >
-                        {copied ? (
-                          <CheckIcon className="size-4 text-green-600" />
-                        ) : (
-                          <CopyIcon className="size-4" />
-                        )}
-                      </button>
+                      <div className="absolute right-2 top-2">
+                        <Button
+                          kind="ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={copied ? Checkmark : Copy}
+                          iconDescription="Kopiér til udklipsholder"
+                          onClick={copyPrompt}
+                        />
+                      </div>
                     </div>
                   </div>
                 )}

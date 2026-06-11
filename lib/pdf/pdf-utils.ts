@@ -181,3 +181,83 @@ export async function extractTextFromPDF(file: File): Promise<string[]> {
 
   return allLines
 }
+
+/**
+ * Extract text from an image-only PDF (no text layer) via OCR.
+ *
+ * Each page is rendered to a canvas and passed to Tesseract.js. We reconstruct
+ * lines from the word-level bounding boxes the same way extractTextFromPDF does
+ * for native text — joining words on a row and inserting a double space where the
+ * horizontal gap is wide (column boundary) — so the downstream paycheck parser
+ * sees the same "label  value  value" layout regardless of the text source.
+ *
+ * Models are fetched from Tesseract's CDN on first use; the document image itself
+ * never leaves the browser.
+ */
+export async function extractTextFromPDFViaOCR(
+  file: File,
+  onProgress?: (fraction: number) => void
+): Promise<string[]> {
+  const pdfjsLib = await import("pdfjs-dist")
+  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+    "pdfjs-dist/build/pdf.worker.mjs",
+    import.meta.url
+  ).toString()
+
+  const { createWorker } = await import("tesseract.js")
+
+  const arrayBuffer = await file.arrayBuffer()
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+
+  const worker = await createWorker("dan+eng", 1, {
+    logger: onProgress
+      ? (m) => {
+          if (m.status === "recognizing text") onProgress(m.progress)
+        }
+      : undefined,
+  })
+
+  const allLines: string[] = []
+
+  try {
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i)
+      const viewport = page.getViewport({ scale: 3 })
+      const canvas = document.createElement("canvas")
+      canvas.width = viewport.width
+      canvas.height = viewport.height
+      const ctx = canvas.getContext("2d")
+      if (!ctx) continue
+      await page.render({ canvas, canvasContext: ctx, viewport }).promise
+
+      const { data } = await worker.recognize(canvas, {}, { blocks: true })
+
+      for (const block of data.blocks ?? []) {
+        for (const paragraph of block.paragraphs ?? []) {
+          for (const lineObj of paragraph.lines ?? []) {
+            const words = [...(lineObj.words ?? [])].sort(
+              (a, b) => a.bbox.x0 - b.bbox.x0
+            )
+            if (words.length === 0) continue
+            const lineHeight = Math.max(
+              ...words.map((w) => w.bbox.y1 - w.bbox.y0)
+            )
+            let line = ""
+            for (let j = 0; j < words.length; j++) {
+              if (j > 0) {
+                const gap = words[j].bbox.x0 - words[j - 1].bbox.x1
+                line += gap > lineHeight ? "  " : " "
+              }
+              line += words[j].text
+            }
+            if (line.trim()) allLines.push(line.trim())
+          }
+        }
+      }
+    }
+  } finally {
+    await worker.terminate()
+  }
+
+  return allLines
+}

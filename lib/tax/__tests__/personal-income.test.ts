@@ -33,10 +33,20 @@ describe("Personal income", () => {
     expect(result.personalIncome).toBe(460000)
   })
 
-  it("employer pension adds to personal income", () => {
+  it("employer pension is NOT added to personal income (bortseelse, paid on top of A-indkomst)", () => {
     const result = calcPI({ workIncome: 500000, employerPension: 5000 })
-    // 500k - 40k AM + 5k employer pension = 465k
-    expect(result.personalIncome).toBe(465000)
+    // 500k - 40k AM, employer pension neither added nor subtracted = 460k
+    expect(result.personalIncome).toBe(460000)
+    // but it qualifies for ekstra pensionsfradrag
+    expect(result.ekstraPensionBasis).toBe(5000)
+  })
+
+  it("employee pension reduces personal income (bortseelse) and feeds ekstra pensionsfradrag", () => {
+    const result = calcPI({ workIncome: 500000, employeePension: 50000 })
+    // A-indkomst (500k) does not net out pension, so the employee's own
+    // contribution is subtracted: 500k - 40k AM - 50k pension = 410k
+    expect(result.personalIncome).toBe(410000)
+    expect(result.ekstraPensionBasis).toBe(50000)
   })
 
   it("2.8 - with transfer income (no AM)", () => {

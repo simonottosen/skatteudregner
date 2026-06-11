@@ -1,7 +1,8 @@
 "use client"
 
 import { useCallback, useRef, useState } from "react"
-import { UploadIcon, FileTextIcon, CheckCircleIcon, AlertCircleIcon, XIcon } from "lucide-react"
+import { UploadIcon, FileTextIcon } from "lucide-react"
+import { InlineNotification } from "@carbon/react"
 import type { ParseResult } from "@/lib/pdf/parse-forskudsopgoerelse"
 
 type UploadState =
@@ -100,56 +101,31 @@ export function PdfUpload({ onImport }: PdfUploadProps) {
 
   if (state.status === "success") {
     return (
-      <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-950">
-        <div className="flex items-start gap-2">
-          <CheckCircleIcon className="mt-0.5 size-4 shrink-0 text-green-600 dark:text-green-400" />
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-green-800 dark:text-green-200">
-              Forskudsopgørelse indlæst
-            </p>
-            <p className="text-xs text-green-700 dark:text-green-300">
-              {state.result.fieldsFound.length} felter udfyldt automatisk
-            </p>
-            {state.result.warnings.length > 0 && (
-              <ul className="mt-1 text-xs text-green-600 dark:text-green-400">
-                {state.result.warnings.map((w, i) => (
-                  <li key={i}>{w}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <button
-            onClick={dismiss}
-            className="text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-200"
-          >
-            <XIcon className="size-4" />
-          </button>
-        </div>
-      </div>
+      <InlineNotification
+        className="mb-4 max-w-full"
+        kind="success"
+        lowContrast
+        title="Forskudsopgørelse indlæst"
+        subtitle={`${state.result.fieldsFound.length} felter udfyldt automatisk${
+          state.result.warnings.length > 0
+            ? ` — ${state.result.warnings.join("; ")}`
+            : ""
+        }`}
+        onCloseButtonClick={dismiss}
+      />
     )
   }
 
   if (state.status === "error") {
     return (
-      <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950">
-        <div className="flex items-start gap-2">
-          <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-red-600 dark:text-red-400" />
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-red-800 dark:text-red-200">
-              Kunne ikke indlæse forskudsopgørelse
-            </p>
-            <p className="text-xs text-red-700 dark:text-red-300">
-              {state.message}
-            </p>
-          </div>
-          <button
-            onClick={dismiss}
-            className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-200"
-          >
-            <XIcon className="size-4" />
-          </button>
-        </div>
-      </div>
+      <InlineNotification
+        className="mb-4 max-w-full"
+        kind="error"
+        lowContrast
+        title="Kunne ikke indlæse forskudsopgørelse"
+        subtitle={state.message}
+        onCloseButtonClick={dismiss}
+      />
     )
   }
 

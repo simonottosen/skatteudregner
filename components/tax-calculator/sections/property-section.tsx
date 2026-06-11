@@ -1,8 +1,7 @@
 "use client"
 
 import { useRef } from "react"
-import { Switch } from "@/components/ui/switch"
-import { Label } from "@/components/ui/label"
+import { Toggle } from "@carbon/react"
 import { NumberInput } from "../number-input"
 import { MunicipalitySelect } from "../municipality-select"
 import type { TaxInput } from "@/lib/tax/types"
@@ -37,16 +36,11 @@ function PropertyFields({
   return (
     <div className="space-y-3">
       {showMunicipality && "municipality" in property && (
-        <div className="space-y-1">
-          <Label className="text-xs">Kommune (sommerhus)</Label>
-          <MunicipalitySelect
-            value={(property as { municipality: string }).municipality}
-            onChange={(v) =>
-              setPropertyField(propertyKey, "municipality", v)
-            }
-            year={year}
-          />
-        </div>
+        <MunicipalitySelect
+          value={(property as { municipality: string }).municipality}
+          onChange={(v) => setPropertyField(propertyKey, "municipality", v)}
+          year={year}
+        />
       )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <NumberInput
@@ -64,25 +58,27 @@ function PropertyFields({
           }
         />
       </div>
-      <div className="flex flex-wrap gap-4">
-        <div className="flex items-center gap-2">
-          <Switch
-            checked={property.purchasedBefore19980701}
-            onCheckedChange={(v) =>
-              setPropertyField(propertyKey, "purchasedBefore19980701", v)
-            }
-          />
-          <Label className="text-xs">Købt før 1. juli 1998</Label>
-        </div>
-        <div className="flex items-center gap-2">
-          <Switch
-            checked={property.isCondo}
-            onCheckedChange={(v) =>
-              setPropertyField(propertyKey, "isCondo", v)
-            }
-          />
-          <Label className="text-xs">Ejerlejlighed/fredet</Label>
-        </div>
+      <div className="flex flex-wrap gap-6">
+        <Toggle
+          id={`${propertyKey}-purchasedBefore`}
+          size="sm"
+          hideLabel
+          labelText="Købt før 1. juli 1998"
+          toggled={property.purchasedBefore19980701}
+          onToggle={(checked) =>
+            setPropertyField(propertyKey, "purchasedBefore19980701", checked)
+          }
+        />
+        <Toggle
+          id={`${propertyKey}-isCondo`}
+          size="sm"
+          hideLabel
+          labelText="Ejerlejlighed/fredet"
+          toggled={property.isCondo}
+          onToggle={(checked) =>
+            setPropertyField(propertyKey, "isCondo", checked)
+          }
+        />
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <NumberInput
@@ -116,19 +112,22 @@ export function PropertySection({
 
   return (
     <div className="space-y-4">
-      <div ref={propertySwitchRef} className="flex items-center gap-2">
-        <Switch
-          checked={!!input.property}
-          onCheckedChange={(v) => {
-            toggleProperty("property", v)
-            if (v) {
+      <div ref={propertySwitchRef}>
+        <Toggle
+          id="enable-property"
+          size="sm"
+          hideLabel
+          labelText="Helårsbolig"
+          toggled={!!input.property}
+          onToggle={(checked) => {
+            toggleProperty("property", checked)
+            if (checked) {
               setTimeout(() => {
                 propertySwitchRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
               }, 50)
             }
           }}
         />
-        <Label className="text-sm font-medium">Helårsbolig</Label>
       </div>
       {input.property && (
         <PropertyFields
@@ -139,19 +138,22 @@ export function PropertySection({
         />
       )}
 
-      <div ref={summerSwitchRef} className="flex items-center gap-2">
-        <Switch
-          checked={!!input.summerHouse}
-          onCheckedChange={(v) => {
-            toggleProperty("summerHouse", v)
-            if (v) {
+      <div ref={summerSwitchRef}>
+        <Toggle
+          id="enable-summerhouse"
+          size="sm"
+          hideLabel
+          labelText="Sommerhus"
+          toggled={!!input.summerHouse}
+          onToggle={(checked) => {
+            toggleProperty("summerHouse", checked)
+            if (checked) {
               setTimeout(() => {
                 summerSwitchRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
               }, 50)
             }
           }}
         />
-        <Label className="text-sm font-medium">Sommerhus</Label>
       </div>
       {input.summerHouse && (
         <PropertyFields

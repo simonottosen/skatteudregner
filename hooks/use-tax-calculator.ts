@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useReducer } from "react"
+import { useCallback, useMemo, useReducer } from "react"
 import type { TaxInput, TaxResult, PropertyInput } from "@/lib/tax/types"
 import { createDefaultInput } from "@/lib/tax/defaults"
 import { calculateTax } from "@/lib/tax/calculator"
@@ -10,6 +10,7 @@ type TaxAction =
   | { type: "SET_PROPERTY_FIELD"; property: "property" | "summerHouse"; field: string; value: unknown }
   | { type: "TOGGLE_PROPERTY"; property: "property" | "summerHouse"; enabled: boolean }
   | { type: "IMPORT"; data: Omit<Partial<TaxInput>, "property" | "summerHouse"> & { property?: Partial<PropertyInput> } }
+  | { type: "HYDRATE"; input: TaxInput }
   | { type: "RESET" }
 
 function taxReducer(state: TaxInput, action: TaxAction): TaxInput {
@@ -70,6 +71,8 @@ function taxReducer(state: TaxInput, action: TaxAction): TaxInput {
 
       return newState
     }
+    case "HYDRATE":
+      return action.input
     case "RESET":
       return createDefaultInput()
     default:
@@ -88,30 +91,44 @@ export function useTaxCalculator() {
     }
   }, [input])
 
-  const setField = <K extends keyof TaxInput>(field: K, value: TaxInput[K]) => {
-    dispatch({ type: "SET_FIELD", field, value })
-  }
+  const setField = useCallback(
+    <K extends keyof TaxInput>(field: K, value: TaxInput[K]) => {
+      dispatch({ type: "SET_FIELD", field, value })
+    },
+    []
+  )
 
-  const setPropertyField = (
-    property: "property" | "summerHouse",
-    field: string,
-    value: unknown,
-  ) => {
-    dispatch({ type: "SET_PROPERTY_FIELD", property, field, value })
-  }
+  const setPropertyField = useCallback(
+    (property: "property" | "summerHouse", field: string, value: unknown) => {
+      dispatch({ type: "SET_PROPERTY_FIELD", property, field, value })
+    },
+    []
+  )
 
-  const toggleProperty = (
-    property: "property" | "summerHouse",
-    enabled: boolean,
-  ) => {
-    dispatch({ type: "TOGGLE_PROPERTY", property, enabled })
-  }
+  const toggleProperty = useCallback(
+    (property: "property" | "summerHouse", enabled: boolean) => {
+      dispatch({ type: "TOGGLE_PROPERTY", property, enabled })
+    },
+    []
+  )
 
-  const importData = (data: Omit<Partial<TaxInput>, "property" | "summerHouse"> & { property?: Partial<PropertyInput> }) => {
-    dispatch({ type: "IMPORT", data })
-  }
+  const importData = useCallback(
+    (
+      data: Omit<Partial<TaxInput>, "property" | "summerHouse"> & {
+        property?: Partial<PropertyInput>
+      }
+    ) => {
+      dispatch({ type: "IMPORT", data })
+    },
+    []
+  )
 
-  const reset = () => dispatch({ type: "RESET" })
+  const hydrate = useCallback(
+    (next: TaxInput) => dispatch({ type: "HYDRATE", input: next }),
+    []
+  )
 
-  return { input, result, setField, setPropertyField, toggleProperty, importData, reset }
+  const reset = useCallback(() => dispatch({ type: "RESET" }), [])
+
+  return { input, result, setField, setPropertyField, toggleProperty, importData, hydrate, reset }
 }

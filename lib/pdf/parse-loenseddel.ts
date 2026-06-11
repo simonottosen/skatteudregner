@@ -3,6 +3,7 @@ import {
   normalizeDanish,
   parseDanishDecimal,
   extractTextFromPDF,
+  extractTextFromPDFViaOCR,
 } from "./pdf-utils"
 
 /**
@@ -440,8 +441,14 @@ function extractPaycheckFields(
  * Parse a lønseddel PDF and extract paycheck data.
  * All processing happens client-side — the file never leaves the browser.
  */
+export interface ParseLoenseddelOptions {
+  /** Called with OCR progress (0–1) while reading a scanned, image-only PDF. */
+  onOcrProgress?: (fraction: number) => void
+}
+
 export async function parseLoenseddel(
-  file: File
+  file: File,
+  options: ParseLoenseddelOptions = {}
 ): Promise<PaycheckParseResult> {
   let lines: string[]
   try {
@@ -450,6 +457,29 @@ export async function parseLoenseddel(
     return {
       data: null,
       warnings: ["Kunne ikke læse PDF-filen. Kontroller at det er en gyldig lønseddel."],
+      fieldsFound: [],
+    }
+  }
+
+  // No text layer — likely a scanned/image-only PDF. Fall back to OCR.
+  if (lines.length === 0) {
+    try {
+      lines = await extractTextFromPDFViaOCR(file, options.onOcrProgress)
+    } catch {
+      return {
+        data: null,
+        warnings: ["Kunne ikke læse PDF-filen. Kontroller at det er en gyldig lønseddel."],
+        fieldsFound: [],
+      }
+    }
+  }
+
+  if (lines.length === 0) {
+    return {
+      data: null,
+      warnings: [
+        "PDF'en indeholder ingen tekst — den ser ud til at være et scannet billede. Upload en tekst-baseret lønseddel.",
+      ],
       fieldsFound: [],
     }
   }

@@ -1,12 +1,6 @@
 "use client"
 
-import { useCallback } from "react"
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion"
+import { Accordion, AccordionItem } from "@carbon/react"
 import { PdfUpload } from "./pdf-upload"
 import { PersonalInfoSection } from "./sections/personal-info-section"
 import { IncomeSection } from "./sections/income-section"
@@ -38,83 +32,39 @@ export function TaxForm({
   toggleProperty,
   onImport,
 }: TaxFormProps) {
-  const scrollIntoView = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
-    const trigger = e.currentTarget
-    const isExpanding = trigger.getAttribute("data-state") === "closed"
-    if (isExpanding) {
-      setTimeout(() => {
-        trigger.scrollIntoView({ behavior: "smooth", block: "start" })
-      }, 150)
-    }
-  }, [])
-
   return (
     <>
-    <PdfUpload onImport={onImport} />
-    <Accordion
-      type="multiple"
-      defaultValue={["personal", "income"]}
-      className="w-full"
-    >
-      <AccordionItem value="personal">
-        <AccordionTrigger className="text-sm font-medium" onClick={scrollIntoView}>
-          Personlige oplysninger
-        </AccordionTrigger>
-        <AccordionContent>
+      <PdfUpload onImport={onImport} />
+      <Accordion>
+        <AccordionItem title="Personlige oplysninger" open>
           <PersonalInfoSection input={input} setField={setField} />
-        </AccordionContent>
-      </AccordionItem>
+        </AccordionItem>
 
-      <AccordionItem value="income">
-        <AccordionTrigger className="text-sm font-medium" onClick={scrollIntoView}>
-          Indkomst
-        </AccordionTrigger>
-        <AccordionContent>
+        <AccordionItem title="Indkomst" open>
           <IncomeSection input={input} setField={setField} />
-        </AccordionContent>
-      </AccordionItem>
+        </AccordionItem>
 
-      <AccordionItem value="deductions">
-        <AccordionTrigger className="text-sm font-medium" onClick={scrollIntoView}>
-          Pension og fradrag
-        </AccordionTrigger>
-        <AccordionContent>
+        <AccordionItem title="Pension og fradrag">
           <DeductionsSection input={input} setField={setField} />
-        </AccordionContent>
-      </AccordionItem>
+        </AccordionItem>
 
-      <AccordionItem value="capital">
-        <AccordionTrigger className="text-sm font-medium" onClick={scrollIntoView}>
-          Kapitalindkomst
-        </AccordionTrigger>
-        <AccordionContent>
+        <AccordionItem title="Kapitalindkomst">
           <CapitalIncomeSection input={input} setField={setField} />
-        </AccordionContent>
-      </AccordionItem>
+        </AccordionItem>
 
-      <AccordionItem value="stocks">
-        <AccordionTrigger className="text-sm font-medium" onClick={scrollIntoView}>
-          Aktieindkomst
-        </AccordionTrigger>
-        <AccordionContent>
+        <AccordionItem title="Aktieindkomst">
           <StockIncomeSection input={input} setField={setField} />
-        </AccordionContent>
-      </AccordionItem>
+        </AccordionItem>
 
-      <AccordionItem value="property">
-        <AccordionTrigger className="text-sm font-medium" onClick={scrollIntoView}>
-          Bolig
-        </AccordionTrigger>
-        <AccordionContent>
+        <AccordionItem title="Bolig">
           <PropertySection
             input={input}
             setField={setField}
             setPropertyField={setPropertyField}
             toggleProperty={toggleProperty}
           />
-        </AccordionContent>
-      </AccordionItem>
-    </Accordion>
+        </AccordionItem>
+      </Accordion>
     </>
   )
 }

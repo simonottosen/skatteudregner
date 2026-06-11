@@ -1,13 +1,8 @@
 "use client"
 
+import { Accordion, AccordionItem } from "@carbon/react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion"
 import { formatDKK, formatPercent } from "@/lib/format"
 import type { TaxResult } from "@/lib/tax/types"
 
@@ -33,9 +28,7 @@ function ResultLine({
       className={`flex justify-between text-sm ${bold ? "font-semibold" : ""}`}
     >
       <span>{label}</span>
-      <span className={value < 0 ? "text-green-600 dark:text-green-400" : ""}>
-        {display}
-      </span>
+      <span className={value < 0 ? "text-success" : ""}>{display}</span>
     </div>
   )
 }
@@ -45,8 +38,8 @@ export function TaxResults({ result }: TaxResultsProps) {
 
   return (
     <div className="space-y-4">
-      <div className="lg:sticky lg:top-4 lg:z-10">
-      <Card>
+      <div className="lg:sticky lg:top-16 lg:z-10">
+      <Card className="border-t-4 border-[var(--cds-border-interactive)]">
         <CardHeader className="pb-3">
           <CardTitle className="text-lg">Resultat</CardTitle>
         </CardHeader>
@@ -54,11 +47,13 @@ export function TaxResults({ result }: TaxResultsProps) {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <p className="text-muted-foreground text-xs">Bruttoindkomst</p>
-              <p className="text-xl font-bold">{formatDKK(grossIncome)}</p>
+              <p className="text-link text-xl font-bold">
+                {formatDKK(grossIncome)}
+              </p>
             </div>
             <div>
               <p className="text-muted-foreground text-xs">Nettoindkomst</p>
-              <p className="text-xl font-bold text-green-600 dark:text-green-400">
+              <p className="text-success text-xl font-bold">
                 {formatDKK(result.netIncome)}
               </p>
             </div>
@@ -86,12 +81,9 @@ export function TaxResults({ result }: TaxResultsProps) {
       </Card>
       </div>
 
-      <Accordion type="multiple" defaultValue={["income-tax"]} className="w-full">
-        <AccordionItem value="income-basis">
-          <AccordionTrigger className="text-sm">
-            Indkomstgrundlag
-          </AccordionTrigger>
-          <AccordionContent className="space-y-1">
+      <Accordion>
+        <AccordionItem title="Indkomstgrundlag">
+          <div className="space-y-1">
             <ResultLine label="AM-bidragspligtig indkomst" value={result.totalAmBasis} />
             <ResultLine label="Indkomst uden AM-bidrag" value={result.nonAmIncome} />
             <ResultLine label="AM-bidrag" value={result.amBidrag} negative />
@@ -114,14 +106,11 @@ export function TaxResults({ result }: TaxResultsProps) {
                 value={result.totalCapitalIncome}
               />
             )}
-          </AccordionContent>
+          </div>
         </AccordionItem>
 
-        <AccordionItem value="deductions">
-          <AccordionTrigger className="text-sm">
-            Fradrag
-          </AccordionTrigger>
-          <AccordionContent className="space-y-1">
+        <AccordionItem title="Fradrag">
+          <div className="space-y-1">
             {result.beskaeftigelsesFradrag > 0 && (
               <ResultLine
                 label="Beskæftigelsesfradrag"
@@ -190,14 +179,11 @@ export function TaxResults({ result }: TaxResultsProps) {
               value={result.taxableIncome}
               bold
             />
-          </AccordionContent>
+          </div>
         </AccordionItem>
 
-        <AccordionItem value="income-tax">
-          <AccordionTrigger className="text-sm">
-            Indkomstskat
-          </AccordionTrigger>
-          <AccordionContent className="space-y-1">
+        <AccordionItem title="Indkomstskat" open>
+          <div className="space-y-1">
             <ResultLine label="AM-bidrag" value={result.amBidragTotal} />
             <ResultLine label="Bundskat" value={result.bundSkat} />
             {result.mellemSkat > 0 && (
@@ -235,15 +221,12 @@ export function TaxResults({ result }: TaxResultsProps) {
               value={result.totalIncomeTax}
               bold
             />
-          </AccordionContent>
+          </div>
         </AccordionItem>
 
         {result.totalStockTax > 0 && (
-          <AccordionItem value="stock-tax">
-            <AccordionTrigger className="text-sm">
-              Aktieskat
-            </AccordionTrigger>
-            <AccordionContent className="space-y-1">
+          <AccordionItem title="Aktieskat">
+            <div className="space-y-1">
               <ResultLine label="Aktieindkomst" value={result.stockIncome} />
               <ResultLine label="Skat (27%)" value={result.stockTaxLow} />
               {result.stockTaxHigh > 0 && (
@@ -262,16 +245,13 @@ export function TaxResults({ result }: TaxResultsProps) {
                 value={result.totalStockTax}
                 bold
               />
-            </AccordionContent>
+            </div>
           </AccordionItem>
         )}
 
         {result.totalPropertyTax > 0 && (
-          <AccordionItem value="property-tax">
-            <AccordionTrigger className="text-sm">
-              Boligskat
-            </AccordionTrigger>
-            <AccordionContent className="space-y-1">
+          <AccordionItem title="Boligskat">
+            <div className="space-y-1">
               {result.ejendomsvaerdiSkatPrimary > 0 && (
                 <ResultLine
                   label="Ejendomsværdiskat (helårsbolig)"
@@ -309,7 +289,7 @@ export function TaxResults({ result }: TaxResultsProps) {
                 value={result.totalPropertyTax}
                 bold
               />
-            </AccordionContent>
+            </div>
           </AccordionItem>
         )}
       </Accordion>

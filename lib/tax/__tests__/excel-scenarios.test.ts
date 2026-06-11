@@ -54,8 +54,10 @@ describe("Excel cross-verification scenarios", () => {
     expect(result.fradragBasis).toBe(630000)
     // Beskæftigelsesfradrag: min(12.75% * 630000, 63300) = 63300 (capped)
     expect(result.beskaeftigelsesFradrag).toBe(63300)
-    // Employer pension adds to personal income: 600000 - 48000 + 30000 = 582000
-    expect(result.personalIncome).toBe(582000)
+    // A-indkomst doesn't net out pension: employee pension (30000) is subtracted
+    // as bortseelse; employer pension is paid on top and not added.
+    // 600000 - 48000 AM - 30000 employee pension = 522000
+    expect(result.personalIncome).toBe(522000)
     expect(result.kirkeSkat).toBeGreaterThan(0)
     expect(result.netIncome + result.totalTax).toBeCloseTo(600000, 0)
   })

@@ -1,15 +1,7 @@
 "use client"
 
-import { Label } from "@/components/ui/label"
-import { Input } from "@/components/ui/input"
-import { Switch } from "@/components/ui/switch"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { useId } from "react"
+import { Select, SelectItem, Toggle, TextInput } from "@carbon/react"
 import { MunicipalitySelect } from "../municipality-select"
 import { NumberInput } from "../number-input"
 import type { TaxInput, TaxYear } from "@/lib/tax/types"
@@ -23,66 +15,64 @@ export function PersonalInfoSection({
   input,
   setField,
 }: PersonalInfoSectionProps) {
+  const yearId = useId()
+  const birthId = useId()
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-1">
-          <Label className="text-xs">Indkomstår</Label>
-          <Select
-            value={String(input.year)}
-            onValueChange={(v) => setField("year", Number(v) as TaxYear)}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="2024">2024</SelectItem>
-              <SelectItem value="2025">2025</SelectItem>
-              <SelectItem value="2026">2026</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1">
-          <Label className="text-xs">Kommune</Label>
-          <MunicipalitySelect
-            value={input.municipality}
-            onChange={(v) => setField("municipality", v)}
-            year={input.year}
-          />
-        </div>
+        <Select
+          id={yearId}
+          labelText="Indkomstår"
+          size="md"
+          value={String(input.year)}
+          onChange={(e) => setField("year", Number(e.target.value) as TaxYear)}
+        >
+          <SelectItem value="2024" text="2024" />
+          <SelectItem value="2025" text="2025" />
+          <SelectItem value="2026" text="2026" />
+        </Select>
+        <MunicipalitySelect
+          value={input.municipality}
+          onChange={(v) => setField("municipality", v)}
+          year={input.year}
+        />
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-1">
-          <Label className="text-xs">Fødselsdato</Label>
-          <Input
-            type="date"
-            value={input.birthDate}
-            onChange={(e) => setField("birthDate", e.target.value)}
+        <TextInput
+          id={birthId}
+          type="date"
+          size="md"
+          labelText="Fødselsdato"
+          value={input.birthDate}
+          onChange={(e) => setField("birthDate", e.target.value)}
+        />
+        <div className="flex flex-col gap-3 pt-6">
+          <Toggle
+            id="churchMember"
+            size="sm"
+            hideLabel
+            labelText="Medlem af folkekirken"
+            toggled={input.churchMember}
+            onToggle={(checked) => setField("churchMember", checked)}
           />
-        </div>
-        <div className="flex flex-col gap-3 pt-2">
-          <div className="flex items-center gap-2">
-            <Switch
-              checked={input.churchMember}
-              onCheckedChange={(v) => setField("churchMember", v)}
-            />
-            <Label className="text-xs">Medlem af folkekirken</Label>
-          </div>
-          <div className="flex items-center gap-2">
-            <Switch
-              checked={input.married}
-              onCheckedChange={(v) => setField("married", v)}
-            />
-            <Label className="text-xs">Gift</Label>
-          </div>
-          <div className="flex items-center gap-2">
-            <Switch
-              checked={input.singleParent}
-              onCheckedChange={(v) => setField("singleParent", v)}
-            />
-            <Label className="text-xs">Enlig forsørger</Label>
-          </div>
+          <Toggle
+            id="married"
+            size="sm"
+            hideLabel
+            labelText="Gift"
+            toggled={input.married}
+            onToggle={(checked) => setField("married", checked)}
+          />
+          <Toggle
+            id="singleParent"
+            size="sm"
+            hideLabel
+            labelText="Enlig forsørger"
+            toggled={input.singleParent}
+            onToggle={(checked) => setField("singleParent", checked)}
+          />
         </div>
       </div>
 
