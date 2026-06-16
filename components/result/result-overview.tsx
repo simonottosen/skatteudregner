@@ -21,7 +21,7 @@ import { useBudget } from "@/components/budget-provider"
 import { UNCATEGORIZED_ID } from "@/lib/budget/categories"
 import { formatDKK, formatPercent } from "@/lib/format"
 import { buildEconomyPrompt } from "@/lib/result/economy-prompt"
-import type { Slice, SankeyData } from "./result-charts"
+import type { Slice, SankeyData, SliceDetails } from "./result-charts"
 
 const ResultCharts = dynamic(
   () => import("./result-charts").then((m) => m.ResultCharts),
@@ -94,15 +94,19 @@ export function ResultOverview() {
       : budget.state.sharedItems
   const positiveExpenses = expenseItems.filter((i) => i.amount > 0)
 
-  // Per-category monthly totals (unknown category → catch-all).
+  // Per-category monthly totals + line items (unknown category → catch-all).
   const known = new Set(budget.state.categories.map((c) => c.id))
   const byCat = new Map<string, number>()
+  const itemsByCat = new Map<string, { label: string; amount: number }[]>()
   for (const it of positiveExpenses) {
     const cid = known.has(it.categoryId) ? it.categoryId : UNCATEGORIZED_ID
     byCat.set(cid, (byCat.get(cid) ?? 0) + it.amount)
+    const arr = itemsByCat.get(cid) ?? []
+    arr.push({ label: it.label, amount: it.amount })
+    itemsByCat.set(cid, arr)
   }
   const categoryTotals = budget.state.categories
-    .map((c) => ({ name: c.name, value: byCat.get(c.id) ?? 0 }))
+    .map((c) => ({ id: c.id, name: c.name, value: byCat.get(c.id) ?? 0 }))
     .filter((c) => c.value > 0)
 
   const taxSplit: Slice[] | null = hasTax
@@ -125,6 +129,21 @@ export function ResultOverview() {
   const categoryBars: Slice[] = [...categoryTotals]
     .sort((a, b) => b.value - a.value)
     .map((c) => ({ name: c.name, value: Math.round(c.value * mult) }))
+
+  // Line items per category (period-scaled), keyed by category name, for the
+  // clickable donut detail panel.
+  const categoryDetails: SliceDetails = {}
+  for (const c of categoryTotals) {
+    const items = itemsByCat.get(c.id) ?? []
+    if (items.length > 0) {
+      categoryDetails[c.name] = items
+        .map((it) => ({
+          label: it.label,
+          value: Math.round(it.amount * mult),
+        }))
+        .sort((a, b) => b.value - a.value)
+    }
+  }
 
   // Sankey flow: (brutto → skat + netto →) categories + til rådighed.
   const sankey: SankeyData | null = (() => {
@@ -175,6 +194,26 @@ export function ResultOverview() {
     source: cfg.incomeSource,
   }))
 
+  // Annual tax components (household), largest-relevant first, only > 0.
+  const sumResults = (f: (r: (typeof results)[number]) => number) =>
+    results.reduce((s, r) => s + f(r), 0)
+  const taxBreakdown = hasTax
+    ? [
+        { label: "AM-bidrag", yearly: sumResults((r) => r.amBidragTotal) },
+        { label: "Bundskat", yearly: sumResults((r) => r.bundSkat) },
+        {
+          label: "Topskat",
+          yearly: sumResults((r) => r.topSkat + r.topTopSkat),
+        },
+        { label: "Kommuneskat", yearly: sumResults((r) => r.kommuneSkat) },
+        { label: "Kirkeskat", yearly: sumResults((r) => r.kirkeSkat) },
+        { label: "Aktieskat", yearly: sumResults((r) => r.totalStockTax) },
+        { label: "Ejendomsskat", yearly: sumResults((r) => r.totalPropertyTax) },
+      ]
+        .map((t) => ({ label: t.label, yearly: Math.round(t.yearly) }))
+        .filter((t) => t.yearly > 0)
+    : undefined
+
   const economyPrompt = buildEconomyPrompt({
     mode,
     people: promptPeople,
@@ -186,9 +225,16 @@ export function ResultOverview() {
     budgetExpensesMonthly: budgetExpenses,
     remainingMonthly: remaining,
     savingsRate,
+    taxBreakdown,
     categories: [...categoryTotals]
       .sort((a, b) => b.value - a.value)
-      .map((c) => ({ name: c.name, monthly: c.value })),
+      .map((c) => ({
+        name: c.name,
+        monthly: c.value,
+        items: (itemsByCat.get(c.id) ?? [])
+          .map((it) => ({ label: it.label, monthly: it.amount }))
+          .sort((a, b) => b.monthly - a.monthly),
+      })),
   })
 
   const copyPrompt = () => {
@@ -354,6 +400,7 @@ export function ResultOverview() {
                 taxSplit={taxSplit}
                 categorySplit={categorySplit}
                 categoryBars={categoryBars}
+                categoryDetails={categoryDetails}
                 sankey={sankey}
                 unitSuffix={unitSuffix}
               />

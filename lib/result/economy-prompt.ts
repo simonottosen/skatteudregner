@@ -18,6 +18,14 @@ export interface EconomyPromptCategory {
   name: string
   /** Monthly amount in DKK. */
   monthly: number
+  /** Individual budget lines within the category. */
+  items?: { label: string; monthly: number }[]
+}
+
+/** A single annual tax component, e.g. AM-bidrag or topskat. */
+export interface EconomyPromptTaxLine {
+  label: string
+  yearly: number
 }
 
 export interface EconomyPromptInput {
@@ -41,6 +49,8 @@ export interface EconomyPromptInput {
   savingsRate: number
   /** Expense categories with a positive monthly amount, largest first. */
   categories: EconomyPromptCategory[]
+  /** Optional breakdown of the annual tax into its components. */
+  taxBreakdown?: EconomyPromptTaxLine[]
 }
 
 /** Whole-kroner Danish number, e.g. 12.000. */
@@ -97,6 +107,12 @@ export function buildEconomyPrompt(input: EconomyPromptInput): string {
     lines.push(
       `- Nettoindkomst efter skat: ${perMonthAndYear(input.budgetIncomeMonthly)}`
     )
+    if (input.taxBreakdown && input.taxBreakdown.length > 0) {
+      lines.push("- Skatten består af (årligt):")
+      for (const t of input.taxBreakdown) {
+        lines.push(`  - ${t.label}: ${kr(t.yearly)} kr./år`)
+      }
+    }
   } else {
     lines.push(
       `- Nettoindkomst: ${perMonthAndYear(input.budgetIncomeMonthly)} ` +
@@ -112,6 +128,11 @@ export function buildEconomyPrompt(input: EconomyPromptInput): string {
   } else {
     for (const c of input.categories) {
       lines.push(`- ${c.name}: ${perMonthAndYear(c.monthly)}`)
+      for (const it of c.items ?? []) {
+        lines.push(
+          `  - ${it.label || "(uden navn)"}: ${perMonthAndYear(it.monthly)}`
+        )
+      }
     }
   }
   lines.push(`- Udgifter i alt: ${perMonthAndYear(input.budgetExpensesMonthly)}`)

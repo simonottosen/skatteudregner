@@ -13,8 +13,19 @@ const base: EconomyPromptInput = {
   remainingMonthly: 10000,
   savingsRate: 0.3333,
   categories: [
-    { name: "Bolig", monthly: 12000 },
+    {
+      name: "Bolig",
+      monthly: 12000,
+      items: [
+        { label: "Husleje", monthly: 10000 },
+        { label: "El og varme", monthly: 2000 },
+      ],
+    },
     { name: "Mad", monthly: 8000 },
+  ],
+  taxBreakdown: [
+    { label: "AM-bidrag", yearly: 43200 },
+    { label: "Kommuneskat", yearly: 90000 },
   ],
 }
 
@@ -35,6 +46,20 @@ describe("buildEconomyPrompt", () => {
     expect(prompt).toContain("Udgifter i alt: 20.000 kr./md. (240.000 kr./år)")
     expect(prompt).toContain("Effektiv skatteprocent: 33,3 %")
     expect(prompt).toContain("Opsparingsrate: 33,3 %")
+  })
+
+  it("lists individual budget line items under their category", () => {
+    const prompt = buildEconomyPrompt(base)
+    expect(prompt).toContain("- Bolig: 12.000 kr./md. (144.000 kr./år)")
+    expect(prompt).toContain("  - Husleje: 10.000 kr./md. (120.000 kr./år)")
+    expect(prompt).toContain("  - El og varme: 2.000 kr./md. (24.000 kr./år)")
+  })
+
+  it("includes the annual tax breakdown when provided", () => {
+    const prompt = buildEconomyPrompt(base)
+    expect(prompt).toContain("Skatten består af (årligt):")
+    expect(prompt).toContain("  - AM-bidrag: 43.200 kr./år")
+    expect(prompt).toContain("  - Kommuneskat: 90.000 kr./år")
   })
 
   it("explains when tax has not been calculated", () => {

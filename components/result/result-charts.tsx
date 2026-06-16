@@ -7,18 +7,20 @@ import {
   Pie,
   Cell,
   Tooltip,
-  Legend,
   Sankey,
   Layer,
   Rectangle,
 } from "recharts"
 import { ContentSwitcher, Switch } from "@carbon/react"
-import { formatDKK } from "@/lib/format"
+import { formatDKK, formatPercent } from "@/lib/format"
 
 export interface Slice {
   name: string
   value: number
 }
+
+/** Sub-items shown when a donut slice is selected, keyed by slice name. */
+export type SliceDetails = Record<string, { label: string; value: number }[]>
 
 export interface SankeyData {
   nodes: { name: string }[]
@@ -78,32 +80,105 @@ function Donut({
   data,
   colors,
   unitSuffix,
+  details,
 }: {
   data: Slice[]
   colors: string[]
   unitSuffix: string
+  details?: SliceDetails
 }) {
+  const [active, setActive] = useState(0)
+  const total = data.reduce((s, d) => s + d.value, 0)
+  const activeIdx = active < data.length ? active : 0
+
   return (
-    <div className="h-64 w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <PieChart>
-          <Pie
-            data={data}
-            dataKey="value"
-            nameKey="name"
-            innerRadius={55}
-            outerRadius={85}
-            paddingAngle={2}
-            strokeWidth={0}
-          >
-            {data.map((_, i) => (
-              <Cell key={i} fill={colors[i % colors.length]} />
-            ))}
-          </Pie>
-          <Tooltip content={<ChartTooltip unitSuffix={unitSuffix} />} />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-        </PieChart>
-      </ResponsiveContainer>
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+      <div className="h-64 w-full sm:w-1/2">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={data}
+              dataKey="value"
+              nameKey="name"
+              innerRadius={55}
+              outerRadius={85}
+              paddingAngle={2}
+              strokeWidth={0}
+              onClick={(_, i) => setActive(i)}
+            >
+              {data.map((_, i) => (
+                <Cell
+                  key={i}
+                  fill={colors[i % colors.length]}
+                  stroke="var(--cds-layer-01, #f4f4f4)"
+                  strokeWidth={i === activeIdx ? 3 : 0}
+                  opacity={i === activeIdx ? 1 : 0.78}
+                  style={{ cursor: "pointer", outline: "none" }}
+                />
+              ))}
+            </Pie>
+            <Tooltip content={<ChartTooltip unitSuffix={unitSuffix} />} />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Interactive legend / detail panel */}
+      <ul className="w-full space-y-1 sm:w-1/2">
+        {data.map((d, i) => {
+          const isActive = i === activeIdx
+          const subItems = details?.[d.name] ?? []
+          return (
+            <li key={d.name}>
+              <button
+                type="button"
+                onClick={() => setActive(i)}
+                className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs transition-colors ${
+                  isActive ? "bg-muted font-medium" : "hover:bg-muted/50"
+                }`}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-sm"
+                    style={{ backgroundColor: colors[i % colors.length] }}
+                  />
+                  <span className="truncate">{d.name}</span>
+                </span>
+                <span className="text-muted-foreground tabular-nums whitespace-nowrap">
+                  {formatDKK(d.value)}
+                  {unitSuffix}
+                </span>
+              </button>
+              {isActive && (
+                <div className="mt-1 mb-1 ml-4 border-l pl-3">
+                  <p className="text-muted-foreground text-[11px]">
+                    {total > 0 ? formatPercent(d.value / total) : "–"} af i alt (
+                    {formatDKK(total)}
+                    {unitSuffix})
+                  </p>
+                  {subItems.length > 0 && (
+                    <ul className="mt-1 space-y-0.5">
+                      {subItems.map((it, j) => (
+                        <li
+                          key={j}
+                          className="flex justify-between gap-2 text-[11px]"
+                        >
+                          <span className="truncate">
+                            {it.label || "(uden navn)"}
+                          </span>
+                          <span className="text-muted-foreground tabular-nums whitespace-nowrap">
+                            {formatDKK(it.value)}
+                            {unitSuffix}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
 }
@@ -256,12 +331,14 @@ export function ResultCharts({
   taxSplit,
   categorySplit,
   categoryBars,
+  categoryDetails,
   sankey,
   unitSuffix,
 }: {
   taxSplit: Slice[] | null
   categorySplit: Slice[]
   categoryBars: Slice[]
+  categoryDetails?: SliceDetails
   sankey: SankeyData | null
   unitSuffix: string
 }) {
@@ -285,7 +362,7 @@ export function ResultCharts({
       </div>
 
       {view === "donut" && (
-        <div className="grid gap-6 md:grid-cols-2">
+        <div className="space-y-8">
           {taxSplit && (
             <div>
               <h4 className="text-muted-foreground mb-2 text-xs font-medium">
@@ -300,7 +377,7 @@ export function ResultCharts({
           )}
           <div>
             <h4 className="text-muted-foreground mb-2 text-xs font-medium">
-              Fordeling pr. kategori
+              Fordeling pr. kategori — klik for detaljer
             </h4>
             <Donut
               data={categorySplit}
@@ -310,6 +387,7 @@ export function ResultCharts({
                   : PALETTE[i % PALETTE.length]
               )}
               unitSuffix={unitSuffix}
+              details={categoryDetails}
             />
           </div>
         </div>
