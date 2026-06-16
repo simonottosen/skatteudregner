@@ -9,6 +9,11 @@ import {
   guessCategory,
   type BudgetCategory,
 } from "@/lib/budget/categories"
+import {
+  DEFAULT_MORTGAGE,
+  mortgageMonthlyTotal,
+  type MortgageState,
+} from "@/lib/budget/mortgage"
 
 export type { BudgetCategory }
 
@@ -42,7 +47,7 @@ export interface BudgetAssumptions {
 }
 
 export interface BudgetState {
-  version: 4
+  version: 5
   mode: BudgetMode
   person1: PersonConfig
   person2: PersonConfig
@@ -52,6 +57,8 @@ export interface BudgetState {
   categories: BudgetCategory[]
   /** Household assumptions for the peer comparison on the results page. */
   assumptions: BudgetAssumptions
+  /** Realkredit mortgage — kept separate from the categorised expenses. */
+  mortgage: MortgageState
 }
 
 export const DEFAULT_ASSUMPTIONS: BudgetAssumptions = {
@@ -79,13 +86,14 @@ function defaultPerson(name: string, incomeSource: IncomeSource): PersonConfig {
 
 function defaultState(): BudgetState {
   return {
-    version: 4,
+    version: 5,
     mode: "single",
     person1: defaultPerson("Person 1", "skat"),
     person2: defaultPerson("Person 2", "manual"),
     sharedItems: DEFAULT_SHARED_ITEMS.map((i) => ({ ...i, id: newId() })),
     categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
     assumptions: { ...DEFAULT_ASSUMPTIONS },
+    mortgage: { ...DEFAULT_MORTGAGE },
   }
 }
 
@@ -151,7 +159,25 @@ function normalizeAssumptions(value: unknown): BudgetAssumptions {
   }
 }
 
-/** Accepts the legacy array shape, the v2 object shape, v3 and v4. */
+function normalizeMortgage(value: unknown): MortgageState {
+  if (!value || typeof value !== "object") return { ...DEFAULT_MORTGAGE }
+  const o = value as Partial<MortgageState>
+  const numOr = (v: unknown, fallback: number, min: number, max: number) =>
+    typeof v === "number" && Number.isFinite(v)
+      ? Math.min(max, Math.max(min, v))
+      : fallback
+  return {
+    enabled: typeof o.enabled === "boolean" ? o.enabled : false,
+    homeValue: numOr(o.homeValue, 0, 0, 1e9),
+    remainingYears: numOr(o.remainingYears, DEFAULT_MORTGAGE.remainingYears, 1, 40),
+    ltv: numOr(o.ltv, DEFAULT_MORTGAGE.ltv, 0, 1),
+    interestRate: numOr(o.interestRate, DEFAULT_MORTGAGE.interestRate, 0, 0.2),
+    bidragssats: numOr(o.bidragssats, DEFAULT_MORTGAGE.bidragssats, 0, 0.05),
+    interestOnly: typeof o.interestOnly === "boolean" ? o.interestOnly : false,
+  }
+}
+
+/** Accepts the legacy array shape, the v2 object shape, and v3–v5. */
 function normalizeBudget(raw: unknown): BudgetState {
   const base = defaultState()
   if (Array.isArray(raw)) {
@@ -160,13 +186,14 @@ function normalizeBudget(raw: unknown): BudgetState {
   if (raw && typeof raw === "object") {
     const o = raw as Partial<BudgetState>
     return {
-      version: 4,
+      version: 5,
       mode: o.mode === "shared" || o.mode === "separate" ? o.mode : "single",
       person1: normalizePerson(o.person1, base.person1),
       person2: normalizePerson(o.person2, base.person2),
       sharedItems: o.sharedItems ? asItems(o.sharedItems) : base.sharedItems,
       categories: normalizeCategories(o.categories),
       assumptions: normalizeAssumptions(o.assumptions),
+      mortgage: normalizeMortgage(o.mortgage),
     }
   }
   return base
@@ -302,6 +329,9 @@ export function useBudgetController() {
   const setAssumptions = (assumptions: BudgetAssumptions) =>
     setState((p) => ({ ...p, assumptions }))
 
+  const setMortgage = (patch: Partial<MortgageState>) =>
+    setState((p) => ({ ...p, mortgage: { ...p.mortgage, ...patch } }))
+
   // --- derived values -----------------------------------------------------
   const incomeOf = (person: PersonConfig, skatNet: number) =>
     person.incomeSource === "skat" ? skatNet : person.manualIncome
@@ -315,8 +345,10 @@ export function useBudgetController() {
     const sharedTotal = sumItems(state.sharedItems)
     const p1Total = sumItems(state.person1.items)
     const p2Total = sumItems(state.person2.items)
+    // Mortgage is tracked separately from the categorised expense lists.
+    const mortgageMonthly = mortgageMonthlyTotal(state.mortgage)
 
-    return { p1Income, p2Income, sharedTotal, p1Total, p2Total }
+    return { p1Income, p2Income, sharedTotal, p1Total, p2Total, mortgageMonthly }
   }, [state, monthlyNetIncome, person2MonthlyNetIncome])
 
   return {
@@ -327,6 +359,7 @@ export function useBudgetController() {
     setMode,
     setPersonField,
     setAssumptions,
+    setMortgage,
     addItem,
     updateItem,
     removeItem,

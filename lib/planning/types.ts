@@ -96,8 +96,8 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown
 /** A planning event without its id, preserving the per-type fields. */
 export type NewPlanningEvent = DistributiveOmit<PlanningEvent, "id">
 
-/** Pension pots, contributions and payout settings for retirement income. */
-export interface PensionState {
+/** One person's pension pots, contributions and state-pension age. */
+export interface PensionPerson {
   /** Current balances (DKK). */
   ratepensionBalance: number
   livrenteBalance: number
@@ -106,28 +106,40 @@ export interface PensionState {
   ratepensionAnnual: number
   livrenteAnnual: number
   aldersopsparingAnnual: number
-  /** Expected annual return on the pension pots. */
-  pensionReturn: number
-  /** Ratepension/aldersopsparing payout duration in years (10–30). */
-  ratepensionYears: number
   /** Folkepensionsalder (state pension age). */
   folkepensionAge: number
-  /** Single vs. couple — affects pensionstillæg + modregning. */
-  single: boolean
-  /** Whether to include folkepension in the retirement income. */
-  includeFolkepension: boolean
 }
 
-export const DEFAULT_PENSION: PensionState = {
+export const DEFAULT_PENSION_PERSON: PensionPerson = {
   ratepensionBalance: 0,
   livrenteBalance: 0,
   aldersopsparingBalance: 0,
   ratepensionAnnual: 0,
   livrenteAnnual: 0,
   aldersopsparingAnnual: 0,
+  folkepensionAge: 69,
+}
+
+/** Pension pots, contributions and payout settings for retirement income. */
+export interface PensionState {
+  person1: PensionPerson
+  /** Second person — used only when the household is a couple. */
+  person2: PensionPerson
+  /** Expected annual return on the pension pots (shared). */
+  pensionReturn: number
+  /** Ratepension/aldersopsparing payout duration in years (10–30). */
+  ratepensionYears: number
+  /** Single vs. couple — affects pensionstillæg + modregning, and person 2. */
+  single: boolean
+  /** Whether to include folkepension in the retirement income. */
+  includeFolkepension: boolean
+}
+
+export const DEFAULT_PENSION: PensionState = {
+  person1: { ...DEFAULT_PENSION_PERSON },
+  person2: { ...DEFAULT_PENSION_PERSON },
   pensionReturn: 0.0577,
   ratepensionYears: 10,
-  folkepensionAge: 69,
   single: true,
   includeFolkepension: true,
 }
@@ -147,6 +159,10 @@ export interface PlanningState {
   homeValue: number
   /** Outstanding mortgage principal in DKK. */
   mortgageBalance: number
+  /** Annual interest rate used to amortize the mortgage. */
+  mortgageRate: number
+  /** Remaining years on the mortgage (drives the debt-free age). */
+  mortgageTermYears: number
   /** Monthly amount saved/invested in DKK (defaults to budget "til rådighed"). */
   monthlyContribution: number
   /** Annual household spending in DKK, used for the FI threshold. */
@@ -164,6 +180,8 @@ export const DEFAULT_PLANNING_STATE: PlanningState = {
   startInvestments: 0,
   homeValue: 0,
   mortgageBalance: 0,
+  mortgageRate: 0.041,
+  mortgageTermYears: 30,
   monthlyContribution: 0,
   annualSpending: 0,
   assumptions: { ...DEFAULT_ASSUMPTIONS },
@@ -182,6 +200,8 @@ export interface PlanningPoint {
   netWorth: number
   /** [p10, p90] of total wealth for the confidence band. */
   band: [number, number]
+  /** [p10, p90] of liquid investments (home equity is deterministic). */
+  investmentsBand: [number, number]
 
   // Growth-source breakdown (deterministic path, nominal DKK).
   /** Cumulative money paid into investments so far. */
@@ -204,4 +224,6 @@ export interface PlanningResult {
   points: PlanningPoint[]
   /** First age where liquid investments reach 1/SWR × annual spending. */
   fiAge: number | null
+  /** Age at which the mortgage is fully repaid (null if none / never). */
+  debtFreeAge: number | null
 }

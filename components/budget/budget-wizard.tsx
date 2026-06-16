@@ -24,7 +24,8 @@ interface BudgetWizardProps {
   onClose: () => void
   onGenerate: (
     items: GeneratedBudgetItem[],
-    assumptions: { adults: number; children: number; cars: number }
+    assumptions: { adults: number; children: number; cars: number },
+    ownsHome: boolean
   ) => void
 }
 
@@ -82,7 +83,8 @@ export function BudgetWizard({ open, onClose, onGenerate }: BudgetWizardProps) {
         vacationLevel,
         lifestyle: lifestyle / 50,
       }),
-      { adults, children, cars }
+      { adults, children, cars },
+      ownsHome
     )
     onClose()
   }

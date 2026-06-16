@@ -20,7 +20,7 @@ const GREEN_BAND = "rgba(25, 128, 56, 0.14)"
 const BLUE = "#1192e8"
 const TEAL = "#005d5d"
 
-export type WealthView = "total" | "split" | "sources"
+export type WealthView = "total" | "detailed"
 
 interface ChartRow {
   age: number
@@ -28,12 +28,15 @@ interface ChartRow {
   investments: number
   homeEquity: number
   band: [number, number]
-  contributionsTotal: number
-  housingGainsTotal: number
-  investmentGainsTotal: number
+  investmentsBand: [number, number]
   contributionYoY: number
   housingGainYoY: number
   investmentGainYoY: number
+}
+
+/** "1,2M kr. – 3,4M kr." percentile range. */
+function pctRange(b: [number, number]): string {
+  return `${formatDKK(b[0])} – ${formatDKK(b[1])}`
 }
 
 interface TooltipEntry {
@@ -44,23 +47,37 @@ interface TooltipEntry {
   payload: ChartRow
 }
 
+/** "+1.200 kr." / "−400.000 kr." with an explicit sign. */
+function signed(n: number): string {
+  return (n < 0 ? "−" : "+") + formatDKK(Math.abs(Math.round(n)))
+}
+
 function WealthTooltip({
   active,
   payload,
   label,
   realSuffix,
+  yearFor,
 }: {
   active?: boolean
   payload?: TooltipEntry[]
   label?: number
   realSuffix?: string
+  yearFor?: (age: number) => number
 }) {
   if (!active || !payload || payload.length === 0) return null
-  const rows = payload.filter((p) => p.dataKey !== "band")
+  const rows = payload.filter(
+    (p) => p.dataKey !== "band" && p.dataKey !== "investmentsBand"
+  )
+  const row = payload[0].payload
+  const year = yearFor && label != null ? ` · ${yearFor(label)}` : ""
+  const hasNet = rows.some((r) => r.dataKey === "netWorth")
+  const hasInv = rows.some((r) => r.dataKey === "investments")
   return (
     <div className="rounded-md border bg-popover p-2 text-popover-foreground shadow-md">
       <p className="mb-1 text-xs font-medium">
         Alder {label}
+        {year}
         {realSuffix}
       </p>
       {rows.map((p, i) => (
@@ -68,48 +85,69 @@ function WealthTooltip({
           {p.name}: {formatDKK(p.value)}
         </p>
       ))}
+      {hasNet && (
+        <p className="text-muted-foreground mt-1 text-[11px]">
+          10.–90. percentil: {pctRange(row.band)}
+        </p>
+      )}
+      {hasInv && (
+        <p className="text-muted-foreground mt-1 text-[11px]">
+          Investeringer 10.–90. pct.: {pctRange(row.investmentsBand)}
+        </p>
+      )}
     </div>
   )
 }
 
-const SOURCE_ROWS: {
-  key: "contributionsTotal" | "housingGainsTotal" | "investmentGainsTotal"
-  yoy: "contributionYoY" | "housingGainYoY" | "investmentGainYoY"
-  name: string
-  color: string
-}[] = [
-  { key: "contributionsTotal", yoy: "contributionYoY", name: "Indbetalinger", color: BLUE },
-  { key: "housingGainsTotal", yoy: "housingGainYoY", name: "Boliggevinst", color: TEAL },
-  { key: "investmentGainsTotal", yoy: "investmentGainYoY", name: "Investeringsgevinst", color: GREEN },
-]
-
-function SourcesTooltip({
+function DetailedTooltip({
   active,
   payload,
   label,
   realSuffix,
+  yearFor,
 }: {
   active?: boolean
   payload?: TooltipEntry[]
   label?: number
   realSuffix?: string
+  yearFor?: (age: number) => number
 }) {
   if (!active || !payload || payload.length === 0) return null
   const row = payload[0].payload
+  const yr = yearFor && label != null ? yearFor(label) : null
+  const inYear = yr != null ? `i ${yr}` : "i år"
+  const year = yr != null ? ` · ${yr}` : ""
   return (
     <div className="rounded-md border bg-popover p-2 text-popover-foreground shadow-md">
       <p className="mb-1 text-xs font-medium">
         Alder {label}
+        {year}
         {realSuffix}
       </p>
-      {SOURCE_ROWS.map((s) => (
-        <p key={s.key} className="text-xs" style={{ color: s.color }}>
-          {s.name}: {formatDKK(row[s.key])}{" "}
-          <span className="text-muted-foreground">
-            (+{formatDKK(row[s.yoy])} i år)
-          </span>
-        </p>
-      ))}
+      <p className="text-xs font-semibold">
+        Samlet formue: {formatDKK(row.netWorth)}
+      </p>
+      <p className="text-muted-foreground pl-2 text-[11px]">
+        10.–90. pct.: {pctRange(row.band)}
+      </p>
+      <p className="mt-1 text-xs font-medium" style={{ color: GREEN }}>
+        Investeringer: {formatDKK(row.investments)}
+      </p>
+      <p className="text-muted-foreground pl-2 text-[11px]">
+        10.–90. pct.: {pctRange(row.investmentsBand)}
+      </p>
+      <p className="text-muted-foreground pl-2 text-[11px]">
+        Indbetalt: {signed(row.contributionYoY)} {inYear}
+      </p>
+      <p className="text-muted-foreground pl-2 text-[11px]">
+        Investeringsgevinst: {signed(row.investmentGainYoY)} {inYear}
+      </p>
+      <p className="mt-1 text-xs font-medium" style={{ color: TEAL }}>
+        Friværdi i bolig: {formatDKK(row.homeEquity)}
+      </p>
+      <p className="text-muted-foreground pl-2 text-[11px]">
+        Boliggevinst: {signed(row.housingGainYoY)} {inYear}
+      </p>
     </div>
   )
 }
@@ -119,12 +157,17 @@ export function PlanningChart({
   view,
   retirementAge,
   real,
+  currentAge,
+  currentYear,
 }: {
   result: PlanningResult
   view: WealthView
   retirementAge: number
   /** When true the values are already in today's kroner. */
   real?: boolean
+  /** For mapping chart ages to calendar years. */
+  currentAge: number
+  currentYear: number
 }) {
   const data: ChartRow[] = result.points.map((p) => ({
     age: p.age,
@@ -132,15 +175,14 @@ export function PlanningChart({
     investments: p.investments,
     homeEquity: p.homeEquity,
     band: p.band,
-    contributionsTotal: p.contributionsTotal,
-    housingGainsTotal: p.housingGainsTotal,
-    investmentGainsTotal: p.investmentGainsTotal,
+    investmentsBand: p.investmentsBand,
     contributionYoY: p.contributionYoY,
     housingGainYoY: p.housingGainYoY,
     investmentGainYoY: p.investmentGainYoY,
   }))
 
   const realSuffix = real ? " · nutidskroner" : ""
+  const yearFor = (age: number) => currentYear + (age - currentAge)
 
   return (
     <div className="h-80 w-full">
@@ -166,10 +208,10 @@ export function PlanningChart({
           />
           <Tooltip
             content={
-              view === "sources" ? (
-                <SourcesTooltip realSuffix={realSuffix} />
+              view === "detailed" ? (
+                <DetailedTooltip realSuffix={realSuffix} yearFor={yearFor} />
               ) : (
-                <WealthTooltip realSuffix={realSuffix} />
+                <WealthTooltip realSuffix={realSuffix} yearFor={yearFor} />
               )
             }
           />
@@ -201,12 +243,23 @@ export function PlanningChart({
             </>
           )}
 
-          {view === "split" && (
+          {view === "detailed" && (
             <>
+              <Area
+                type="monotone"
+                dataKey="investmentsBand"
+                name="Usikkerhed, investeringer (10–90 %)"
+                stroke="none"
+                fill={GREEN_BAND}
+                isAnimationActive={false}
+                connectNulls
+                legendType="none"
+                activeDot={false}
+              />
               <Line
                 type="monotone"
                 dataKey="investments"
-                name="Investeringer"
+                name="Investeringer (i alt)"
                 stroke={GREEN}
                 strokeWidth={2.5}
                 dot={false}
@@ -216,39 +269,7 @@ export function PlanningChart({
                 type="monotone"
                 dataKey="homeEquity"
                 name="Friværdi i bolig"
-                stroke={BLUE}
-                strokeWidth={2.5}
-                dot={false}
-                isAnimationActive={false}
-              />
-            </>
-          )}
-
-          {view === "sources" && (
-            <>
-              <Line
-                type="monotone"
-                dataKey="contributionsTotal"
-                name="Indbetalinger"
-                stroke={BLUE}
-                strokeWidth={2.5}
-                dot={false}
-                isAnimationActive={false}
-              />
-              <Line
-                type="monotone"
-                dataKey="housingGainsTotal"
-                name="Boliggevinst"
                 stroke={TEAL}
-                strokeWidth={2.5}
-                dot={false}
-                isAnimationActive={false}
-              />
-              <Line
-                type="monotone"
-                dataKey="investmentGainsTotal"
-                name="Investeringsgevinst"
-                stroke={GREEN}
                 strokeWidth={2.5}
                 dot={false}
                 isAnimationActive={false}
@@ -266,6 +287,19 @@ export function PlanningChart({
                 position: "top",
                 fontSize: 11,
                 fill: GREEN,
+              }}
+            />
+          )}
+          {result.debtFreeAge != null && (
+            <ReferenceLine
+              x={result.debtFreeAge}
+              stroke={BLUE}
+              strokeDasharray="2 3"
+              label={{
+                value: `Gældfri · ${result.debtFreeAge}`,
+                position: "insideTopRight",
+                fontSize: 11,
+                fill: BLUE,
               }}
             />
           )}

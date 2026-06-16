@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation"
 import {
   Button,
   TextInput,
+  NumberInput,
   ProgressBar,
   InlineNotification,
   RadioButtonGroup,
   RadioButton,
+  Checkbox,
 } from "@carbon/react"
 import { Add, TrashCan, MagicWand, Draggable } from "@carbon/icons-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -20,6 +22,8 @@ import {
   type ExpenseList,
 } from "@/hooks/use-budget"
 import { UNCATEGORIZED_ID } from "@/lib/budget/categories"
+import { computeMortgage, looksLikeMortgage } from "@/lib/budget/mortgage"
+import { MoneyInput } from "@/components/planlaegning/money-input"
 import { BudgetWizard } from "./budget-wizard"
 import { formatDKK } from "@/lib/format"
 
@@ -275,8 +279,18 @@ export function BudgetPlanner() {
     renameCategory,
     removeCategory,
     setAssumptions,
+    setMortgage,
+    mortgageMonthly,
   } = budget
   const [wizardOpen, setWizardOpen] = useState(false)
+  const mortgage = state.mortgage
+  const mortgageBreakdown = computeMortgage(mortgage)
+  // Existing expense lines that look like a mortgage (to warn about double-counting).
+  const mortgageLikeItems = [
+    ...state.sharedItems,
+    ...state.person1.items,
+    ...state.person2.items,
+  ].filter((i) => i.amount > 0 && looksLikeMortgage(i.label))
 
   const handlers: ExpenseHandlers = {
     onAdd: addItem,
@@ -295,9 +309,10 @@ export function BudgetPlanner() {
     state.person1.incomeSource === "skat" && monthlyNetIncome <= 0
 
   const combinedIncome = twoPeople ? p1Income + p2Income : p1Income
-  const combinedRemaining = combinedIncome - sharedTotal
+  const combinedSpent = sharedTotal + mortgageMonthly
+  const combinedRemaining = combinedIncome - combinedSpent
   const spentPct =
-    combinedIncome > 0 ? Math.min((sharedTotal / combinedIncome) * 100, 100) : 0
+    combinedIncome > 0 ? Math.min((combinedSpent / combinedIncome) * 100, 100) : 0
 
   return (
     <main
@@ -330,8 +345,9 @@ export function BudgetPlanner() {
       <BudgetWizard
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
-        onGenerate={(items, assumptions) => {
+        onGenerate={(items, assumptions, ownsHome) => {
           replaceItems(primaryList, items)
+          if (ownsHome) setMortgage({ enabled: true })
           setAssumptions(assumptions)
         }}
       />
@@ -521,6 +537,143 @@ export function BudgetPlanner() {
         </CardContent>
       </Card>
 
+      {/* Mortgage */}
+      <Card className="mb-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-lg">Realkreditlån</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Checkbox
+            id="mortgage-enabled"
+            labelText="Jeg ejer boligen og afdrager på et realkreditlån"
+            checked={mortgage.enabled}
+            onChange={(_e, { checked }) => setMortgage({ enabled: checked })}
+          />
+          {mortgage.enabled && (
+            <>
+              {mortgageLikeItems.length > 0 && (
+                <InlineNotification
+                  className="max-w-full"
+                  kind="warning"
+                  lowContrast
+                  hideCloseButton
+                  title="Muligt dobbelt-tal"
+                  subtitle={`Du har også en udgiftslinje, der ligner et boliglån (${mortgageLikeItems
+                    .map((i) => i.label)
+                    .join(", ")}). Sæt den til 0, så lånet ikke tælles med to gange.`}
+                />
+              )}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <MoneyInput
+                  id="m-home"
+                  label="Boligværdi"
+                  value={mortgage.homeValue}
+                  onChange={(v) => setMortgage({ homeValue: v })}
+                />
+                <NumberInput
+                  id="m-years"
+                  label="Restløbetid (år)"
+                  min={1}
+                  max={40}
+                  value={mortgage.remainingYears}
+                  onChange={(_e, { value }) =>
+                    setMortgage({
+                      remainingYears: Math.max(
+                        1,
+                        Math.round(
+                          typeof value === "number"
+                            ? value
+                            : parseFloat(value) || mortgage.remainingYears
+                        )
+                      ),
+                    })
+                  }
+                />
+                <NumberInput
+                  id="m-ltv"
+                  label="Belåningsgrad (%)"
+                  min={0}
+                  max={100}
+                  value={Math.round(mortgage.ltv * 100)}
+                  onChange={(_e, { value }) =>
+                    setMortgage({
+                      ltv:
+                        Math.min(
+                          100,
+                          Math.max(
+                            0,
+                            typeof value === "number"
+                              ? value
+                              : parseFloat(value) || 0
+                          )
+                        ) / 100,
+                    })
+                  }
+                />
+                <NumberInput
+                  id="m-rate"
+                  label="Rente (% p.a.)"
+                  step={0.1}
+                  value={Math.round(mortgage.interestRate * 1000) / 10}
+                  onChange={(_e, { value }) =>
+                    setMortgage({
+                      interestRate:
+                        (typeof value === "number"
+                          ? value
+                          : parseFloat(value) || 0) / 100,
+                    })
+                  }
+                />
+                <NumberInput
+                  id="m-bidrag"
+                  label="Bidragssats (% p.a.)"
+                  step={0.05}
+                  value={Math.round(mortgage.bidragssats * 1000) / 10}
+                  onChange={(_e, { value }) =>
+                    setMortgage({
+                      bidragssats:
+                        (typeof value === "number"
+                          ? value
+                          : parseFloat(value) || 0) / 100,
+                    })
+                  }
+                />
+                <div className="flex items-end">
+                  <Checkbox
+                    id="m-io"
+                    labelText="Afdragsfrihed"
+                    checked={mortgage.interestOnly}
+                    onChange={(_e, { checked }) =>
+                      setMortgage({ interestOnly: checked })
+                    }
+                  />
+                </div>
+              </div>
+
+              <Separator />
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                <Figure label="Renter / md." amount={mortgageBreakdown.monthlyInterest} />
+                <Figure label="Bidrag / md." amount={mortgageBreakdown.monthlyBidrag} />
+                <Figure label="Afdrag / md." amount={mortgageBreakdown.monthlyAfdrag} />
+                <Figure
+                  label="Ydelse i alt / md."
+                  amount={mortgageBreakdown.monthlyTotal}
+                  tone="income"
+                />
+              </div>
+              <p className="text-muted-foreground text-xs">
+                Restgæld: {formatDKK(mortgageBreakdown.loan)} ·{" "}
+                {mortgage.interestOnly
+                  ? "Afdragsfrit — gælden afdrages ikke"
+                  : `Gældfri om ${mortgage.remainingYears} år`}
+                . Afdraget tæller ikke som forbrug i Planlægning — det bygger
+                friværdi.
+              </p>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Summary + expenses */}
       {state.mode === "separate" ? (
         <div className="grid gap-4 md:grid-cols-2">
@@ -570,7 +723,12 @@ export function BudgetPlanner() {
                   amount={combinedIncome}
                   tone="income"
                 />
-                <Figure label="Udgifter i alt" amount={sharedTotal} />
+                <Figure
+                  label={
+                    mortgageMonthly > 0 ? "Udgifter (inkl. lån)" : "Udgifter i alt"
+                  }
+                  amount={combinedSpent}
+                />
                 <Figure
                   label="Til rådighed"
                   amount={combinedRemaining}

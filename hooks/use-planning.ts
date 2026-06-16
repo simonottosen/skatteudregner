@@ -5,11 +5,14 @@ import { useRemoteSync } from "@/hooks/use-remote-sync"
 import { useTax } from "@/components/tax-provider"
 import { useBudget } from "@/components/budget-provider"
 import { estimateMortgage } from "@/lib/budget/generate-budget"
+import { computeMortgage } from "@/lib/budget/mortgage"
 import {
   DEFAULT_ASSUMPTIONS,
   DEFAULT_PENSION,
+  DEFAULT_PENSION_PERSON,
   DEFAULT_PLANNING_STATE,
   type NewPlanningEvent,
+  type PensionPerson,
   type PensionState,
   type PlanningAssumptions,
   type PlanningEvent,
@@ -78,9 +81,9 @@ function normalizeEvents(value: unknown): PlanningEvent[] {
   return out
 }
 
-function normalizePension(value: unknown): PensionState {
-  if (!value || typeof value !== "object") return { ...DEFAULT_PENSION }
-  const o = value as Partial<PensionState>
+function normalizePensionPerson(value: unknown): PensionPerson {
+  if (!value || typeof value !== "object") return { ...DEFAULT_PENSION_PERSON }
+  const o = value as Partial<PensionPerson>
   return {
     ratepensionBalance: clampNum(o.ratepensionBalance, 0, 0),
     livrenteBalance: clampNum(o.livrenteBalance, 0, 0),
@@ -88,9 +91,26 @@ function normalizePension(value: unknown): PensionState {
     ratepensionAnnual: clampNum(o.ratepensionAnnual, 0, 0),
     livrenteAnnual: clampNum(o.livrenteAnnual, 0, 0),
     aldersopsparingAnnual: clampNum(o.aldersopsparingAnnual, 0, 0),
+    folkepensionAge: clampNum(
+      o.folkepensionAge,
+      DEFAULT_PENSION_PERSON.folkepensionAge,
+      60,
+      75
+    ),
+  }
+}
+
+function normalizePension(value: unknown): PensionState {
+  if (!value || typeof value !== "object") return { ...DEFAULT_PENSION }
+  const o = value as Partial<PensionState> & Record<string, unknown>
+  // Migrate the legacy single-person (flat) shape into person 1.
+  const legacyPerson1 =
+    o.person1 ?? ("ratepensionBalance" in o ? o : undefined)
+  return {
+    person1: normalizePensionPerson(legacyPerson1),
+    person2: normalizePensionPerson(o.person2),
     pensionReturn: clampNum(o.pensionReturn, DEFAULT_PENSION.pensionReturn, -1, 1),
     ratepensionYears: clampNum(o.ratepensionYears, DEFAULT_PENSION.ratepensionYears, 1, 40),
-    folkepensionAge: clampNum(o.folkepensionAge, DEFAULT_PENSION.folkepensionAge, 60, 75),
     single: typeof o.single === "boolean" ? o.single : DEFAULT_PENSION.single,
     includeFolkepension:
       typeof o.includeFolkepension === "boolean"
@@ -117,6 +137,13 @@ function normalizePlanning(raw: unknown): PlanningState {
     startInvestments: clampNum(o.startInvestments, 0, 0),
     homeValue: clampNum(o.homeValue, 0, 0),
     mortgageBalance: clampNum(o.mortgageBalance, 0, 0),
+    mortgageRate: clampNum(o.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2),
+    mortgageTermYears: clampNum(
+      o.mortgageTermYears,
+      DEFAULT_PLANNING_STATE.mortgageTermYears,
+      1,
+      40
+    ),
     monthlyContribution: clampNum(o.monthlyContribution, 0, 0),
     annualSpending: clampNum(o.annualSpending, 0, 0),
     assumptions: normalizeAssumptions(o.assumptions),
@@ -159,29 +186,58 @@ export function usePlanning() {
       ? budget.p1Total + budget.p2Total
       : budget.sharedTotal
 
+  const mortgage = budget.state.mortgage
+  const mortgageMonthly = budget.mortgageMonthly
+
   const derivedDefaults = useMemo(() => {
-    const remaining = Math.max(0, Math.round(budgetIncome - budgetExpenses))
+    // Savings rate nets out the mortgage payment (it's a real cash outflow);
+    // the mortgage itself is modelled separately, so it's excluded from forbrug.
+    const remaining = Math.max(
+      0,
+      Math.round(budgetIncome - budgetExpenses - mortgageMonthly)
+    )
     const currentAge =
       ageFromBirthDate(input.birthDate) ?? DEFAULT_PLANNING_STATE.currentAge
     const birthYear = new Date().getFullYear() - currentAge
+
+    // Prefer the precise mortgage from the budget page when enabled.
+    const homeValue = mortgage.enabled
+      ? Math.round(mortgage.homeValue)
+      : Math.round(input.property?.propertyValue ?? 0)
+    const mortgageBalance = mortgage.enabled
+      ? Math.round(computeMortgage(mortgage).loan)
+      : Math.round(estimateMortgage(input.mortgageInterest || 0).principal)
+
     return {
       monthlyContribution: remaining,
       annualSpending: Math.round(budgetExpenses * 12),
-      homeValue: Math.round(input.property?.propertyValue ?? 0),
-      mortgageBalance: Math.round(
-        estimateMortgage(input.mortgageInterest || 0).principal
-      ),
+      homeValue,
+      mortgageBalance,
+      mortgageRate: mortgage.enabled
+        ? mortgage.interestRate
+        : DEFAULT_PLANNING_STATE.mortgageRate,
+      mortgageTermYears: mortgage.enabled
+        ? mortgage.remainingYears
+        : DEFAULT_PLANNING_STATE.mortgageTermYears,
       currentAge,
       pension: {
-        ratepensionAnnual: Math.round(input.privatePensionRatepension || 0),
-        livrenteAnnual: Math.round(input.privatePensionLivrente || 0),
         single: budget.state.mode === "single",
-        folkepensionAge: folkepensionAge(birthYear),
+        // Seed person 1 from the tax page; person 2 only its folkepensionsalder.
+        person1: {
+          ratepensionAnnual: Math.round(input.privatePensionRatepension || 0),
+          livrenteAnnual: Math.round(input.privatePensionLivrente || 0),
+          folkepensionAge: folkepensionAge(birthYear),
+        },
+        person2: {
+          folkepensionAge: folkepensionAge(birthYear),
+        },
       },
     }
   }, [
     budgetIncome,
     budgetExpenses,
+    mortgageMonthly,
+    mortgage,
     input.property?.propertyValue,
     input.mortgageInterest,
     input.birthDate,
@@ -217,7 +273,16 @@ export function usePlanning() {
     if (!hydrated || touched) return
     const { pension, ...rest } = derivedDefaults
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setState((p) => ({ ...p, ...rest, pension: { ...p.pension, ...pension } }))
+    setState((p) => ({
+      ...p,
+      ...rest,
+      pension: {
+        ...p.pension,
+        single: pension.single,
+        person1: { ...p.pension.person1, ...pension.person1 },
+        person2: { ...p.pension.person2, ...pension.person2 },
+      },
+    }))
   }, [hydrated, touched, derivedDefaults])
 
   // Persist once the user (or a restore) has taken ownership of the state.
@@ -247,6 +312,7 @@ export function usePlanning() {
     }))
   }
 
+  // Shared pension fields (return, payout years, household, folkepension flag).
   const setPension = <K extends keyof PensionState>(
     key: K,
     value: PensionState[K]
@@ -255,6 +321,22 @@ export function usePlanning() {
     setState((prev) => ({
       ...prev,
       pension: { ...prev.pension, [key]: value },
+    }))
+  }
+
+  // A single person's pension pot/contribution field.
+  const setPensionPerson = <K extends keyof PensionPerson>(
+    who: "person1" | "person2",
+    key: K,
+    value: PensionPerson[K]
+  ) => {
+    setTouched(true)
+    setState((prev) => ({
+      ...prev,
+      pension: {
+        ...prev.pension,
+        [who]: { ...prev.pension[who], [key]: value },
+      },
     }))
   }
 
@@ -286,7 +368,12 @@ export function usePlanning() {
     setState((prev) => ({
       ...prev,
       ...rest,
-      pension: { ...prev.pension, ...pension },
+      pension: {
+        ...prev.pension,
+        single: pension.single,
+        person1: { ...prev.pension.person1, ...pension.person1 },
+        person2: { ...prev.pension.person2, ...pension.person2 },
+      },
     }))
   }
 
@@ -298,6 +385,7 @@ export function usePlanning() {
     patch,
     setAssumption,
     setPension,
+    setPensionPerson,
     addEvent,
     updateEvent,
     removeEvent,

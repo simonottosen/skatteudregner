@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest"
 import { simulatePlanning } from "../simulate"
-import { DEFAULT_PLANNING_STATE, type PlanningState } from "../types"
+import {
+  DEFAULT_PENSION_PERSON,
+  DEFAULT_PLANNING_STATE,
+  type PlanningState,
+} from "../types"
 
 function makeState(overrides: Partial<PlanningState> = {}): PlanningState {
   return {
@@ -256,15 +260,18 @@ describe("simulatePlanning", () => {
         homeValue: 0,
         mortgageBalance: 0,
         pension: {
-          ratepensionBalance: 1_000_000,
-          livrenteBalance: 0,
-          aldersopsparingBalance: 0,
-          ratepensionAnnual: 0,
-          livrenteAnnual: 0,
-          aldersopsparingAnnual: 0,
+          person1: {
+            ratepensionBalance: 1_000_000,
+            livrenteBalance: 0,
+            aldersopsparingBalance: 0,
+            ratepensionAnnual: 0,
+            livrenteAnnual: 0,
+            aldersopsparingAnnual: 0,
+            folkepensionAge: 67,
+          },
+          person2: { ...DEFAULT_PENSION_PERSON },
           pensionReturn: 0,
           ratepensionYears: 10,
-          folkepensionAge: 67,
           single: true,
           includeFolkepension: true,
         },
@@ -279,6 +286,126 @@ describe("simulatePlanning", () => {
     const at67 = res.points.find((p) => p.age === 67)!.retirementIncome
     expect(at67).toBeGreaterThan(250000)
     expect(at67).toBeLessThan(300000)
+  })
+
+  it("amortizes the mortgage and reports the debt-free age", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 40,
+        endAge: 90,
+        retirementAge: 65,
+        startInvestments: 0,
+        monthlyContribution: 0,
+        homeValue: 3_000_000,
+        mortgageBalance: 2_000_000,
+        mortgageRate: 0.04,
+        mortgageTermYears: 20,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          housingReturn: 0,
+          volatility: 0,
+        },
+      })
+    )
+    // Debt-free 20 years after age 40.
+    expect(res.debtFreeAge).toBe(60)
+    // Mortgage gone → home equity equals the (flat) home value afterwards.
+    const at60 = res.points.find((p) => p.age === 60)!
+    expect(at60.homeEquity).toBeCloseTo(3_000_000, -4)
+  })
+
+  it("reports no debt-free age when there is no mortgage", () => {
+    const res = simulatePlanning(
+      makeState({ currentAge: 30, endAge: 60, homeValue: 0, mortgageBalance: 0 })
+    )
+    expect(res.debtFreeAge).toBeNull()
+  })
+
+  it("sums pension income across both partners when a couple", () => {
+    const person = {
+      ratepensionBalance: 1_000_000,
+      livrenteBalance: 0,
+      aldersopsparingBalance: 0,
+      ratepensionAnnual: 0,
+      livrenteAnnual: 0,
+      aldersopsparingAnnual: 0,
+      folkepensionAge: 67,
+    }
+    const base = {
+      currentAge: 64,
+      endAge: 70,
+      retirementAge: 64,
+      startInvestments: 0,
+      monthlyContribution: 0,
+      annualSpending: 0,
+      homeValue: 0,
+      mortgageBalance: 0,
+    }
+    const single = simulatePlanning(
+      makeState({
+        ...base,
+        pension: {
+          person1: { ...person },
+          person2: { ...DEFAULT_PENSION_PERSON },
+          pensionReturn: 0,
+          ratepensionYears: 10,
+          single: true,
+          includeFolkepension: false,
+        },
+      })
+    )
+    const couple = simulatePlanning(
+      makeState({
+        ...base,
+        pension: {
+          person1: { ...person },
+          person2: { ...person },
+          pensionReturn: 0,
+          ratepensionYears: 10,
+          single: false,
+          includeFolkepension: false,
+        },
+      })
+    )
+    const at65 = (r: typeof single) =>
+      r.points.find((p) => p.age === 65)!.retirementIncome
+    expect(at65(single)).toBeCloseTo(100000, 0)
+    expect(at65(couple)).toBeCloseTo(200000, 0) // two ratepensions paying out
+  })
+
+  it("spends from investments then borrows against home, only after retirement", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 60,
+        endAge: 75,
+        retirementAge: 65,
+        startInvestments: 1_000_000,
+        monthlyContribution: 0,
+        annualSpending: 600_000,
+        homeValue: 5_000_000,
+        mortgageBalance: 0,
+        mortgageTermYears: 1, // already paid off
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0,
+          investmentFee: 0,
+          housingReturn: 0,
+          inflation: 0,
+          volatility: 0,
+        },
+      })
+    )
+    // Before retirement spending is covered by salary → investments untouched.
+    expect(res.points.find((p) => p.age === 64)!.investments).toBeCloseTo(
+      1_000_000,
+      0
+    )
+    // After retirement the 1.0M is drawn down within ~2 years…
+    expect(res.points.find((p) => p.age === 67)!.investments).toBe(0)
+    // …then spending is funded by borrowing against the home (equity falls).
+    const at75 = res.points.find((p) => p.age === 75)!
+    expect(at75.homeEquity).toBeLessThan(5_000_000)
+    expect(at75.homeEquity).toBeGreaterThanOrEqual(0)
   })
 
   it("is deterministic across runs and keeps p10 <= median <= p90", () => {

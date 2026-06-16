@@ -6,17 +6,23 @@ import {
   NumberInput,
   ContentSwitcher,
   Switch,
-  Toggle,
+  Checkbox,
+  RadioButtonGroup,
+  RadioButton,
   InlineNotification,
   Tag,
+  Toggletip,
+  ToggletipButton,
+  ToggletipContent,
 } from "@carbon/react"
-import { Add, Edit, TrashCan, Reset } from "@carbon/icons-react"
+import { Add, Edit, TrashCan, Reset, Information } from "@carbon/icons-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { usePlanning } from "@/hooks/use-planning"
 import { simulatePlanning } from "@/lib/planning/simulate"
 import type {
   NewPlanningEvent,
+  PensionPerson,
   PlanningEvent,
   PlanningResult,
 } from "@/lib/planning/types"
@@ -55,6 +61,68 @@ function PercentField({
   )
 }
 
+/** The pot/contribution inputs for one person's pension. */
+function PensionPersonFields({
+  idPrefix,
+  person,
+  onChange,
+}: {
+  idPrefix: string
+  person: PensionPerson
+  onChange: <K extends keyof PensionPerson>(key: K, value: PensionPerson[K]) => void
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <MoneyInput
+        id={`${idPrefix}-rate-bal`}
+        label="Ratepension — saldo"
+        value={person.ratepensionBalance}
+        onChange={(v) => onChange("ratepensionBalance", v)}
+      />
+      <MoneyInput
+        id={`${idPrefix}-liv-bal`}
+        label="Livrente — saldo"
+        value={person.livrenteBalance}
+        onChange={(v) => onChange("livrenteBalance", v)}
+      />
+      <MoneyInput
+        id={`${idPrefix}-alder-bal`}
+        label="Aldersopsparing — saldo"
+        value={person.aldersopsparingBalance}
+        onChange={(v) => onChange("aldersopsparingBalance", v)}
+      />
+      <MoneyInput
+        id={`${idPrefix}-rate-ann`}
+        label="Ratepension — pr. år (maks. 68.700 kr. i 2026)"
+        value={person.ratepensionAnnual}
+        onChange={(v) => onChange("ratepensionAnnual", v)}
+      />
+      <MoneyInput
+        id={`${idPrefix}-liv-ann`}
+        label="Livrente — pr. år"
+        value={person.livrenteAnnual}
+        onChange={(v) => onChange("livrenteAnnual", v)}
+      />
+      <MoneyInput
+        id={`${idPrefix}-alder-ann`}
+        label="Aldersopsparing — pr. år (maks. 9.900 / 64.200 kr. i 2026)"
+        value={person.aldersopsparingAnnual}
+        onChange={(v) => onChange("aldersopsparingAnnual", v)}
+      />
+      <NumberInput
+        id={`${idPrefix}-folke-age`}
+        label="Folkepensionsalder"
+        min={60}
+        max={75}
+        value={person.folkepensionAge}
+        onChange={(_e, { value }) =>
+          onChange("folkepensionAge", num(value, person.folkepensionAge))
+        }
+      />
+    </div>
+  )
+}
+
 const EVENT_TYPE_LABEL: Record<PlanningEvent["type"], string> = {
   expense: "Engangsudgift",
   windfall: "Engangsindtægt",
@@ -79,7 +147,8 @@ export function PlanningOverview() {
   const planning = usePlanning()
   const { state } = planning
   const [view, setView] = useState<WealthView>("total")
-  const [real, setReal] = useState(false)
+  const [real, setReal] = useState(true)
+  const currentYear = new Date().getFullYear()
   const [editorOpen, setEditorOpen] = useState(false)
   const [editing, setEditing] = useState<PlanningEvent | null>(null)
 
@@ -91,6 +160,7 @@ export function PlanningOverview() {
     const inf = state.assumptions.inflation
     return {
       fiAge: result.fiAge,
+      debtFreeAge: result.debtFreeAge,
       points: result.points.map((p) => {
         const f = Math.pow(1 + inf, p.age - state.currentAge)
         return {
@@ -99,6 +169,10 @@ export function PlanningOverview() {
           homeEquity: p.homeEquity / f,
           netWorth: p.netWorth / f,
           band: [p.band[0] / f, p.band[1] / f] as [number, number],
+          investmentsBand: [
+            p.investmentsBand[0] / f,
+            p.investmentsBand[1] / f,
+          ] as [number, number],
           contributionsTotal: p.contributionsTotal / f,
           housingGainsTotal: p.housingGainsTotal / f,
           investmentGainsTotal: p.investmentGainsTotal / f,
@@ -116,8 +190,9 @@ export function PlanningOverview() {
     displayResult.points.at(-1)
   const endPoint = displayResult.points.at(-1)
   // Retirement income once folkepension is included (fullest year).
+  const folkepensionAge = state.pension.person1.folkepensionAge
   const pensionIncomePoint =
-    displayResult.points.find((p) => p.age === state.pension.folkepensionAge) ??
+    displayResult.points.find((p) => p.age === folkepensionAge) ??
     displayResult.points.find((p) => p.retirementIncome > 0)
 
   const openAdd = () => {
@@ -148,34 +223,27 @@ export function PlanningOverview() {
       {/* Chart */}
       <Card className="mb-6 border-t-4 border-[var(--cds-border-interactive)]">
         <CardHeader className="pb-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <CardTitle className="text-lg">Formueudvikling</CardTitle>
-            <div className="flex flex-wrap gap-2">
-              <div className="w-72 max-w-full">
-                <ContentSwitcher
-                  size="sm"
-                  selectedIndex={view === "total" ? 0 : view === "split" ? 1 : 2}
-                  onChange={({ index }) =>
-                    setView(
-                      index === 2 ? "sources" : index === 1 ? "split" : "total"
-                    )
-                  }
-                >
-                  <Switch name="total" text="Samlet" />
-                  <Switch name="split" text="Opdelt" />
-                  <Switch name="sources" text="Vækstkilder" />
-                </ContentSwitcher>
-              </div>
-              <div className="w-56 max-w-full">
-                <ContentSwitcher
-                  size="sm"
-                  selectedIndex={real ? 1 : 0}
-                  onChange={({ index }) => setReal(index === 1)}
-                >
-                  <Switch name="nominal" text="Nominelt" />
-                  <Switch name="real" text="Nutidskroner" />
-                </ContentSwitcher>
-              </div>
+          <CardTitle className="text-lg">Formueudvikling</CardTitle>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <div style={{ width: "16rem", maxWidth: "100%" }}>
+              <ContentSwitcher
+                size="sm"
+                selectedIndex={view === "total" ? 0 : 1}
+                onChange={({ index }) => setView(index === 1 ? "detailed" : "total")}
+              >
+                <Switch name="total" text="Samlet" />
+                <Switch name="detailed" text="Detaljeret" />
+              </ContentSwitcher>
+            </div>
+            <div style={{ width: "18rem", maxWidth: "100%" }}>
+              <ContentSwitcher
+                size="sm"
+                selectedIndex={real ? 1 : 0}
+                onChange={({ index }) => setReal(index === 1)}
+              >
+                <Switch name="nominal" text="Nominelt" />
+                <Switch name="real" text="Nutidskroner" />
+              </ContentSwitcher>
             </div>
           </div>
         </CardHeader>
@@ -199,7 +267,7 @@ export function PlanningOverview() {
             </div>
             <div>
               <p className="text-muted-foreground text-xs">
-                Pensionsindkomst/år ({state.pension.folkepensionAge})
+                Pensionsindkomst/år ({folkepensionAge})
               </p>
               <p className="text-xl font-bold">
                 {pensionIncomePoint
@@ -208,7 +276,29 @@ export function PlanningOverview() {
               </p>
             </div>
             <div>
-              <p className="text-muted-foreground text-xs">Økonomisk uafhængig</p>
+              <div className="flex items-center gap-1">
+                <p className="text-muted-foreground text-xs">Økonomisk uafhængig</p>
+                <Toggletip align="bottom">
+                  <ToggletipButton label="Sådan beregnes det">
+                    <Information size={14} />
+                  </ToggletipButton>
+                  <ToggletipContent>
+                    <p className="text-sm">
+                      Du er økonomisk uafhængig, når dine investeringer kan dække
+                      dit forbrug uden løn — her sat til <strong>25×</strong> dit
+                      årlige forbrug (en sikker udtræksrate på 4 %).
+                    </p>
+                    <p className="mt-2 text-sm">
+                      Med et årligt forbrug på{" "}
+                      {formatCompactDKK(state.annualSpending)} er målet ca.{" "}
+                      {formatCompactDKK(state.annualSpending * 25)}{" "}
+                      {result.fiAge != null
+                        ? `— dine investeringer (ekskl. bolig) når det ved alder ${result.fiAge}.`
+                        : "— dine investeringer når det ikke inden for perioden."}
+                    </p>
+                  </ToggletipContent>
+                </Toggletip>
+              </div>
               <p className="text-xl font-bold">
                 {result.fiAge != null ? `Alder ${result.fiAge}` : "Ikke nået"}
               </p>
@@ -219,6 +309,8 @@ export function PlanningOverview() {
             view={view}
             retirementAge={state.retirementAge}
             real={real}
+            currentAge={state.currentAge}
+            currentYear={currentYear}
           />
         </CardContent>
       </Card>
@@ -375,46 +467,12 @@ export function PlanningOverview() {
         <CardContent className="space-y-4">
           <p className="text-muted-foreground text-sm">
             Indbetalinger og nuværende saldi på dine pensioner. Vi beregner din
-            indkomst som pensionist — inkl. folkepension med modregning. Beløb
-            fra skattesiden er hentet, hvor de findes.
+            indkomst som pensionist — inkl. folkepension med modregning
+            (aldersopsparing er fritaget). Beløb fra skattesiden er hentet, hvor
+            de findes. De årlige indbetalinger antages at stige med inflationen
+            hvert år.
           </p>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <MoneyInput
-              id="pen-rate-bal"
-              label="Ratepension — saldo"
-              value={state.pension.ratepensionBalance}
-              onChange={(v) => planning.setPension("ratepensionBalance", v)}
-            />
-            <MoneyInput
-              id="pen-liv-bal"
-              label="Livrente — saldo"
-              value={state.pension.livrenteBalance}
-              onChange={(v) => planning.setPension("livrenteBalance", v)}
-            />
-            <MoneyInput
-              id="pen-alder-bal"
-              label="Aldersopsparing — saldo"
-              value={state.pension.aldersopsparingBalance}
-              onChange={(v) => planning.setPension("aldersopsparingBalance", v)}
-            />
-            <MoneyInput
-              id="pen-rate-ann"
-              label="Ratepension — pr. år"
-              value={state.pension.ratepensionAnnual}
-              onChange={(v) => planning.setPension("ratepensionAnnual", v)}
-            />
-            <MoneyInput
-              id="pen-liv-ann"
-              label="Livrente — pr. år"
-              value={state.pension.livrenteAnnual}
-              onChange={(v) => planning.setPension("livrenteAnnual", v)}
-            />
-            <MoneyInput
-              id="pen-alder-ann"
-              label="Aldersopsparing — pr. år"
-              value={state.pension.aldersopsparingAnnual}
-              onChange={(v) => planning.setPension("aldersopsparingAnnual", v)}
-            />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <PercentField
               id="pen-roi"
               label="Afkast på pension"
@@ -434,42 +492,57 @@ export function PlanningOverview() {
                 )
               }
             />
-            <NumberInput
-              id="pen-folke-age"
-              label="Folkepensionsalder"
-              min={60}
-              max={75}
-              value={state.pension.folkepensionAge}
-              onChange={(_e, { value }) =>
-                planning.setPension(
-                  "folkepensionAge",
-                  num(value, state.pension.folkepensionAge)
-                )
-              }
-            />
           </div>
-          <div className="flex flex-wrap gap-6">
-            <Toggle
-              id="pen-single"
-              size="sm"
-              labelText="Husstand"
-              labelA="Par"
-              labelB="Enlig"
-              toggled={state.pension.single}
-              onToggle={(checked) => planning.setPension("single", checked)}
-            />
-            <Toggle
+          <div className="flex flex-wrap items-center gap-8">
+            <RadioButtonGroup
+              legendText="Husstand"
+              name="pen-household"
+              valueSelected={state.pension.single ? "single" : "couple"}
+              onChange={(value) =>
+                planning.setPension("single", value === "single")
+              }
+            >
+              <RadioButton labelText="Enlig" value="single" id="pen-h-single" />
+              <RadioButton
+                labelText="Par / samlevende"
+                value="couple"
+                id="pen-h-couple"
+              />
+            </RadioButtonGroup>
+            <Checkbox
               id="pen-include-folke"
-              size="sm"
               labelText="Medregn folkepension"
-              labelA="Nej"
-              labelB="Ja"
-              toggled={state.pension.includeFolkepension}
-              onToggle={(checked) =>
+              checked={state.pension.includeFolkepension}
+              onChange={(_e, { checked }) =>
                 planning.setPension("includeFolkepension", checked)
               }
             />
           </div>
+
+          {!state.pension.single && (
+            <h4 className="text-sm font-medium">Person 1</h4>
+          )}
+          <PensionPersonFields
+            idPrefix="pen1"
+            person={state.pension.person1}
+            onChange={(key, value) =>
+              planning.setPensionPerson("person1", key, value)
+            }
+          />
+
+          {!state.pension.single && (
+            <>
+              <Separator />
+              <h4 className="text-sm font-medium">Person 2</h4>
+              <PensionPersonFields
+                idPrefix="pen2"
+                person={state.pension.person2}
+                onChange={(key, value) =>
+                  planning.setPensionPerson("person2", key, value)
+                }
+              />
+            </>
+          )}
         </CardContent>
       </Card>
 
