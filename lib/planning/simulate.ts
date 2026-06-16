@@ -6,6 +6,10 @@
  * yearly investment returns from a normal distribution to produce a p10–p90
  * confidence band. Everything is deterministic given the same inputs, so the
  * chart never jitters between renders.
+ *
+ * Monthly contributions stop at the retirement age. The deterministic path also
+ * tracks where each year's growth comes from — contributions, home appreciation
+ * (+ mortgage paydown), and investment returns — for the growth-sources view.
  */
 
 import type {
@@ -14,6 +18,11 @@ import type {
   PlanningState,
   PropertyEvent,
 } from "./types"
+import {
+  PRIVATE_PAYOUT_OFFSET,
+  annuityPayment,
+  folkepensionAfterModregning,
+} from "./pension"
 
 // Danish realkredit assumptions, mirroring lib/budget/generate-budget.ts.
 const MORTGAGE_RATE = 0.04
@@ -28,6 +37,17 @@ interface SimState {
   housingReturn: number
   /** Monthly contribution (a recurring event can change it). */
   monthly: number
+}
+
+interface PathResult {
+  investments: number[]
+  netWorth: number[]
+  /** Per-year amount contributed to investments. */
+  contributions: number[]
+  /** Per-year home equity gain (appreciation + afdrag). */
+  housingGains: number[]
+  /** Per-year investment return earned. */
+  investmentGains: number[]
 }
 
 const MC_RUNS = 400
@@ -64,7 +84,6 @@ function amortizeYear(mortgage: number): number {
   const rMonth = MORTGAGE_RATE / 12
   const annuity =
     (mortgage * rMonth) / (1 - Math.pow(1 + rMonth, -MORTGAGE_TERM_MONTHS))
-  // Principal repaid over the next 12 months.
   let balance = mortgage
   for (let m = 0; m < 12 && balance > 0; m++) {
     const interest = balance * rMonth
@@ -74,7 +93,11 @@ function amortizeYear(mortgage: number): number {
 }
 
 /** Apply a single life event to the running state (mutates and returns it). */
-function applyEvent(s: SimState, event: PlanningEvent, globalHousingReturn: number): SimState {
+function applyEvent(
+  s: SimState,
+  event: PlanningEvent,
+  globalHousingReturn: number
+): SimState {
   switch (event.type) {
     case "expense":
       s.investments -= event.amount
@@ -87,9 +110,7 @@ function applyEvent(s: SimState, event: PlanningEvent, globalHousingReturn: numb
       break
     case "property": {
       const ev = event as PropertyEvent
-      // Sell the current home: realise equity into investments.
       s.investments += s.homeValue - s.mortgage
-      // Buy the new home: down payment out of investments, rest financed.
       const ltv = Math.min(1, Math.max(0, ev.mortgageLtv))
       s.investments -= ev.newValue * (1 - ltv)
       s.homeValue = ev.newValue
@@ -113,15 +134,86 @@ function eventsByAge(events: PlanningEvent[]): Map<number, PlanningEvent[]> {
 }
 
 /**
+ * Gross annual retirement income per year (index 0..years), from the private
+ * pension pots and folkepension. Deterministic (pension pots use the fixed
+ * pensionReturn). Pots are filled by annual contributions until retirement,
+ * then paid out from the earliest payout age (folkepensionsalder − 3, but not
+ * before the chosen retirement age).
+ */
+function pensionIncomeByYear(state: PlanningState): number[] {
+  const years = Math.max(0, Math.round(state.endAge - state.currentAge))
+  const p = state.pension
+  const income = new Array<number>(years + 1).fill(0)
+  const r = p.pensionReturn
+  const privateAge = Math.max(
+    state.retirementAge,
+    p.folkepensionAge - PRIVATE_PAYOUT_OFFSET
+  )
+
+  let rate = p.ratepensionBalance
+  let liv = p.livrenteBalance
+  let alder = p.aldersopsparingBalance
+  let rateYearsLeft = Math.max(1, Math.round(p.ratepensionYears))
+  let alderYearsLeft = Math.max(1, Math.round(p.ratepensionYears))
+
+  for (let y = 1; y <= years; y++) {
+    const age = state.currentAge + y
+    if (age < state.retirementAge) {
+      rate += p.ratepensionAnnual
+      liv += p.livrenteAnnual
+      alder += p.aldersopsparingAnnual
+    }
+    rate *= 1 + r
+    liv *= 1 + r
+    alder *= 1 + r
+
+    let ratePay = 0
+    let livPay = 0
+    let alderPay = 0
+    if (age >= privateAge) {
+      if (rateYearsLeft > 0) {
+        ratePay = Math.min(rate, annuityPayment(rate, r, rateYearsLeft))
+        rate -= ratePay
+        rateYearsLeft--
+      }
+      if (alderYearsLeft > 0) {
+        alderPay = Math.min(alder, annuityPayment(alder, r, alderYearsLeft))
+        alder -= alderPay
+        alderYearsLeft--
+      }
+      // Livrente is lifelong → spread the balance over the remaining sim years.
+      const livYearsLeft = state.endAge - age + 1
+      livPay = Math.min(liv, annuityPayment(liv, r, livYearsLeft))
+      liv -= livPay
+    }
+
+    let folke = 0
+    if (p.includeFolkepension && age >= p.folkepensionAge) {
+      // Aldersopsparing is exempt from modregning; ratepension + livrente count.
+      folke = folkepensionAfterModregning(ratePay + livPay, p.single)
+    }
+
+    income[y] = ratePay + livPay + alderPay + folke
+  }
+
+  return income
+}
+
+/**
  * Run one full trajectory. `investmentReturnFor(yearIndex)` supplies the net
  * investment return for each step — a constant for the deterministic path, or a
  * random draw for a Monte Carlo run. Returns per-year totals (length = years+1,
  * including the starting year).
+ *
+ * `incomeByYear` is the gross retirement income; from the retirement age the
+ * portfolio takes in (retirement income − annual spending) instead of a
+ * contribution, i.e. it draws down when pensions don't cover spending.
  */
 function runPath(
   state: PlanningState,
-  investmentReturnFor: (yearIndex: number) => number
-): { investments: number[]; netWorth: number[] } {
+  investmentReturnFor: (yearIndex: number) => number,
+  incomeByYear: number[]
+): PathResult {
   const years = Math.max(0, Math.round(state.endAge - state.currentAge))
   const byAge = eventsByAge(state.events)
   const s: SimState = {
@@ -139,31 +231,49 @@ function runPath(
 
   const investments: number[] = [Math.max(0, s.investments)]
   const netWorth: number[] = [s.investments + (s.homeValue - s.mortgage)]
+  const contributions: number[] = [0]
+  const housingGains: number[] = [0]
+  const investmentGains: number[] = [0]
 
   let contribution = s.monthly * 12
   for (let y = 1; y <= years; y++) {
     const age = state.currentAge + y
+    const retired = age >= state.retirementAge
+    // While working: deposit the contribution. In retirement: take in pension
+    // income minus spending (negative = drawdown from the portfolio).
+    const yearContribution = retired
+      ? incomeByYear[y] - state.annualSpending
+      : contribution
 
-    // Grow + contribute (contribution grows each year).
-    s.investments = s.investments * (1 + investmentReturnFor(y)) + contribution
-    contribution *= 1 + state.assumptions.contributionGrowth
+    // Investments: return on the existing balance, then this year's deposit.
+    const invBefore = s.investments
+    const gain = invBefore * investmentReturnFor(y)
+    s.investments = invBefore + gain + yearContribution
+    if (!retired) contribution *= 1 + state.assumptions.contributionGrowth
 
-    // Home appreciation + mortgage paydown.
+    // Home appreciation + mortgage paydown → housing equity gain.
+    const homeBefore = s.homeValue
     s.homeValue *= 1 + s.housingReturn
+    const appreciation = s.homeValue - homeBefore
+    const mortgageBefore = s.mortgage
     s.mortgage = amortizeYear(s.mortgage)
+    const housingGain = appreciation + (mortgageBefore - s.mortgage)
 
     // Life events at this age (recurring deltas affect next year's contribution).
-    const before = s.monthly
+    const beforeMonthly = s.monthly
     for (const e of byAge.get(age) ?? []) {
       applyEvent(s, e, state.assumptions.housingReturn)
     }
-    if (s.monthly !== before) contribution = s.monthly * 12
+    if (s.monthly !== beforeMonthly) contribution = s.monthly * 12
 
     investments.push(Math.max(0, s.investments))
     netWorth.push(Math.max(0, s.investments) + (s.homeValue - s.mortgage))
+    contributions.push(yearContribution)
+    housingGains.push(housingGain)
+    investmentGains.push(gain)
   }
 
-  return { investments, netWorth }
+  return { investments, netWorth, contributions, housingGains, investmentGains }
 }
 
 function percentile(sortedAsc: number[], p: number): number {
@@ -177,8 +287,9 @@ function percentile(sortedAsc: number[], p: number): number {
 
 /**
  * Simulate the household's wealth trajectory. Produces the deterministic median
- * path, a p10–p90 confidence band from a seeded Monte Carlo, and the FI age
- * (first year liquid investments cover 1/SWR × inflation-grown annual spending).
+ * path, a p10–p90 confidence band from a seeded Monte Carlo, the per-year
+ * growth-source breakdown, and the FI age (first year liquid investments cover
+ * 1/SWR × inflation-grown annual spending).
  */
 export function simulatePlanning(state: PlanningState): PlanningResult {
   const years = Math.max(0, Math.round(state.endAge - state.currentAge))
@@ -186,26 +297,40 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
     state.assumptions
   const meanReturn = investmentReturn - investmentFee
 
-  // Deterministic path (median).
-  const deterministic = runPath(state, () => meanReturn)
+  // Gross retirement income per year (deterministic — shared by all paths).
+  const incomeByYear = pensionIncomeByYear(state)
+
+  // Deterministic path (median + growth sources).
+  const deterministic = runPath(state, () => meanReturn, incomeByYear)
 
   // Monte Carlo paths for the band (only investment return is randomised).
   const mcNetWorthByYear: number[][] = Array.from({ length: years + 1 }, () => [])
   const rng = mulberry32(MC_SEED)
   for (let run = 0; run < MC_RUNS; run++) {
-    const path = runPath(state, () => meanReturn + volatility * nextNormal(rng))
+    const path = runPath(
+      state,
+      () => meanReturn + volatility * nextNormal(rng),
+      incomeByYear
+    )
     for (let y = 0; y <= years; y++) mcNetWorthByYear[y].push(path.netWorth[y])
   }
 
   const fiMultiple = safeWithdrawalRate > 0 ? 1 / safeWithdrawalRate : 25
   let fiAge: number | null = null
 
+  let cumContrib = 0
+  let cumHousing = 0
+  let cumInvest = 0
+
   const points = deterministic.netWorth.map((netWorth, y) => {
     const age = state.currentAge + y
     const investments = deterministic.investments[y]
     const homeEquity = netWorth - investments
 
-    // FI: first year liquid investments cover the inflation-grown spending need.
+    cumContrib += deterministic.contributions[y]
+    cumHousing += deterministic.housingGains[y]
+    cumInvest += deterministic.investmentGains[y]
+
     if (fiAge === null) {
       const spendingNeed =
         state.annualSpending * Math.pow(1 + inflation, y) * fiMultiple
@@ -219,6 +344,13 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
       homeEquity,
       netWorth,
       band: [percentile(sorted, 10), percentile(sorted, 90)] as [number, number],
+      contributionsTotal: cumContrib,
+      housingGainsTotal: cumHousing,
+      investmentGainsTotal: cumInvest,
+      contributionYoY: deterministic.contributions[y],
+      housingGainYoY: deterministic.housingGains[y],
+      investmentGainYoY: deterministic.investmentGains[y],
+      retirementIncome: incomeByYear[y],
     }
   })
 

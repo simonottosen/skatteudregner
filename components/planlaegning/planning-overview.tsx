@@ -6,6 +6,7 @@ import {
   NumberInput,
   ContentSwitcher,
   Switch,
+  Toggle,
   InlineNotification,
   Tag,
 } from "@carbon/react"
@@ -21,6 +22,7 @@ import type {
 } from "@/lib/planning/types"
 import { formatCompactDKK, formatDKK } from "@/lib/format"
 import { PlanningChart, type WealthView } from "./planning-chart"
+import { MoneyInput } from "./money-input"
 import { EventEditor } from "./event-editor"
 
 function num(value: number | string, fallback: number): number {
@@ -45,7 +47,7 @@ function PercentField({
   return (
     <NumberInput
       id={id}
-      label={label}
+      label={`${label} (%)`}
       step={step}
       value={Math.round(value * 10000) / 100}
       onChange={(_e, { value: v }) => onChange(num(v, value * 100) / 100)}
@@ -97,15 +99,26 @@ export function PlanningOverview() {
           homeEquity: p.homeEquity / f,
           netWorth: p.netWorth / f,
           band: [p.band[0] / f, p.band[1] / f] as [number, number],
+          contributionsTotal: p.contributionsTotal / f,
+          housingGainsTotal: p.housingGainsTotal / f,
+          investmentGainsTotal: p.investmentGainsTotal / f,
+          contributionYoY: p.contributionYoY / f,
+          housingGainYoY: p.housingGainYoY / f,
+          investmentGainYoY: p.investmentGainYoY / f,
+          retirementIncome: p.retirementIncome / f,
         }
       }),
     }
   }, [result, real, state.assumptions.inflation, state.currentAge])
 
-  const goalPoint =
-    displayResult.points.find((p) => p.age === state.goalAge) ??
+  const retirementPoint =
+    displayResult.points.find((p) => p.age === state.retirementAge) ??
     displayResult.points.at(-1)
   const endPoint = displayResult.points.at(-1)
+  // Retirement income once folkepension is included (fullest year).
+  const pensionIncomePoint =
+    displayResult.points.find((p) => p.age === state.pension.folkepensionAge) ??
+    displayResult.points.find((p) => p.retirementIncome > 0)
 
   const openAdd = () => {
     setEditing(null)
@@ -138,14 +151,19 @@ export function PlanningOverview() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <CardTitle className="text-lg">Formueudvikling</CardTitle>
             <div className="flex flex-wrap gap-2">
-              <div className="w-48 max-w-full">
+              <div className="w-72 max-w-full">
                 <ContentSwitcher
                   size="sm"
-                  selectedIndex={view === "total" ? 0 : 1}
-                  onChange={({ index }) => setView(index === 1 ? "split" : "total")}
+                  selectedIndex={view === "total" ? 0 : view === "split" ? 1 : 2}
+                  onChange={({ index }) =>
+                    setView(
+                      index === 2 ? "sources" : index === 1 ? "split" : "total"
+                    )
+                  }
                 >
                   <Switch name="total" text="Samlet" />
                   <Switch name="split" text="Opdelt" />
+                  <Switch name="sources" text="Vækstkilder" />
                 </ContentSwitcher>
               </div>
               <div className="w-56 max-w-full">
@@ -162,13 +180,13 @@ export function PlanningOverview() {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="mb-3 grid grid-cols-2 gap-4 sm:grid-cols-3">
+          <div className="mb-3 grid grid-cols-2 gap-4 lg:grid-cols-4">
             <div>
               <p className="text-muted-foreground text-xs">
-                Formue ved alder {state.goalAge}
+                Formue ved pension ({state.retirementAge})
               </p>
               <p className="text-success text-xl font-bold">
-                {goalPoint ? formatCompactDKK(goalPoint.netWorth) : "–"}
+                {retirementPoint ? formatCompactDKK(retirementPoint.netWorth) : "–"}
               </p>
             </div>
             <div>
@@ -177,6 +195,16 @@ export function PlanningOverview() {
               </p>
               <p className="text-xl font-bold">
                 {endPoint ? formatCompactDKK(endPoint.netWorth) : "–"}
+              </p>
+            </div>
+            <div>
+              <p className="text-muted-foreground text-xs">
+                Pensionsindkomst/år ({state.pension.folkepensionAge})
+              </p>
+              <p className="text-xl font-bold">
+                {pensionIncomePoint
+                  ? formatCompactDKK(pensionIncomePoint.retirementIncome)
+                  : "–"}
               </p>
             </div>
             <div>
@@ -189,7 +217,7 @@ export function PlanningOverview() {
           <PlanningChart
             result={displayResult}
             view={view}
-            goalAge={state.goalAge}
+            retirementAge={state.retirementAge}
             real={real}
           />
         </CardContent>
@@ -249,64 +277,44 @@ export function PlanningOverview() {
               }
             />
             <NumberInput
-              id="plan-goal-age"
-              label="Målalder (pension)"
+              id="plan-retire-age"
+              label="Pensionsalder"
               min={state.currentAge}
               max={state.endAge}
-              value={state.goalAge}
+              value={state.retirementAge}
               onChange={(_e, { value }) =>
-                planning.patch({ goalAge: num(value, state.goalAge) })
+                planning.patch({ retirementAge: num(value, state.retirementAge) })
               }
             />
-            <NumberInput
+            <MoneyInput
               id="plan-investments"
-              label="Nuværende investeringer (kr.)"
-              min={0}
-              step={50000}
+              label="Nuværende investeringer"
               value={state.startInvestments}
-              onChange={(_e, { value }) =>
-                planning.patch({ startInvestments: num(value, 0) })
-              }
+              onChange={(v) => planning.patch({ startInvestments: v })}
             />
-            <NumberInput
+            <MoneyInput
               id="plan-monthly"
-              label="Månedlig opsparing (kr.)"
-              min={0}
-              step={1000}
+              label="Månedlig opsparing"
               value={state.monthlyContribution}
-              onChange={(_e, { value }) =>
-                planning.patch({ monthlyContribution: num(value, 0) })
-              }
+              onChange={(v) => planning.patch({ monthlyContribution: v })}
             />
-            <NumberInput
+            <MoneyInput
               id="plan-spending"
-              label="Årligt forbrug (kr.)"
-              min={0}
-              step={10000}
-              value={state.annualSpending}
-              onChange={(_e, { value }) =>
-                planning.patch({ annualSpending: num(value, 0) })
-              }
+              label="Månedligt forbrug"
+              value={Math.round(state.annualSpending / 12)}
+              onChange={(v) => planning.patch({ annualSpending: v * 12 })}
             />
-            <NumberInput
+            <MoneyInput
               id="plan-home"
-              label="Boligværdi (kr.)"
-              min={0}
-              step={100000}
+              label="Boligværdi"
               value={state.homeValue}
-              onChange={(_e, { value }) =>
-                planning.patch({ homeValue: num(value, 0) })
-              }
+              onChange={(v) => planning.patch({ homeValue: v })}
             />
-            <NumberInput
+            <MoneyInput
               id="plan-mortgage"
-              label="Restgæld på bolig (kr.)"
-              min={0}
-              step={100000}
+              label="Restgæld på bolig"
               value={state.mortgageBalance}
-              onChange={(_e, { value }) =>
-                planning.patch({ mortgageBalance: num(value, 0) })
-              }
+              onChange={(v) => planning.patch({ mortgageBalance: v })}
             />
           </div>
         </CardContent>
@@ -355,11 +363,111 @@ export function PlanningOverview() {
               value={state.assumptions.contributionGrowth}
               onChange={(v) => planning.setAssumption("contributionGrowth", v)}
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Pension */}
+      <Card className="mb-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-lg">Pension</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-muted-foreground text-sm">
+            Indbetalinger og nuværende saldi på dine pensioner. Vi beregner din
+            indkomst som pensionist — inkl. folkepension med modregning. Beløb
+            fra skattesiden er hentet, hvor de findes.
+          </p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <MoneyInput
+              id="pen-rate-bal"
+              label="Ratepension — saldo"
+              value={state.pension.ratepensionBalance}
+              onChange={(v) => planning.setPension("ratepensionBalance", v)}
+            />
+            <MoneyInput
+              id="pen-liv-bal"
+              label="Livrente — saldo"
+              value={state.pension.livrenteBalance}
+              onChange={(v) => planning.setPension("livrenteBalance", v)}
+            />
+            <MoneyInput
+              id="pen-alder-bal"
+              label="Aldersopsparing — saldo"
+              value={state.pension.aldersopsparingBalance}
+              onChange={(v) => planning.setPension("aldersopsparingBalance", v)}
+            />
+            <MoneyInput
+              id="pen-rate-ann"
+              label="Ratepension — pr. år"
+              value={state.pension.ratepensionAnnual}
+              onChange={(v) => planning.setPension("ratepensionAnnual", v)}
+            />
+            <MoneyInput
+              id="pen-liv-ann"
+              label="Livrente — pr. år"
+              value={state.pension.livrenteAnnual}
+              onChange={(v) => planning.setPension("livrenteAnnual", v)}
+            />
+            <MoneyInput
+              id="pen-alder-ann"
+              label="Aldersopsparing — pr. år"
+              value={state.pension.aldersopsparingAnnual}
+              onChange={(v) => planning.setPension("aldersopsparingAnnual", v)}
+            />
             <PercentField
-              id="a-swr"
-              label="Sikker udtræksrate (FI)"
-              value={state.assumptions.safeWithdrawalRate}
-              onChange={(v) => planning.setAssumption("safeWithdrawalRate", v)}
+              id="pen-roi"
+              label="Afkast på pension"
+              value={state.pension.pensionReturn}
+              onChange={(v) => planning.setPension("pensionReturn", v)}
+            />
+            <NumberInput
+              id="pen-rate-years"
+              label="Ratepension — udbetalingsår"
+              min={10}
+              max={30}
+              value={state.pension.ratepensionYears}
+              onChange={(_e, { value }) =>
+                planning.setPension(
+                  "ratepensionYears",
+                  num(value, state.pension.ratepensionYears)
+                )
+              }
+            />
+            <NumberInput
+              id="pen-folke-age"
+              label="Folkepensionsalder"
+              min={60}
+              max={75}
+              value={state.pension.folkepensionAge}
+              onChange={(_e, { value }) =>
+                planning.setPension(
+                  "folkepensionAge",
+                  num(value, state.pension.folkepensionAge)
+                )
+              }
+            />
+          </div>
+          <div className="flex flex-wrap gap-6">
+            <Toggle
+              id="pen-single"
+              size="sm"
+              labelText="Husstand"
+              labelA="Par"
+              labelB="Enlig"
+              toggled={state.pension.single}
+              onToggle={(checked) => planning.setPension("single", checked)}
+            />
+            <Toggle
+              id="pen-include-folke"
+              size="sm"
+              labelText="Medregn folkepension"
+              labelA="Nej"
+              labelB="Ja"
+              toggled={state.pension.includeFolkepension}
+              onToggle={(checked) =>
+                planning.setPension("includeFolkepension", checked)
+              }
             />
           </div>
         </CardContent>

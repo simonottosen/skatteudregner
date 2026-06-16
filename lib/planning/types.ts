@@ -96,6 +96,42 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown
 /** A planning event without its id, preserving the per-type fields. */
 export type NewPlanningEvent = DistributiveOmit<PlanningEvent, "id">
 
+/** Pension pots, contributions and payout settings for retirement income. */
+export interface PensionState {
+  /** Current balances (DKK). */
+  ratepensionBalance: number
+  livrenteBalance: number
+  aldersopsparingBalance: number
+  /** Annual contributions while working (until retirement age). */
+  ratepensionAnnual: number
+  livrenteAnnual: number
+  aldersopsparingAnnual: number
+  /** Expected annual return on the pension pots. */
+  pensionReturn: number
+  /** Ratepension/aldersopsparing payout duration in years (10–30). */
+  ratepensionYears: number
+  /** Folkepensionsalder (state pension age). */
+  folkepensionAge: number
+  /** Single vs. couple — affects pensionstillæg + modregning. */
+  single: boolean
+  /** Whether to include folkepension in the retirement income. */
+  includeFolkepension: boolean
+}
+
+export const DEFAULT_PENSION: PensionState = {
+  ratepensionBalance: 0,
+  livrenteBalance: 0,
+  aldersopsparingBalance: 0,
+  ratepensionAnnual: 0,
+  livrenteAnnual: 0,
+  aldersopsparingAnnual: 0,
+  pensionReturn: 0.0577,
+  ratepensionYears: 10,
+  folkepensionAge: 69,
+  single: true,
+  includeFolkepension: true,
+}
+
 /** Persisted state for the planning page. */
 export interface PlanningState {
   version: 1
@@ -103,8 +139,8 @@ export interface PlanningState {
   currentAge: number
   /** Age the simulation runs to (inclusive). */
   endAge: number
-  /** Target retirement age — drawn as the "Goal" marker. */
-  goalAge: number
+  /** Retirement age — monthly contributions stop here; drawn as a marker. */
+  retirementAge: number
   /** Starting liquid investment portfolio in DKK. */
   startInvestments: number
   /** Current home value in DKK (0 if renting). */
@@ -116,6 +152,7 @@ export interface PlanningState {
   /** Annual household spending in DKK, used for the FI threshold. */
   annualSpending: number
   assumptions: PlanningAssumptions
+  pension: PensionState
   events: PlanningEvent[]
 }
 
@@ -123,13 +160,14 @@ export const DEFAULT_PLANNING_STATE: PlanningState = {
   version: 1,
   currentAge: 30,
   endAge: 90,
-  goalAge: 60,
+  retirementAge: 65,
   startInvestments: 0,
   homeValue: 0,
   mortgageBalance: 0,
   monthlyContribution: 0,
   annualSpending: 0,
   assumptions: { ...DEFAULT_ASSUMPTIONS },
+  pension: { ...DEFAULT_PENSION },
   events: [],
 }
 
@@ -144,6 +182,22 @@ export interface PlanningPoint {
   netWorth: number
   /** [p10, p90] of total wealth for the confidence band. */
   band: [number, number]
+
+  // Growth-source breakdown (deterministic path, nominal DKK).
+  /** Cumulative money paid into investments so far. */
+  contributionsTotal: number
+  /** Cumulative gain from home appreciation + mortgage paydown. */
+  housingGainsTotal: number
+  /** Cumulative investment returns earned. */
+  investmentGainsTotal: number
+  /** Money paid in this year. */
+  contributionYoY: number
+  /** Housing equity gained this year (appreciation + afdrag). */
+  housingGainYoY: number
+  /** Investment return earned this year. */
+  investmentGainYoY: number
+  /** Gross annual retirement income (pensions + folkepension) this year. */
+  retirementIncome: number
 }
 
 export interface PlanningResult {

@@ -13,6 +13,7 @@ import type {
   PlanningEvent,
   PlanningEventType,
 } from "@/lib/planning/types"
+import { MoneyInput } from "./money-input"
 
 const TYPE_LABEL: Record<PlanningEventType, string> = {
   expense: "Stor engangsudgift (fx bryllup)",
@@ -157,13 +158,11 @@ export function EventEditor({
         />
 
         {(draft.type === "expense" || draft.type === "windfall") && (
-          <NumberInput
+          <MoneyInput
             id="event-amount"
-            label="Beløb (kr.)"
-            min={0}
-            step={10000}
+            label="Beløb"
             value={draft.amount}
-            onChange={(_e, { value }) => set("amount", num(value, 0))}
+            onChange={(v) => set("amount", v)}
           />
         )}
 
@@ -179,13 +178,11 @@ export function EventEditor({
 
         {draft.type === "property" && (
           <>
-            <NumberInput
+            <MoneyInput
               id="event-newvalue"
-              label="Pris på ny bolig (kr.)"
-              min={0}
-              step={100000}
+              label="Pris på ny bolig"
               value={draft.newValue}
-              onChange={(_e, { value }) => set("newValue", num(value, 0))}
+              onChange={(v) => set("newValue", v)}
             />
             <NumberInput
               id="event-ltv"

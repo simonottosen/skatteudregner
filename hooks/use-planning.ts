@@ -7,12 +7,15 @@ import { useBudget } from "@/components/budget-provider"
 import { estimateMortgage } from "@/lib/budget/generate-budget"
 import {
   DEFAULT_ASSUMPTIONS,
+  DEFAULT_PENSION,
   DEFAULT_PLANNING_STATE,
   type NewPlanningEvent,
+  type PensionState,
   type PlanningAssumptions,
   type PlanningEvent,
   type PlanningState,
 } from "@/lib/planning/types"
+import { folkepensionAge } from "@/lib/planning/pension"
 
 const STORAGE_KEY = "skatteberegner:planning"
 
@@ -75,6 +78,27 @@ function normalizeEvents(value: unknown): PlanningEvent[] {
   return out
 }
 
+function normalizePension(value: unknown): PensionState {
+  if (!value || typeof value !== "object") return { ...DEFAULT_PENSION }
+  const o = value as Partial<PensionState>
+  return {
+    ratepensionBalance: clampNum(o.ratepensionBalance, 0, 0),
+    livrenteBalance: clampNum(o.livrenteBalance, 0, 0),
+    aldersopsparingBalance: clampNum(o.aldersopsparingBalance, 0, 0),
+    ratepensionAnnual: clampNum(o.ratepensionAnnual, 0, 0),
+    livrenteAnnual: clampNum(o.livrenteAnnual, 0, 0),
+    aldersopsparingAnnual: clampNum(o.aldersopsparingAnnual, 0, 0),
+    pensionReturn: clampNum(o.pensionReturn, DEFAULT_PENSION.pensionReturn, -1, 1),
+    ratepensionYears: clampNum(o.ratepensionYears, DEFAULT_PENSION.ratepensionYears, 1, 40),
+    folkepensionAge: clampNum(o.folkepensionAge, DEFAULT_PENSION.folkepensionAge, 60, 75),
+    single: typeof o.single === "boolean" ? o.single : DEFAULT_PENSION.single,
+    includeFolkepension:
+      typeof o.includeFolkepension === "boolean"
+        ? o.includeFolkepension
+        : DEFAULT_PENSION.includeFolkepension,
+  }
+}
+
 function normalizePlanning(raw: unknown): PlanningState {
   if (!raw || typeof raw !== "object") return { ...DEFAULT_PLANNING_STATE }
   const o = raw as Partial<PlanningState>
@@ -84,13 +108,19 @@ function normalizePlanning(raw: unknown): PlanningState {
     version: 1,
     currentAge,
     endAge,
-    goalAge: clampNum(o.goalAge, DEFAULT_PLANNING_STATE.goalAge, currentAge, endAge),
+    retirementAge: clampNum(
+      o.retirementAge,
+      DEFAULT_PLANNING_STATE.retirementAge,
+      currentAge,
+      endAge
+    ),
     startInvestments: clampNum(o.startInvestments, 0, 0),
     homeValue: clampNum(o.homeValue, 0, 0),
     mortgageBalance: clampNum(o.mortgageBalance, 0, 0),
     monthlyContribution: clampNum(o.monthlyContribution, 0, 0),
     annualSpending: clampNum(o.annualSpending, 0, 0),
     assumptions: normalizeAssumptions(o.assumptions),
+    pension: normalizePension(o.pension),
     events: normalizeEvents(o.events),
   }
 }
@@ -131,6 +161,9 @@ export function usePlanning() {
 
   const derivedDefaults = useMemo(() => {
     const remaining = Math.max(0, Math.round(budgetIncome - budgetExpenses))
+    const currentAge =
+      ageFromBirthDate(input.birthDate) ?? DEFAULT_PLANNING_STATE.currentAge
+    const birthYear = new Date().getFullYear() - currentAge
     return {
       monthlyContribution: remaining,
       annualSpending: Math.round(budgetExpenses * 12),
@@ -138,7 +171,13 @@ export function usePlanning() {
       mortgageBalance: Math.round(
         estimateMortgage(input.mortgageInterest || 0).principal
       ),
-      currentAge: ageFromBirthDate(input.birthDate) ?? DEFAULT_PLANNING_STATE.currentAge,
+      currentAge,
+      pension: {
+        ratepensionAnnual: Math.round(input.privatePensionRatepension || 0),
+        livrenteAnnual: Math.round(input.privatePensionLivrente || 0),
+        single: budget.state.mode === "single",
+        folkepensionAge: folkepensionAge(birthYear),
+      },
     }
   }, [
     budgetIncome,
@@ -146,6 +185,9 @@ export function usePlanning() {
     input.property?.propertyValue,
     input.mortgageInterest,
     input.birthDate,
+    input.privatePensionRatepension,
+    input.privatePensionLivrente,
+    budget.state.mode,
   ])
 
   // Sync to Supabase when signed in (debounced + flush on leave).
@@ -173,8 +215,9 @@ export function usePlanning() {
   // While untouched, keep the linked fields mirroring tax/budget.
   useEffect(() => {
     if (!hydrated || touched) return
+    const { pension, ...rest } = derivedDefaults
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setState((p) => ({ ...p, ...derivedDefaults }))
+    setState((p) => ({ ...p, ...rest, pension: { ...p.pension, ...pension } }))
   }, [hydrated, touched, derivedDefaults])
 
   // Persist once the user (or a restore) has taken ownership of the state.
@@ -204,6 +247,17 @@ export function usePlanning() {
     }))
   }
 
+  const setPension = <K extends keyof PensionState>(
+    key: K,
+    value: PensionState[K]
+  ) => {
+    setTouched(true)
+    setState((prev) => ({
+      ...prev,
+      pension: { ...prev.pension, [key]: value },
+    }))
+  }
+
   const addEvent = (event: NewPlanningEvent) => {
     setTouched(true)
     setState((prev) => ({
@@ -228,7 +282,12 @@ export function usePlanning() {
   /** Re-pull the linked fields from the current tax/budget data. */
   const pullFromSources = () => {
     setTouched(true)
-    setState((prev) => ({ ...prev, ...derivedDefaults }))
+    const { pension, ...rest } = derivedDefaults
+    setState((prev) => ({
+      ...prev,
+      ...rest,
+      pension: { ...prev.pension, ...pension },
+    }))
   }
 
   return {
@@ -238,6 +297,7 @@ export function usePlanning() {
     derivedDefaults,
     patch,
     setAssumption,
+    setPension,
     addEvent,
     updateEvent,
     removeEvent,

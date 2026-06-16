@@ -40,16 +40,17 @@ Beregneren er et estimat og erstatter ikke SKATs officielle beregning.
 
 - **Formue-simulering** – Projicér din samlede formue (investeringer + friværdi i bolig) mange år frem, år for år
 - **Pre-udfyldt** – Månedlig opsparing, boligværdi og restgæld hentes automatisk fra budget- og skattesiderne (kan rettes frit)
-- **Antagelser** – Afkast på bolig/investeringer, gebyr, volatilitet, inflation, opsparingsvækst og sikker udtræksrate (med danske standardværdier)
-- **Usikkerhedsbånd** – Et 10–90 % konfidensbånd (Monte Carlo) omkring den forventede kurve, plus markør for økonomisk uafhængighed (FI) og målalder
+- **Antagelser** – Afkast på bolig/investeringer, gebyr, volatilitet, inflation og opsparingsvækst (med danske standardværdier, vist i procent)
+- **Usikkerhedsbånd** – Et 10–90 % konfidensbånd (Monte Carlo) omkring den forventede kurve, plus markør for økonomisk uafhængighed (FI) og pensionsalder
+- **Pension** – Ratepension, livrente og aldersopsparing (saldi, indbetalinger, afkast, udbetalingsår); appen beregner indkomst som pensionist inkl. folkepension med modregning (aldersopsparing er fritaget). Ved pensionsalderen stopper opsparingen, og pensionsindkomsten dækker forbruget
 - **Større livsbegivenheder** – Tilføj engangsudgifter (fx bryllup), arv/bonus, ændret opsparing, eller en bolighandel (sælg → køb nyt med valgt belåningsgrad og afkast)
-- **Nominelt / nutidskroner** og **samlet / opdelt** visning
+- **Visninger** – Samlet / opdelt / vækstkilder (indbetalinger vs. bolig- vs. investeringsgevinst) og nominelt / nutidskroner
 
 ### Generelt
 
 - **Konto & synkronisering** – Valgfri e-mail/adgangskode-login (Supabase) gemmer dine data i skyen; ellers gemmes alt lokalt i browseren
 - **Mørk tilstand** – Tryk `d` for at skifte
-- **202 tests** – Beregnings-, budget- og PDF-moduler er testet
+- **211 tests** – Beregnings-, budget- og PDF-moduler er testet
 
 ---
 
@@ -251,7 +252,7 @@ npm run test:run
 
 ```
 Test Files  15 passed
-Tests       202 passed
+Tests       211 passed
 ```
 
 Testfiler dækker skatteberegningens moduler, budget-generatoren, lønseddel-sammenligning samt PDF-parsing og formatering. Excel-scenarierne i `excel-scenarios.test.ts` verificerer beregneren mod kendte skatteberegninger.

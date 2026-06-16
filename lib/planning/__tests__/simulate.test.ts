@@ -189,6 +189,98 @@ describe("simulatePlanning", () => {
     expect(fiPoint.investments).toBeGreaterThanOrEqual(7_500_000)
   })
 
+  it("stops monthly contributions at the retirement age", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 30,
+        endAge: 34,
+        retirementAge: 32,
+        startInvestments: 0,
+        monthlyContribution: 1000, // 12.000/yr
+        homeValue: 0,
+        mortgageBalance: 0,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0,
+          investmentFee: 0,
+          volatility: 0,
+          contributionGrowth: 0,
+        },
+      })
+    )
+    // Contributions at 31 only; from age 32 (retirement) onward they stop.
+    expect(res.points.find((p) => p.age === 31)!.investments).toBeCloseTo(12000, 0)
+    expect(res.points.find((p) => p.age === 32)!.investments).toBeCloseTo(12000, 0)
+    expect(res.points.find((p) => p.age === 34)!.investments).toBeCloseTo(12000, 0)
+    expect(res.points.find((p) => p.age === 32)!.contributionYoY).toBe(0)
+  })
+
+  it("tracks growth sources (contributions, housing, investment gains)", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 40,
+        endAge: 41,
+        retirementAge: 65,
+        startInvestments: 100000,
+        monthlyContribution: 1000, // 12.000/yr
+        homeValue: 1_000_000,
+        mortgageBalance: 0,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0.05,
+          investmentFee: 0,
+          housingReturn: 0.02,
+          contributionGrowth: 0,
+          volatility: 0,
+        },
+      })
+    )
+    const p = res.points.find((x) => x.age === 41)!
+    expect(p.contributionYoY).toBeCloseTo(12000, 0)
+    expect(p.investmentGainYoY).toBeCloseTo(5000, 0) // 100k * 5%
+    expect(p.housingGainYoY).toBeCloseTo(20000, 0) // 1M * 2%
+    expect(p.contributionsTotal).toBeCloseTo(12000, 0)
+    expect(p.investmentGainsTotal).toBeCloseTo(5000, 0)
+    expect(p.housingGainsTotal).toBeCloseTo(20000, 0)
+  })
+
+  it("pays out pension pots and folkepension as retirement income", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 64,
+        endAge: 80,
+        retirementAge: 64,
+        startInvestments: 0,
+        monthlyContribution: 0,
+        annualSpending: 0,
+        homeValue: 0,
+        mortgageBalance: 0,
+        pension: {
+          ratepensionBalance: 1_000_000,
+          livrenteBalance: 0,
+          aldersopsparingBalance: 0,
+          ratepensionAnnual: 0,
+          livrenteAnnual: 0,
+          aldersopsparingAnnual: 0,
+          pensionReturn: 0,
+          ratepensionYears: 10,
+          folkepensionAge: 67,
+          single: true,
+          includeFolkepension: true,
+        },
+      })
+    )
+    // Age 65: ratepension only (annuity of 1.0M over 10 yrs at 0% = 100k); no folkepension yet.
+    expect(res.points.find((p) => p.age === 65)!.retirementIncome).toBeCloseTo(
+      100000,
+      0
+    )
+    // Age 67: ratepension + folkepension (with modregning) → much higher.
+    const at67 = res.points.find((p) => p.age === 67)!.retirementIncome
+    expect(at67).toBeGreaterThan(250000)
+    expect(at67).toBeLessThan(300000)
+  })
+
   it("is deterministic across runs and keeps p10 <= median <= p90", () => {
     const state = makeState({
       currentAge: 30,

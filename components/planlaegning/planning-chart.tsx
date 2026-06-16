@@ -13,13 +13,14 @@ import {
   Legend,
 } from "recharts"
 import type { PlanningResult } from "@/lib/planning/types"
-import { formatCompactDKK, formatCompactNumber, formatDKK } from "@/lib/format"
+import { formatCompactNumber, formatDKK } from "@/lib/format"
 
 const GREEN = "#198038"
 const GREEN_BAND = "rgba(25, 128, 56, 0.14)"
 const BLUE = "#1192e8"
+const TEAL = "#005d5d"
 
-export type WealthView = "total" | "split"
+export type WealthView = "total" | "split" | "sources"
 
 interface ChartRow {
   age: number
@@ -27,21 +28,34 @@ interface ChartRow {
   investments: number
   homeEquity: number
   band: [number, number]
+  contributionsTotal: number
+  housingGainsTotal: number
+  investmentGainsTotal: number
+  contributionYoY: number
+  housingGainYoY: number
+  investmentGainYoY: number
 }
 
-function PlanningTooltip({
+interface TooltipEntry {
+  name: string
+  value: number
+  color: string
+  dataKey: string
+  payload: ChartRow
+}
+
+function WealthTooltip({
   active,
   payload,
   label,
   realSuffix,
 }: {
   active?: boolean
-  payload?: Array<{ name: string; value: number; color: string; dataKey: string }>
+  payload?: TooltipEntry[]
   label?: number
   realSuffix?: string
 }) {
   if (!active || !payload || payload.length === 0) return null
-  // Skip the band series in the tooltip (it's a range, not a point value).
   const rows = payload.filter((p) => p.dataKey !== "band")
   return (
     <div className="rounded-md border bg-popover p-2 text-popover-foreground shadow-md">
@@ -58,15 +72,57 @@ function PlanningTooltip({
   )
 }
 
+const SOURCE_ROWS: {
+  key: "contributionsTotal" | "housingGainsTotal" | "investmentGainsTotal"
+  yoy: "contributionYoY" | "housingGainYoY" | "investmentGainYoY"
+  name: string
+  color: string
+}[] = [
+  { key: "contributionsTotal", yoy: "contributionYoY", name: "Indbetalinger", color: BLUE },
+  { key: "housingGainsTotal", yoy: "housingGainYoY", name: "Boliggevinst", color: TEAL },
+  { key: "investmentGainsTotal", yoy: "investmentGainYoY", name: "Investeringsgevinst", color: GREEN },
+]
+
+function SourcesTooltip({
+  active,
+  payload,
+  label,
+  realSuffix,
+}: {
+  active?: boolean
+  payload?: TooltipEntry[]
+  label?: number
+  realSuffix?: string
+}) {
+  if (!active || !payload || payload.length === 0) return null
+  const row = payload[0].payload
+  return (
+    <div className="rounded-md border bg-popover p-2 text-popover-foreground shadow-md">
+      <p className="mb-1 text-xs font-medium">
+        Alder {label}
+        {realSuffix}
+      </p>
+      {SOURCE_ROWS.map((s) => (
+        <p key={s.key} className="text-xs" style={{ color: s.color }}>
+          {s.name}: {formatDKK(row[s.key])}{" "}
+          <span className="text-muted-foreground">
+            (+{formatDKK(row[s.yoy])} i år)
+          </span>
+        </p>
+      ))}
+    </div>
+  )
+}
+
 export function PlanningChart({
   result,
   view,
-  goalAge,
+  retirementAge,
   real,
 }: {
   result: PlanningResult
   view: WealthView
-  goalAge: number
+  retirementAge: number
   /** When true the values are already in today's kroner. */
   real?: boolean
 }) {
@@ -76,6 +132,12 @@ export function PlanningChart({
     investments: p.investments,
     homeEquity: p.homeEquity,
     band: p.band,
+    contributionsTotal: p.contributionsTotal,
+    housingGainsTotal: p.housingGainsTotal,
+    investmentGainsTotal: p.investmentGainsTotal,
+    contributionYoY: p.contributionYoY,
+    housingGainYoY: p.housingGainYoY,
+    investmentGainYoY: p.investmentGainYoY,
   }))
 
   const realSuffix = real ? " · nutidskroner" : ""
@@ -102,34 +164,44 @@ export function PlanningChart({
             width={52}
             className="fill-muted-foreground"
           />
-          <Tooltip content={<PlanningTooltip realSuffix={realSuffix} />} />
+          <Tooltip
+            content={
+              view === "sources" ? (
+                <SourcesTooltip realSuffix={realSuffix} />
+              ) : (
+                <WealthTooltip realSuffix={realSuffix} />
+              )
+            }
+          />
           <Legend wrapperStyle={{ fontSize: 12 }} />
 
-          {/* Confidence band (p10–p90 of total wealth). */}
-          <Area
-            type="monotone"
-            dataKey="band"
-            name="Usikkerhed (10–90 %)"
-            stroke="none"
-            fill={GREEN_BAND}
-            isAnimationActive={false}
-            connectNulls
-            legendType="none"
-            activeDot={false}
-          />
+          {view === "total" && (
+            <>
+              <Area
+                type="monotone"
+                dataKey="band"
+                name="Usikkerhed (10–90 %)"
+                stroke="none"
+                fill={GREEN_BAND}
+                isAnimationActive={false}
+                connectNulls
+                legendType="none"
+                activeDot={false}
+              />
+              <Area
+                type="monotone"
+                dataKey="netWorth"
+                name="Formue (forventet)"
+                stroke={GREEN}
+                strokeWidth={2.5}
+                fill={GREEN_BAND}
+                dot={false}
+                isAnimationActive={false}
+              />
+            </>
+          )}
 
-          {view === "total" ? (
-            <Area
-              type="monotone"
-              dataKey="netWorth"
-              name="Formue (forventet)"
-              stroke={GREEN}
-              strokeWidth={2.5}
-              fill={GREEN_BAND}
-              dot={false}
-              isAnimationActive={false}
-            />
-          ) : (
+          {view === "split" && (
             <>
               <Line
                 type="monotone"
@@ -152,6 +224,38 @@ export function PlanningChart({
             </>
           )}
 
+          {view === "sources" && (
+            <>
+              <Line
+                type="monotone"
+                dataKey="contributionsTotal"
+                name="Indbetalinger"
+                stroke={BLUE}
+                strokeWidth={2.5}
+                dot={false}
+                isAnimationActive={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="housingGainsTotal"
+                name="Boliggevinst"
+                stroke={TEAL}
+                strokeWidth={2.5}
+                dot={false}
+                isAnimationActive={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="investmentGainsTotal"
+                name="Investeringsgevinst"
+                stroke={GREEN}
+                strokeWidth={2.5}
+                dot={false}
+                isAnimationActive={false}
+              />
+            </>
+          )}
+
           {result.fiAge != null && (
             <ReferenceLine
               x={result.fiAge}
@@ -166,11 +270,11 @@ export function PlanningChart({
             />
           )}
           <ReferenceLine
-            x={goalAge}
+            x={retirementAge}
             stroke="var(--cds-text-secondary, #6f6f6f)"
             strokeDasharray="4 4"
             label={{
-              value: `Mål · ${goalAge}`,
+              value: `Pension · ${retirementAge}`,
               position: "insideBottomRight",
               fontSize: 11,
               fill: "var(--cds-text-secondary, #6f6f6f)",
@@ -180,9 +284,4 @@ export function PlanningChart({
       </ResponsiveContainer>
     </div>
   )
-}
-
-/** Small helper used by the overview for the callout above the chart. */
-export function formatWealthCallout(value: number): string {
-  return formatCompactDKK(value)
 }
