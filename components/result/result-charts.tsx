@@ -90,50 +90,100 @@ function Donut({
   const [active, setActive] = useState(0)
   const total = data.reduce((s, d) => s + d.value, 0)
   const activeIdx = active < data.length ? active : 0
+  const sel = data[activeIdx]
+  const selColor = colors[activeIdx % colors.length]
+  const subItems = sel ? (details?.[sel.name] ?? []) : []
 
   return (
-    <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-      <div className="h-64 w-full sm:w-1/2">
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={data}
-              dataKey="value"
-              nameKey="name"
-              innerRadius={55}
-              outerRadius={85}
-              paddingAngle={2}
-              strokeWidth={0}
-              onClick={(_, i) => setActive(i)}
-            >
-              {data.map((_, i) => (
-                <Cell
-                  key={i}
-                  fill={colors[i % colors.length]}
-                  stroke="var(--cds-layer-01, #f4f4f4)"
-                  strokeWidth={i === activeIdx ? 3 : 0}
-                  opacity={i === activeIdx ? 1 : 0.78}
-                  style={{ cursor: "pointer", outline: "none" }}
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+      {/* Donut + detail for the currently selected slice */}
+      <div className="w-full sm:w-1/2">
+        <div className="h-56 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={data}
+                dataKey="value"
+                nameKey="name"
+                innerRadius={52}
+                outerRadius={82}
+                paddingAngle={2}
+                strokeWidth={0}
+                onClick={(_, i) => setActive(i)}
+              >
+                {data.map((_, i) => (
+                  <Cell
+                    key={i}
+                    fill={colors[i % colors.length]}
+                    stroke="var(--cds-layer-01, #f4f4f4)"
+                    strokeWidth={i === activeIdx ? 3 : 0}
+                    opacity={i === activeIdx ? 1 : 0.78}
+                    style={{ cursor: "pointer", outline: "none" }}
+                  />
+                ))}
+              </Pie>
+              <Tooltip content={<ChartTooltip unitSuffix={unitSuffix} />} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+
+        {sel && (
+          <div className="mt-3 min-h-[9rem] rounded border bg-muted/30 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex min-w-0 items-center gap-2">
+                <span
+                  className="h-3 w-3 shrink-0 rounded-sm"
+                  style={{ backgroundColor: selColor }}
                 />
-              ))}
-            </Pie>
-            <Tooltip content={<ChartTooltip unitSuffix={unitSuffix} />} />
-          </PieChart>
-        </ResponsiveContainer>
+                <span className="truncate text-sm font-medium">{sel.name}</span>
+              </span>
+              <span className="text-sm font-semibold tabular-nums whitespace-nowrap">
+                {formatDKK(sel.value)}
+                {unitSuffix}
+              </span>
+            </div>
+            <p className="text-muted-foreground mt-0.5 text-xs">
+              {total > 0 ? formatPercent(sel.value / total) : "–"} af din
+              indkomst
+            </p>
+            {subItems.length > 0 && (
+              <ul className="mt-2 space-y-1 border-t pt-2">
+                {subItems.map((it, j) => (
+                  <li
+                    key={j}
+                    className="flex items-baseline justify-between gap-2 text-xs"
+                  >
+                    <span className="truncate">
+                      {it.label || "(uden navn)"}
+                    </span>
+                    <span className="text-muted-foreground tabular-nums whitespace-nowrap">
+                      {formatDKK(it.value)}
+                      {unitSuffix}
+                      {sel.value > 0 && ` · ${formatPercent(it.value / sel.value)}`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Interactive legend / detail panel */}
+      {/* Static legend — clicking a row only swaps the detail above, so the
+          rows themselves never move. */}
       <ul className="w-full space-y-1 sm:w-1/2">
         {data.map((d, i) => {
           const isActive = i === activeIdx
-          const subItems = details?.[d.name] ?? []
           return (
             <li key={d.name}>
               <button
                 type="button"
                 onClick={() => setActive(i)}
+                aria-pressed={isActive}
                 className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs transition-colors ${
-                  isActive ? "bg-muted font-medium" : "hover:bg-muted/50"
+                  isActive
+                    ? "bg-muted font-medium ring-1 ring-[var(--cds-border-interactive)]"
+                    : "hover:bg-muted/50"
                 }`}
               >
                 <span className="flex min-w-0 items-center gap-2">
@@ -146,35 +196,9 @@ function Donut({
                 <span className="text-muted-foreground tabular-nums whitespace-nowrap">
                   {formatDKK(d.value)}
                   {unitSuffix}
+                  {total > 0 && ` · ${formatPercent(d.value / total)}`}
                 </span>
               </button>
-              {isActive && (
-                <div className="mt-1 mb-1 ml-4 border-l pl-3">
-                  <p className="text-muted-foreground text-[11px]">
-                    {total > 0 ? formatPercent(d.value / total) : "–"} af i alt (
-                    {formatDKK(total)}
-                    {unitSuffix})
-                  </p>
-                  {subItems.length > 0 && (
-                    <ul className="mt-1 space-y-0.5">
-                      {subItems.map((it, j) => (
-                        <li
-                          key={j}
-                          className="flex justify-between gap-2 text-[11px]"
-                        >
-                          <span className="truncate">
-                            {it.label || "(uden navn)"}
-                          </span>
-                          <span className="text-muted-foreground tabular-nums whitespace-nowrap">
-                            {formatDKK(it.value)}
-                            {unitSuffix}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
             </li>
           )
         })}
