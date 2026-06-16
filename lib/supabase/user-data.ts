@@ -8,15 +8,18 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 export interface UserDataRow {
   tax_input: unknown | null
   budget_items: unknown | null
+  planning: unknown | null
 }
 
 export async function fetchUserData(
   supabase: SupabaseClient,
   userId: string
 ): Promise<UserDataRow | null> {
+  // Select all columns so a not-yet-migrated database (missing the `planning`
+  // column) still returns tax_input/budget_items instead of failing the query.
   const { data, error } = await supabase
     .from("skatteberegner_user_data")
-    .select("tax_input, budget_items")
+    .select("*")
     .eq("user_id", userId)
     .maybeSingle()
 
@@ -30,7 +33,7 @@ export async function fetchUserData(
 export async function saveUserData(
   supabase: SupabaseClient,
   userId: string,
-  patch: Partial<Pick<UserDataRow, "tax_input" | "budget_items">>
+  patch: Partial<Pick<UserDataRow, "tax_input" | "budget_items" | "planning">>
 ): Promise<void> {
   const { error } = await supabase.from("skatteberegner_user_data").upsert(
     {

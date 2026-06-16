@@ -6,6 +6,7 @@ import {
   Calculator,
   Wallet,
   ChartColumn,
+  ChartLine,
   ArrowRight,
   Login,
   UserAvatar,
@@ -54,14 +55,6 @@ function StepTile({
         </div>
       </Tile>
     </Link>
-  )
-}
-
-function FlowArrow() {
-  return (
-    <div className="hidden items-center justify-center text-[var(--cds-icon-secondary)] sm:flex">
-      <ArrowRight size={24} />
-    </div>
   )
 }
 
@@ -134,7 +127,7 @@ export default function LandingPage() {
         )}
       </div>
 
-      <div className="grid items-stretch gap-3 sm:grid-cols-[1fr_auto_1fr_auto_1fr]">
+      <div className="grid items-stretch gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <StepTile
           href="/skat"
           step={1}
@@ -143,7 +136,6 @@ export default function LandingPage() {
           desc="Beregn AM-bidrag, bund-, top- og kommuneskat og din nettoløn."
           optional
         />
-        <FlowArrow />
         <StepTile
           href="/budget"
           step={2}
@@ -151,13 +143,19 @@ export default function LandingPage() {
           title="Budget"
           desc="Planlæg dine månedlige udgifter mod din nettoløn."
         />
-        <FlowArrow />
         <StepTile
           href="/resultat"
           step={3}
           icon={<ChartColumn size={32} />}
           title="Resultat"
           desc="Se grafer og indsigt på tværs af skat og budget."
+        />
+        <StepTile
+          href="/planlaegning"
+          step={4}
+          icon={<ChartLine size={32} />}
+          title="Planlægning"
+          desc="Simulér din formue mange år frem med afkast, bolig og livsbegivenheder."
         />
       </div>
 

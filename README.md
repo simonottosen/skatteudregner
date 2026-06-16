@@ -2,7 +2,7 @@
 
 Interaktiv dansk skatte- og budgetapp for indkomstår 2024–2026, bygget med Next.js og IBM Carbon Design System.
 
-Appen består af tre moduler — **Skat**, **Budget** og **Resultat** — der deler data: din nettoløn fra skatteberegningen kan bruges direkte i budgettet, og resultatsiden samler det hele. Data gemmes lokalt i browseren og kan synkroniseres på tværs af enheder med en (valgfri) konto.
+Appen består af fire moduler — **Skat**, **Budget**, **Resultat** og **Planlægning** — der deler data: din nettoløn fra skatteberegningen kan bruges direkte i budgettet, resultatsiden samler det hele, og planlægningssiden simulerer din formue mange år frem. Data gemmes lokalt i browseren og kan synkroniseres på tværs af enheder med en (valgfri) konto.
 
 Beregneren er et estimat og erstatter ikke SKATs officielle beregning.
 
@@ -36,11 +36,20 @@ Beregneren er et estimat og erstatter ikke SKATs officielle beregning.
 - **Indsigt** – Automatiske observationer om budget, største kategori og skattetryk
 - **Måned/år** – Skift mellem månedlige og årlige tal
 
+### Planlægning
+
+- **Formue-simulering** – Projicér din samlede formue (investeringer + friværdi i bolig) mange år frem, år for år
+- **Pre-udfyldt** – Månedlig opsparing, boligværdi og restgæld hentes automatisk fra budget- og skattesiderne (kan rettes frit)
+- **Antagelser** – Afkast på bolig/investeringer, gebyr, volatilitet, inflation, opsparingsvækst og sikker udtræksrate (med danske standardværdier)
+- **Usikkerhedsbånd** – Et 10–90 % konfidensbånd (Monte Carlo) omkring den forventede kurve, plus markør for økonomisk uafhængighed (FI) og målalder
+- **Større livsbegivenheder** – Tilføj engangsudgifter (fx bryllup), arv/bonus, ændret opsparing, eller en bolighandel (sælg → køb nyt med valgt belåningsgrad og afkast)
+- **Nominelt / nutidskroner** og **samlet / opdelt** visning
+
 ### Generelt
 
 - **Konto & synkronisering** – Valgfri e-mail/adgangskode-login (Supabase) gemmer dine data i skyen; ellers gemmes alt lokalt i browseren
 - **Mørk tilstand** – Tryk `d` for at skifte
-- **179 tests** – Beregnings-, budget- og PDF-moduler er testet
+- **202 tests** – Beregnings-, budget- og PDF-moduler er testet
 
 ---
 
@@ -82,7 +91,7 @@ Appen virker uden konfiguration — den gemmer data lokalt i browseren. Konto-lo
 
 Login og synkronisering på tværs af enheder bruger Supabase. Uden konfiguration kører appen anonymt med `localStorage`, og login-siden viser en "ikke konfigureret"-besked.
 
-1. Opret et Supabase-projekt og kør `supabase/schema.sql` i SQL-editoren (opretter tabellen med Row Level Security).
+1. Opret et Supabase-projekt og kør `supabase/schema.sql` i SQL-editoren (opretter tabellen med Row Level Security). Har du allerede kørt et tidligere skema, tilføjer den medfølgende `alter table … add column if not exists planning jsonb;` planlægningskolonnen.
 2. Kopiér `.env.local.example` til `.env.local` og udfyld:
 
    ```bash
@@ -90,7 +99,7 @@ Login og synkronisering på tværs af enheder bruger Supabase. Uden konfiguratio
    NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR-ANON-PUBLIC-KEY
    ```
 
-Værdierne findes under **Project Settings → API**. Skat- og budgetdata gemmes som JSONB pr. bruger og flyttes automatisk fra lokal browser-lagring til kontoen ved første login.
+Værdierne findes under **Project Settings → API**. Skat-, budget- og planlægningsdata gemmes som JSONB pr. bruger og flyttes automatisk fra lokal browser-lagring til kontoen ved første login.
 
 ---
 
@@ -104,6 +113,7 @@ skatteudregner/
 │   ├── skat/page.tsx       # Skatteberegner
 │   ├── budget/page.tsx     # Budget
 │   ├── resultat/page.tsx   # Samlet resultat
+│   ├── planlaegning/page.tsx # Formue-simulering
 │   ├── login/page.tsx      # Login / opret konto
 │   └── carbon.scss         # Carbon-tema (white / g100)
 ├── components/
@@ -124,18 +134,26 @@ skatteudregner/
 │   ├── budget/
 │   │   ├── budget-planner.tsx      # Kategorier, træk-og-slip, husstandstyper
 │   │   └── budget-wizard.tsx       # Startbudget-guide
-│   └── result/
-│       ├── result-overview.tsx     # Nøgletal, indsigt, måned/år
-│       └── result-charts.tsx       # Donut- og bjælkediagrammer
+│   ├── result/
+│   │   ├── result-overview.tsx     # Nøgletal, indsigt, måned/år
+│   │   └── result-charts.tsx       # Donut- og bjælkediagrammer
+│   └── planlaegning/
+│       ├── planning-overview.tsx   # Inputs, antagelser, begivenheder
+│       ├── planning-chart.tsx      # Formuekurve + usikkerhedsbånd
+│       └── event-editor.tsx        # Tilføj/redigér livsbegivenheder
 ├── hooks/
 │   ├── use-tax-calculator.ts       # Skatte-state og beregnings-hook
 │   ├── use-budget.ts               # Budget-state (kategorier, personer)
+│   ├── use-planning.ts             # Planlægnings-state + kildedata
 │   └── use-remote-sync.ts          # Debounced Supabase-synk
 ├── lib/
-│   ├── format.ts                   # Formatering (DKK, procent)
+│   ├── format.ts                   # Formatering (DKK, procent, kompakt)
 │   ├── budget/
 │   │   ├── categories.ts           # Standardkategorier + gæt
 │   │   └── generate-budget.ts      # Startbudget + realkredit-estimat
+│   ├── planning/
+│   │   ├── types.ts                # Planlægnings-typer + standarder
+│   │   └── simulate.ts             # Formue-simulering + Monte Carlo-bånd
 │   ├── paycheck/                   # Lønseddel-sammenligning (Metode B)
 │   ├── pdf/                        # PDF-parsere + OCR-utils
 │   ├── supabase/                   # Klient + bruger-data
@@ -233,7 +251,7 @@ npm run test:run
 
 ```
 Test Files  15 passed
-Tests       179 passed
+Tests       202 passed
 ```
 
 Testfiler dækker skatteberegningens moduler, budget-generatoren, lønseddel-sammenligning samt PDF-parsing og formatering. Excel-scenarierne i `excel-scenarios.test.ts` verificerer beregneren mod kendte skatteberegninger.

@@ -8,8 +8,13 @@ create table if not exists public.skatteberegner_user_data (
   user_id uuid primary key references auth.users (id) on delete cascade,
   tax_input jsonb,
   budget_items jsonb,
+  planning jsonb,
   updated_at timestamptz not null default now()
 );
+
+-- Migration for existing databases (safe to run repeatedly):
+alter table public.skatteberegner_user_data
+  add column if not exists planning jsonb;
 
 -- Row Level Security: every user may only touch their own row.
 alter table public.skatteberegner_user_data enable row level security;

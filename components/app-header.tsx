@@ -48,6 +48,13 @@ export function AppHeader() {
         >
           Resultat
         </HeaderMenuItem>
+        <HeaderMenuItem
+          as={Link}
+          href="/planlaegning"
+          isCurrentPage={pathname === "/planlaegning"}
+        >
+          Planlægning
+        </HeaderMenuItem>
       </HeaderNavigation>
       <HeaderGlobalBar>
         <HeaderGlobalAction

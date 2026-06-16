@@ -8,7 +8,10 @@ import {
   type UserDataRow,
 } from "@/lib/supabase/user-data"
 
-type SyncKey = keyof Pick<UserDataRow, "tax_input" | "budget_items">
+type SyncKey = keyof Pick<
+  UserDataRow,
+  "tax_input" | "budget_items" | "planning"
+>
 
 const DEBOUNCE_MS = 600
 
@@ -48,7 +51,7 @@ export function useRemoteSync<T>(
       }
       saveUserData(supabase, user.id, {
         [key]: valueRef.current,
-      } as Partial<Pick<UserDataRow, "tax_input" | "budget_items">>)
+      } as Partial<Pick<UserDataRow, "tax_input" | "budget_items" | "planning">>)
     }
   }, [supabase, user, key])
 
@@ -69,7 +72,7 @@ export function useRemoteSync<T>(
       } else {
         await saveUserData(supabase, user.id, {
           [key]: valueRef.current,
-        } as Partial<Pick<UserDataRow, "tax_input" | "budget_items">>)
+        } as Partial<Pick<UserDataRow, "tax_input" | "budget_items" | "planning">>)
       }
       syncedUserId.current = user.id
     })()
@@ -85,7 +88,7 @@ export function useRemoteSync<T>(
     timer.current = setTimeout(() => {
       saveUserData(supabase, user.id, {
         [key]: value,
-      } as Partial<Pick<UserDataRow, "tax_input" | "budget_items">>)
+      } as Partial<Pick<UserDataRow, "tax_input" | "budget_items" | "planning">>)
     }, DEBOUNCE_MS)
     return () => {
       if (timer.current) clearTimeout(timer.current)
