@@ -8,6 +8,10 @@ import {
   InlineNotification,
   ContentSwitcher,
   Switch,
+  Accordion,
+  AccordionItem,
+  TextArea,
+  CopyButton,
 } from "@carbon/react"
 import { Calculator, Wallet } from "@carbon/icons-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -16,6 +20,7 @@ import { useTax } from "@/components/tax-provider"
 import { useBudget } from "@/components/budget-provider"
 import { UNCATEGORIZED_ID } from "@/lib/budget/categories"
 import { formatDKK, formatPercent } from "@/lib/format"
+import { buildEconomyPrompt } from "@/lib/result/economy-prompt"
 import type { Slice, SankeyData } from "./result-charts"
 
 const ResultCharts = dynamic(
@@ -155,6 +160,40 @@ export function ResultOverview() {
     }
     return { nodes, links }
   })()
+
+  // Period-independent prompt the user can paste into an external LLM.
+  const promptPeople = (
+    twoPeople
+      ? [
+          { cfg: budget.state.person1, income: budget.p1Income },
+          { cfg: budget.state.person2, income: budget.p2Income },
+        ]
+      : [{ cfg: budget.state.person1, income: budget.p1Income }]
+  ).map(({ cfg, income }) => ({
+    name: cfg.name,
+    monthlyNet: income,
+    source: cfg.incomeSource,
+  }))
+
+  const economyPrompt = buildEconomyPrompt({
+    mode,
+    people: promptPeople,
+    hasTax,
+    grossMonthly,
+    taxMonthly,
+    effectiveRate,
+    budgetIncomeMonthly: budgetIncome,
+    budgetExpensesMonthly: budgetExpenses,
+    remainingMonthly: remaining,
+    savingsRate,
+    categories: [...categoryTotals]
+      .sort((a, b) => b.value - a.value)
+      .map((c) => ({ name: c.name, monthly: c.value })),
+  })
+
+  const copyPrompt = () => {
+    navigator.clipboard?.writeText(economyPrompt).catch(() => {})
+  }
 
   const nothingYet =
     !hasTax && budgetIncome <= 0 && positiveExpenses.length === 0
@@ -347,6 +386,44 @@ export function ResultOverview() {
               </CardContent>
             </Card>
           )}
+
+          {/* AI prompt */}
+          <Card className="mb-6">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg">Få AI-hjælp til din økonomi</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-muted-foreground mb-3 text-sm">
+                Kopiér en klar-til-brug prompt med dine tal, og indsæt den i din
+                foretrukne AI-chat (fx ChatGPT, Claude eller Gemini) for at få
+                personlig sparring om din økonomi. Ingen data forlader din
+                browser, før du selv indsætter prompten.
+              </p>
+              <Accordion>
+                <AccordionItem title="Vis og kopiér prompt">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-muted-foreground text-xs">
+                      Prompt ({economyPrompt.length} tegn)
+                    </span>
+                    <CopyButton
+                      feedback="Kopieret!"
+                      feedbackTimeout={2000}
+                      iconDescription="Kopiér prompt til udklipsholder"
+                      onClick={copyPrompt}
+                    />
+                  </div>
+                  <TextArea
+                    id="economy-prompt"
+                    labelText="Prompt til AI"
+                    hideLabel
+                    readOnly
+                    rows={14}
+                    value={economyPrompt}
+                  />
+                </AccordionItem>
+              </Accordion>
+            </CardContent>
+          </Card>
 
           <div className="flex flex-wrap gap-3">
             <Button
