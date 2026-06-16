@@ -180,6 +180,10 @@ export function PlanningOverview() {
           housingGainYoY: p.housingGainYoY / f,
           investmentGainYoY: p.investmentGainYoY / f,
           retirementIncome: p.retirementIncome / f,
+          taxPaid: p.taxPaid / f,
+          spending: p.spending / f,
+          investmentsSold: p.investmentsSold / f,
+          borrowed: p.borrowed / f,
         }
       }),
     }
@@ -189,10 +193,20 @@ export function PlanningOverview() {
     displayResult.points.find((p) => p.age === state.retirementAge) ??
     displayResult.points.at(-1)
   const endPoint = displayResult.points.at(-1)
-  // Retirement income once folkepension is included (fullest year).
-  const folkepensionAge = state.pension.person1.folkepensionAge
+  // Steady-state yearly pension income: the year after the latest
+  // folkepensionsalder, so the one-off (tax-free) aldersopsparing lump that
+  // pays out *on* the folkepension date doesn't distort the figure.
+  const folkepensionAge = state.pension.single
+    ? state.pension.person1.folkepensionAge
+    : Math.max(
+        state.pension.person1.folkepensionAge,
+        state.pension.person2.folkepensionAge
+      )
   const pensionIncomePoint =
-    displayResult.points.find((p) => p.age === folkepensionAge) ??
+    displayResult.points.find((p) => p.age === folkepensionAge + 1) ??
+    displayResult.points.find(
+      (p) => p.age >= folkepensionAge && p.retirementIncome > 0
+    ) ??
     displayResult.points.find((p) => p.retirementIncome > 0)
 
   const openAdd = () => {
@@ -248,6 +262,9 @@ export function PlanningOverview() {
           </div>
         </CardHeader>
         <CardContent>
+          <p className="text-muted-foreground mb-2 text-[11px]">
+            Beløb vist i {real ? "nutidskroner (dagens værdi)" : "nominelle kroner"}
+          </p>
           <div className="mb-3 grid grid-cols-2 gap-4 lg:grid-cols-4">
             <div>
               <p className="text-muted-foreground text-xs">
@@ -267,7 +284,8 @@ export function PlanningOverview() {
             </div>
             <div>
               <p className="text-muted-foreground text-xs">
-                Pensionsindkomst/år ({folkepensionAge})
+                Årlig pension e. skat
+                {pensionIncomePoint ? ` (${pensionIncomePoint.age})` : ""}
               </p>
               <p className="text-xl font-bold">
                 {pensionIncomePoint

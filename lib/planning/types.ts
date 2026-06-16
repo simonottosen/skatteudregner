@@ -216,8 +216,16 @@ export interface PlanningPoint {
   housingGainYoY: number
   /** Investment return earned this year. */
   investmentGainYoY: number
-  /** Gross annual retirement income (pensions + folkepension) this year. */
+  /** Net annual retirement income after tax (pensions + folkepension). */
   retirementIncome: number
+  /** Total tax paid this year (pension income tax + realised investment gains). */
+  taxPaid: number
+  /** Inflation-grown annual spending drawn this year (0 before retirement). */
+  spending: number
+  /** Gross amount sold from investments to cover the spending gap this year. */
+  investmentsSold: number
+  /** Amount borrowed against home equity to cover spending this year. */
+  borrowed: number
 }
 
 export interface PlanningResult {

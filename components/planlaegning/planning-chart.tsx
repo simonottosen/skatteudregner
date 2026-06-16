@@ -32,6 +32,11 @@ interface ChartRow {
   contributionYoY: number
   housingGainYoY: number
   investmentGainYoY: number
+  retirementIncome: number
+  taxPaid: number
+  spending: number
+  investmentsSold: number
+  borrowed: number
 }
 
 /** "1,2M kr. – 3,4M kr." percentile range. */
@@ -148,6 +153,39 @@ function DetailedTooltip({
       <p className="text-muted-foreground pl-2 text-[11px]">
         Boliggevinst: {signed(row.housingGainYoY)} {inYear}
       </p>
+      {(row.spending > 0 || row.retirementIncome > 0) && (
+        <>
+          <p className="mt-1 text-xs font-medium">Pension {inYear}</p>
+          <p className="text-muted-foreground pl-2 text-[11px]">
+            Pensionsudbetaling (e. skat): {formatDKK(row.retirementIncome)}
+          </p>
+          {row.spending > 0 && (
+            <p className="text-muted-foreground pl-2 text-[11px]">
+              Forbrug: {signed(-row.spending)}
+            </p>
+          )}
+          {row.spending > 0 && (
+            <p className="text-muted-foreground pl-2 text-[11px]">
+              = Efter forbrug: {signed(row.retirementIncome - row.spending)}
+            </p>
+          )}
+          {row.investmentsSold > 0 && (
+            <p className="text-muted-foreground pl-2 text-[11px]">
+              Solgt fra investeringer: {formatDKK(row.investmentsSold)}
+            </p>
+          )}
+          {row.borrowed > 0 && (
+            <p className="text-muted-foreground pl-2 text-[11px]">
+              Lånt i friværdi: {formatDKK(row.borrowed)}
+            </p>
+          )}
+        </>
+      )}
+      {row.taxPaid > 0 && (
+        <p className="text-muted-foreground mt-1 text-[11px]">
+          Skat betalt {inYear}: {formatDKK(row.taxPaid)}
+        </p>
+      )}
     </div>
   )
 }
@@ -179,6 +217,11 @@ export function PlanningChart({
     contributionYoY: p.contributionYoY,
     housingGainYoY: p.housingGainYoY,
     investmentGainYoY: p.investmentGainYoY,
+    retirementIncome: p.retirementIncome,
+    taxPaid: p.taxPaid,
+    spending: p.spending,
+    investmentsSold: p.investmentsSold,
+    borrowed: p.borrowed,
   }))
 
   const realSuffix = real ? " · nutidskroner" : ""

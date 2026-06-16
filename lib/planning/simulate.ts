@@ -23,6 +23,7 @@ import {
   annuityPayment,
   folkepensionAfterModregning,
 } from "./pension"
+import { grossUpShareSale, pensionIncomeTax, shareIncomeTax } from "./tax"
 
 // A fresh realkredit loan (e.g. after buying a new home) defaults to 30 years.
 const MORTGAGE_TERM_MONTHS = 30 * 12
@@ -30,6 +31,8 @@ const MORTGAGE_TERM_MONTHS = 30 * 12
 /** Mutable per-year balances tracked through the simulation. */
 interface SimState {
   investments: number
+  /** Cost basis of the investments (for taxing realised gains). */
+  investmentBasis: number
   homeValue: number
   mortgage: number
   /** Months left on the current mortgage (drives the amortization annuity). */
@@ -51,6 +54,14 @@ interface PathResult {
   investmentGains: number[]
   /** Per-year outstanding mortgage balance. */
   mortgage: number[]
+  /** Per-year tax on realised investment gains. */
+  investmentTax: number[]
+  /** Per-year inflation-grown spending drawn (0 before retirement). */
+  spending: number[]
+  /** Per-year gross amount sold from investments to cover the spending gap. */
+  investmentsSold: number[]
+  /** Per-year amount borrowed against home equity to cover spending. */
+  borrowed: number[]
 }
 
 const MC_RUNS = 400
@@ -110,21 +121,34 @@ function applyEvent(
   event: PlanningEvent,
   globalHousingReturn: number
 ): SimState {
+  // Fraction of the investment pot that is cost basis (not gains).
+  const basisFraction =
+    s.investments > 0 ? Math.min(1, s.investmentBasis / s.investments) : 1
   switch (event.type) {
     case "expense":
+      // Spending from the pot reduces basis proportionally (gains untaxed here).
       s.investments -= event.amount
+      s.investmentBasis = Math.max(0, s.investmentBasis - event.amount * basisFraction)
       break
     case "windfall":
+      // New cash is all basis.
       s.investments += event.amount
+      s.investmentBasis += event.amount
       break
     case "recurring":
       s.monthly += event.monthlyDelta
       break
     case "property": {
       const ev = event as PropertyEvent
-      s.investments += s.homeValue - s.mortgage
+      const realisedEquity = s.homeValue - s.mortgage
+      s.investments += realisedEquity
+      s.investmentBasis += realisedEquity // tax-free home proceeds → basis
       const ltv = Math.min(1, Math.max(0, ev.mortgageLtv))
-      s.investments -= ev.newValue * (1 - ltv)
+      const downPayment = ev.newValue * (1 - ltv)
+      const newBasisFraction =
+        s.investments > 0 ? Math.min(1, s.investmentBasis / s.investments) : 1
+      s.investments -= downPayment
+      s.investmentBasis = Math.max(0, s.investmentBasis - downPayment * newBasisFraction)
       s.homeValue = ev.newValue
       s.mortgage = ev.newValue * ltv
       s.mortgageMonthsLeft = MORTGAGE_TERM_MONTHS // fresh 30-year loan
@@ -146,20 +170,31 @@ function eventsByAge(events: PlanningEvent[]): Map<number, PlanningEvent[]> {
   return map
 }
 
+/** A year's pension income split by tax treatment, for one person. */
+interface PensionYear {
+  /** Ratepension + livrente + folkepension — taxed as personal income. */
+  taxable: number
+  /** Aldersopsparing payout — tax-free. */
+  taxFree: number
+}
+
 /**
- * Gross annual retirement income per year (index 0..years), from the private
- * pension pots and folkepension. Deterministic (pension pots use the fixed
- * pensionReturn). Pots are filled by annual contributions until retirement,
- * then paid out from the earliest payout age (folkepensionsalder − 3, but not
- * before the chosen retirement age).
+ * Per-year pension income for one person (index 0..years). Pots are filled by
+ * inflation-growing contributions until retirement, then paid out from the
+ * earliest payout age (folkepensionsalder − 3, not before retirement).
+ * Ratepension is an annuity; livrente is lifelong; aldersopsparing is paid as a
+ * single tax-free lump sum on the folkepension date.
  */
-function onePersonIncomeByYear(
+function onePersonPensionByYear(
   state: PlanningState,
   person: PlanningState["pension"]["person1"]
-): number[] {
+): PensionYear[] {
   const years = Math.max(0, Math.round(state.endAge - state.currentAge))
   const p = state.pension
-  const income = new Array<number>(years + 1).fill(0)
+  const out: PensionYear[] = Array.from({ length: years + 1 }, () => ({
+    taxable: 0,
+    taxFree: 0,
+  }))
   const r = p.pensionReturn
   const privateAge = Math.max(
     state.retirementAge,
@@ -170,7 +205,6 @@ function onePersonIncomeByYear(
   let liv = person.livrenteBalance
   let alder = person.aldersopsparingBalance
   let rateYearsLeft = Math.max(1, Math.round(p.ratepensionYears))
-  let alderYearsLeft = Math.max(1, Math.round(p.ratepensionYears))
 
   // Annual contributions are assumed to grow with inflation.
   const inflation = state.assumptions.inflation
@@ -194,22 +228,23 @@ function onePersonIncomeByYear(
 
     let ratePay = 0
     let livPay = 0
-    let alderPay = 0
     if (age >= privateAge) {
       if (rateYearsLeft > 0) {
         ratePay = Math.min(rate, annuityPayment(rate, r, rateYearsLeft))
         rate -= ratePay
         rateYearsLeft--
       }
-      if (alderYearsLeft > 0) {
-        alderPay = Math.min(alder, annuityPayment(alder, r, alderYearsLeft))
-        alder -= alderPay
-        alderYearsLeft--
-      }
       // Livrente is lifelong → spread the balance over the remaining sim years.
       const livYearsLeft = state.endAge - age + 1
       livPay = Math.min(liv, annuityPayment(liv, r, livYearsLeft))
       liv -= livPay
+    }
+
+    // Aldersopsparing: one tax-free lump sum on the folkepension date.
+    let alderLump = 0
+    if (age === person.folkepensionAge) {
+      alderLump = alder
+      alder = 0
     }
 
     let folke = 0
@@ -218,24 +253,34 @@ function onePersonIncomeByYear(
       folke = folkepensionAfterModregning(ratePay + livPay, p.single)
     }
 
-    income[y] = ratePay + livPay + alderPay + folke
+    out[y] = { taxable: ratePay + livPay + folke, taxFree: alderLump }
   }
-  return income
+  return out
 }
 
-/** Household retirement income — sum across both partners when a couple. */
-function pensionIncomeByYear(state: PlanningState): number[] {
+/**
+ * Household net retirement income per year, after personal income tax on the
+ * taxable pension (applied per person), plus tax-free aldersopsparing.
+ */
+function pensionNetIncomeByYear(state: PlanningState): {
+  net: number[]
+  tax: number[]
+} {
   const years = Math.max(0, Math.round(state.endAge - state.currentAge))
   const persons = state.pension.single
     ? [state.pension.person1]
     : [state.pension.person1, state.pension.person2]
-  const income = new Array<number>(years + 1).fill(0)
+  const net = new Array<number>(years + 1).fill(0)
+  const tax = new Array<number>(years + 1).fill(0)
   for (const person of persons) {
-    const inc = onePersonIncomeByYear(state, person)
-    for (let y = 0; y <= years; y++) income[y] += inc[y]
+    const inc = onePersonPensionByYear(state, person)
+    for (let y = 0; y <= years; y++) {
+      const t = pensionIncomeTax(inc[y].taxable)
+      tax[y] += t
+      net[y] += inc[y].taxable - t + inc[y].taxFree
+    }
   }
-
-  return income
+  return { net, tax }
 }
 
 /**
@@ -251,12 +296,14 @@ function pensionIncomeByYear(state: PlanningState): number[] {
 function runPath(
   state: PlanningState,
   investmentReturnFor: (yearIndex: number) => number,
-  incomeByYear: number[]
+  /** Net (after-tax) household pension income per year. */
+  netPensionByYear: number[]
 ): PathResult {
   const years = Math.max(0, Math.round(state.endAge - state.currentAge))
   const byAge = eventsByAge(state.events)
   const s: SimState = {
     investments: state.startInvestments,
+    investmentBasis: state.startInvestments,
     homeValue: state.homeValue,
     mortgage: state.mortgageBalance,
     mortgageMonthsLeft: Math.max(1, Math.round(state.mortgageTermYears * 12)),
@@ -275,45 +322,96 @@ function runPath(
   const housingGains: number[] = [0]
   const investmentGains: number[] = [0]
   const mortgageSeries: number[] = [s.mortgage]
+  const investmentTaxSeries: number[] = [0]
+  const spendingSeries: number[] = [0]
+  const investmentsSoldSeries: number[] = [0]
+  const borrowedSeries: number[] = [0]
+
+  // Mortgage borrowed to fund retirement spending (repaid first from surpluses).
+  let borrowedForSpending = 0
 
   let contribution = s.monthly * 12
   for (let y = 1; y <= years; y++) {
     const age = state.currentAge + y
     const retired = age >= state.retirementAge
-    // Spending grows with inflation. While working it's paid from salary (no
-    // portfolio effect); in retirement the portfolio must cover it (pension
-    // income first, then drawdown).
-    const inflatedSpending =
-      state.annualSpending * Math.pow(1 + state.assumptions.inflation, y)
-    const flow = retired ? incomeByYear[y] - inflatedSpending : contribution
+    let investmentTax = 0
+    let spendingThisYear = 0
+    let investmentsSoldThisYear = 0
+    let borrowedThisYear = 0
 
-    // Investments: return on the existing balance, then this year's flow.
+    // 1) Investment growth (unrealised — basis unchanged).
     const invBefore = s.investments
     const gain = invBefore * investmentReturnFor(y)
-    s.investments = invBefore + gain + flow
-    if (!retired) contribution *= 1 + state.assumptions.contributionGrowth
+    s.investments = invBefore + gain
 
-    // Home appreciation + mortgage paydown.
+    // 2) Home appreciation + mortgage paydown.
     const equityBefore = s.homeValue - s.mortgage
     s.homeValue *= 1 + s.housingReturn
     s.mortgage = amortizeYear(s.mortgage, state.mortgageRate, s.mortgageMonthsLeft)
     s.mortgageMonthsLeft = Math.max(0, s.mortgageMonthsLeft - 12)
 
-    // In retirement, once investments run out, fund the rest of the spending
-    // by borrowing against the home equity (mortgage rises, friværdi falls).
-    if (retired && s.investments < 0) {
-      const deficit = -s.investments
-      const availableEquity = Math.max(0, s.homeValue - s.mortgage)
-      const borrow = Math.min(deficit, availableEquity)
-      s.mortgage += borrow
-      s.investments += borrow // 0 if fully covered, else still negative
+    // 3) Cash flow. While working: deposit the contribution (forbrug is paid
+    // from salary). In retirement: cover inflation-grown spending from net
+    // pension income, then by selling investments (gains taxed), then by
+    // borrowing against the home equity.
+    let contribThisYear = 0
+    if (!retired) {
+      contribThisYear = contribution
+      s.investments += contribution
+      s.investmentBasis += contribution
+      contribution *= 1 + state.assumptions.contributionGrowth
+    } else {
+      const inflatedSpending =
+        state.annualSpending * Math.pow(1 + state.assumptions.inflation, y)
+      spendingThisYear = inflatedSpending
+      const surplus = netPensionByYear[y] - inflatedSpending
+      if (surplus >= 0) {
+        // A surplus first repays any equity borrowed earlier for spending
+        // (restoring home equity), then tops up investments.
+        let extra = surplus
+        if (borrowedForSpending > 0) {
+          const repay = Math.min(borrowedForSpending, extra)
+          s.mortgage -= repay
+          borrowedForSpending -= repay
+          extra -= repay
+        }
+        if (extra > 0) {
+          s.investments += extra
+          s.investmentBasis += extra
+        }
+      } else {
+        let shortfall = -surplus
+        if (s.investments > 0) {
+          const g =
+            s.investments > 0
+              ? Math.max(0, (s.investments - s.investmentBasis) / s.investments)
+              : 0
+          // Sell exactly enough to net the shortfall after gains tax (so a
+          // sufficient pot fully covers spending without spurious borrowing).
+          const sell = Math.min(s.investments, grossUpShareSale(shortfall, g))
+          investmentTax = shareIncomeTax(sell * g)
+          investmentsSoldThisYear = sell
+          s.investmentBasis = Math.max(0, s.investmentBasis - sell * (1 - g))
+          s.investments -= sell
+          shortfall -= sell - investmentTax // net obtained from the sale
+        }
+        if (shortfall > 0) {
+          // Borrow the rest against home equity (a loan — not taxed).
+          const availableEquity = Math.max(0, s.homeValue - s.mortgage)
+          const borrow = Math.min(shortfall, availableEquity)
+          s.mortgage += borrow
+          borrowedForSpending += borrow
+          borrowedThisYear = borrow
+          shortfall -= borrow // any remainder is unfunded (insolvent)
+        }
+      }
     }
-    if (s.investments < 0) s.investments = 0 // insolvent → clamp
+    if (s.investments < 0) s.investments = 0
 
     // Equity change captures appreciation + afdrag − any retirement borrowing.
     const housingGain = s.homeValue - s.mortgage - equityBefore
 
-    // Life events at this age (recurring deltas affect next year's contribution).
+    // 4) Life events at this age.
     const beforeMonthly = s.monthly
     for (const e of byAge.get(age) ?? []) {
       applyEvent(s, e, state.assumptions.housingReturn)
@@ -322,12 +420,15 @@ function runPath(
 
     investments.push(s.investments)
     netWorth.push(s.investments + (s.homeValue - s.mortgage))
-    // "Indbetalinger" only counts deposits while working — not the
-    // retirement drawdown, which is a withdrawal, not a contribution.
-    contributions.push(retired ? 0 : flow)
+    // "Indbetalinger" only counts deposits while working.
+    contributions.push(retired ? 0 : contribThisYear)
     housingGains.push(housingGain)
     investmentGains.push(gain)
     mortgageSeries.push(s.mortgage)
+    investmentTaxSeries.push(investmentTax)
+    spendingSeries.push(spendingThisYear)
+    investmentsSoldSeries.push(investmentsSoldThisYear)
+    borrowedSeries.push(borrowedThisYear)
   }
 
   return {
@@ -337,6 +438,10 @@ function runPath(
     housingGains,
     investmentGains,
     mortgage: mortgageSeries,
+    investmentTax: investmentTaxSeries,
+    spending: spendingSeries,
+    investmentsSold: investmentsSoldSeries,
+    borrowed: borrowedSeries,
   }
 }
 
@@ -361,11 +466,13 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
     state.assumptions
   const meanReturn = investmentReturn - investmentFee
 
-  // Gross retirement income per year (deterministic — shared by all paths).
-  const incomeByYear = pensionIncomeByYear(state)
+  // Net (after-tax) retirement income + pension income tax per year
+  // (deterministic — shared by all paths).
+  const { net: netPensionByYear, tax: pensionTaxByYear } =
+    pensionNetIncomeByYear(state)
 
   // Deterministic path (median + growth sources).
-  const deterministic = runPath(state, () => meanReturn, incomeByYear)
+  const deterministic = runPath(state, () => meanReturn, netPensionByYear)
 
   // Monte Carlo paths for the bands (only investment return is randomised).
   const mcNetWorthByYear: number[][] = Array.from({ length: years + 1 }, () => [])
@@ -378,7 +485,7 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
     const path = runPath(
       state,
       () => meanReturn + volatility * nextNormal(rng),
-      incomeByYear
+      netPensionByYear
     )
     for (let y = 0; y <= years; y++) {
       mcNetWorthByYear[y].push(path.netWorth[y])
@@ -437,7 +544,11 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
       contributionYoY: deterministic.contributions[y],
       housingGainYoY: deterministic.housingGains[y],
       investmentGainYoY: deterministic.investmentGains[y],
-      retirementIncome: incomeByYear[y],
+      retirementIncome: netPensionByYear[y],
+      taxPaid: pensionTaxByYear[y] + deterministic.investmentTax[y],
+      spending: deterministic.spending[y],
+      investmentsSold: deterministic.investmentsSold[y],
+      borrowed: deterministic.borrowed[y],
     }
   })
 

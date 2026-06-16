@@ -5,6 +5,7 @@ import {
   DEFAULT_PLANNING_STATE,
   type PlanningState,
 } from "../types"
+import { pensionIncomeTax } from "../tax"
 
 function makeState(overrides: Partial<PlanningState> = {}): PlanningState {
   return {
@@ -277,15 +278,16 @@ describe("simulatePlanning", () => {
         },
       })
     )
-    // Age 65: ratepension only (annuity of 1.0M over 10 yrs at 0% = 100k); no folkepension yet.
+    // Age 65: ratepension only (100k gross), net of personal income tax.
     expect(res.points.find((p) => p.age === 65)!.retirementIncome).toBeCloseTo(
-      100000,
+      100000 - pensionIncomeTax(100000),
       0
     )
-    // Age 67: ratepension + folkepension (with modregning) → much higher.
+    // Age 67: ratepension + folkepension → higher net income than at 65.
+    const at65 = res.points.find((p) => p.age === 65)!.retirementIncome
     const at67 = res.points.find((p) => p.age === 67)!.retirementIncome
-    expect(at67).toBeGreaterThan(250000)
-    expect(at67).toBeLessThan(300000)
+    expect(at67).toBeGreaterThan(at65)
+    expect(res.points.find((p) => p.age === 67)!.taxPaid).toBeGreaterThan(0)
   })
 
   it("amortizes the mortgage and reports the debt-free age", () => {
@@ -369,8 +371,9 @@ describe("simulatePlanning", () => {
     )
     const at65 = (r: typeof single) =>
       r.points.find((p) => p.age === 65)!.retirementIncome
-    expect(at65(single)).toBeCloseTo(100000, 0)
-    expect(at65(couple)).toBeCloseTo(200000, 0) // two ratepensions paying out
+    // Net of income tax; the couple has two ratepensions, each taxed alone.
+    expect(at65(single)).toBeCloseTo(100000 - pensionIncomeTax(100000), 0)
+    expect(at65(couple)).toBeCloseTo(2 * (100000 - pensionIncomeTax(100000)), 0)
   })
 
   it("spends from investments then borrows against home, only after retirement", () => {
@@ -406,6 +409,189 @@ describe("simulatePlanning", () => {
     const at75 = res.points.find((p) => p.age === 75)!
     expect(at75.homeEquity).toBeLessThan(5_000_000)
     expect(at75.homeEquity).toBeGreaterThanOrEqual(0)
+  })
+
+  it("taxes realised investment gains during the retirement drawdown", () => {
+    const common = {
+      currentAge: 64,
+      endAge: 66,
+      retirementAge: 65,
+      startInvestments: 2_000_000,
+      monthlyContribution: 0,
+      annualSpending: 200_000,
+      homeValue: 0,
+      mortgageBalance: 0,
+      assumptions: {
+        ...DEFAULT_PLANNING_STATE.assumptions,
+        investmentReturn: 0,
+        investmentFee: 0,
+        housingReturn: 0,
+        inflation: 0,
+        volatility: 0,
+      },
+    }
+    // No embedded gains (basis == value) → no investment tax on the drawdown.
+    const noGain = simulatePlanning(makeState({ ...common }))
+    expect(noGain.points.find((p) => p.age === 65)!.taxPaid).toBeCloseTo(0, 0)
+
+    // A pot that has grown a lot → the drawdown realises gains that get taxed.
+    const withGain = simulatePlanning(
+      makeState({
+        ...common,
+        startInvestments: 1_000_000,
+        assumptions: {
+          ...common.assumptions,
+          investmentReturn: 1.0, // doubles in year 1 → large unrealised gain
+        },
+      })
+    )
+    expect(withGain.points.find((p) => p.age === 65)!.taxPaid).toBeGreaterThan(0)
+  })
+
+  it("pays aldersopsparing as a tax-free lump at the folkepension age", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 66,
+        endAge: 75,
+        retirementAge: 66,
+        startInvestments: 0,
+        monthlyContribution: 0,
+        annualSpending: 0,
+        homeValue: 0,
+        mortgageBalance: 0,
+        pension: {
+          person1: {
+            ...DEFAULT_PENSION_PERSON,
+            aldersopsparingBalance: 500_000,
+            folkepensionAge: 68,
+          },
+          person2: { ...DEFAULT_PENSION_PERSON },
+          pensionReturn: 0,
+          ratepensionYears: 10,
+          single: true,
+          includeFolkepension: false, // isolate aldersopsparing
+        },
+      })
+    )
+    // Lump lands the year folkepension starts (age 68), tax-free → no taxPaid.
+    const at68 = res.points.find((p) => p.age === 68)!
+    expect(at68.retirementIncome).toBeCloseTo(500_000, 0)
+    expect(at68.taxPaid).toBeCloseTo(0, 0)
+    // Not paid out in other years.
+    expect(res.points.find((p) => p.age === 67)!.retirementIncome).toBeCloseTo(0, 0)
+    expect(res.points.find((p) => p.age === 69)!.retirementIncome).toBeCloseTo(0, 0)
+  })
+
+  it("reports per-year spending, investments sold and equity borrowed", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 64,
+        endAge: 70,
+        retirementAge: 65,
+        startInvestments: 150_000,
+        monthlyContribution: 0,
+        annualSpending: 100_000,
+        homeValue: 5_000_000,
+        mortgageBalance: 0,
+        mortgageTermYears: 1, // already paid off
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0,
+          investmentFee: 0,
+          housingReturn: 0,
+          inflation: 0,
+          volatility: 0,
+        },
+      })
+    )
+    // Before retirement: spending paid by salary, nothing drawn.
+    const at64 = res.points.find((p) => p.age === 64)!
+    expect(at64.spending).toBeCloseTo(0, 0)
+    expect(at64.investmentsSold).toBeCloseTo(0, 0)
+    // Age 65: first 100k comes out of the 150k pot (no embedded gains → no tax).
+    const at65 = res.points.find((p) => p.age === 65)!
+    expect(at65.spending).toBeCloseTo(100_000, 0)
+    expect(at65.investmentsSold).toBeCloseTo(100_000, 0)
+    expect(at65.borrowed).toBeCloseTo(0, 0)
+    // Age 66: 50k left in the pot, the remaining 50k is borrowed against the home.
+    const at66 = res.points.find((p) => p.age === 66)!
+    expect(at66.investmentsSold).toBeCloseTo(50_000, 0)
+    expect(at66.borrowed).toBeCloseTo(50_000, 0)
+  })
+
+  it("funds spending from a large pot without borrowing, even with gains tax", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 64,
+        endAge: 80,
+        retirementAge: 65,
+        startInvestments: 1_000_000,
+        monthlyContribution: 0,
+        annualSpending: 300_000,
+        homeValue: 5_000_000,
+        mortgageBalance: 0,
+        mortgageTermYears: 1,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0.5, // big embedded gains → high gains-tax bracket
+          investmentFee: 0,
+          housingReturn: 0,
+          inflation: 0,
+          volatility: 0,
+        },
+      })
+    )
+    // The pot grows faster than it is drawn, so the home is never tapped and
+    // its equity holds steady — no spurious borrowing from the tax gross-up.
+    for (const p of res.points) {
+      expect(p.borrowed).toBeCloseTo(0, 0)
+      expect(p.homeEquity).toBeCloseTo(5_000_000, -2)
+    }
+  })
+
+  it("repays equity borrowed for spending before topping up investments", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 65,
+        endAge: 75,
+        retirementAge: 65,
+        startInvestments: 0,
+        monthlyContribution: 0,
+        annualSpending: 100_000,
+        homeValue: 5_000_000,
+        mortgageBalance: 0,
+        mortgageTermYears: 1, // already paid off
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0,
+          investmentFee: 0,
+          housingReturn: 0,
+          inflation: 0,
+          volatility: 0,
+        },
+        pension: {
+          person1: {
+            ...DEFAULT_PENSION_PERSON,
+            aldersopsparingBalance: 500_000, // tax-free lump at folkepension age
+            folkepensionAge: 68,
+          },
+          person2: { ...DEFAULT_PENSION_PERSON },
+          pensionReturn: 0,
+          ratepensionYears: 10,
+          single: true,
+          includeFolkepension: false, // isolate the aldersopsparing lump
+        },
+      })
+    )
+    // Ages 66–67: no pension income → borrow 100k/yr → equity falls to 4.8M.
+    const at67 = res.points.find((p) => p.age === 67)!
+    expect(at67.homeEquity).toBeCloseTo(4_800_000, -3)
+    expect(at67.borrowed).toBeCloseTo(100_000, 0)
+    // Age 68: 500k lump − 100k spending = 400k surplus. It first repays the
+    // 200k of borrowed equity (equity back to 5M), then 200k tops up investments.
+    const at68 = res.points.find((p) => p.age === 68)!
+    expect(at68.homeEquity).toBeCloseTo(5_000_000, -3)
+    expect(at68.investments).toBeCloseTo(200_000, 0)
   })
 
   it("is deterministic across runs and keeps p10 <= median <= p90", () => {
