@@ -34,8 +34,15 @@ export interface PersonConfig {
   items: BudgetItem[]
 }
 
+/** Household composition used to benchmark spending against typical peers. */
+export interface BudgetAssumptions {
+  adults: number
+  children: number
+  cars: number
+}
+
 export interface BudgetState {
-  version: 3
+  version: 4
   mode: BudgetMode
   person1: PersonConfig
   person2: PersonConfig
@@ -43,6 +50,14 @@ export interface BudgetState {
   sharedItems: BudgetItem[]
   /** Category definitions, shared across all expense lists. */
   categories: BudgetCategory[]
+  /** Household assumptions for the peer comparison on the results page. */
+  assumptions: BudgetAssumptions
+}
+
+export const DEFAULT_ASSUMPTIONS: BudgetAssumptions = {
+  adults: 2,
+  children: 0,
+  cars: 1,
 }
 
 const STORAGE_KEY = "skatteberegner:budget-items"
@@ -64,12 +79,13 @@ function defaultPerson(name: string, incomeSource: IncomeSource): PersonConfig {
 
 function defaultState(): BudgetState {
   return {
-    version: 3,
+    version: 4,
     mode: "single",
     person1: defaultPerson("Person 1", "skat"),
     person2: defaultPerson("Person 2", "manual"),
     sharedItems: DEFAULT_SHARED_ITEMS.map((i) => ({ ...i, id: newId() })),
     categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
+    assumptions: { ...DEFAULT_ASSUMPTIONS },
   }
 }
 
@@ -121,7 +137,21 @@ function normalizeCategories(value: unknown): BudgetCategory[] {
   return cats
 }
 
-/** Accepts the legacy array shape, the v2 object shape, and v3. */
+function normalizeAssumptions(value: unknown): BudgetAssumptions {
+  if (!value || typeof value !== "object") return { ...DEFAULT_ASSUMPTIONS }
+  const o = value as Partial<BudgetAssumptions>
+  const clamp = (v: unknown, fallback: number, min: number, max: number) =>
+    typeof v === "number" && Number.isFinite(v)
+      ? Math.min(max, Math.max(min, Math.round(v)))
+      : fallback
+  return {
+    adults: clamp(o.adults, DEFAULT_ASSUMPTIONS.adults, 1, 2),
+    children: clamp(o.children, DEFAULT_ASSUMPTIONS.children, 0, 10),
+    cars: clamp(o.cars, DEFAULT_ASSUMPTIONS.cars, 0, 4),
+  }
+}
+
+/** Accepts the legacy array shape, the v2 object shape, v3 and v4. */
 function normalizeBudget(raw: unknown): BudgetState {
   const base = defaultState()
   if (Array.isArray(raw)) {
@@ -130,12 +160,13 @@ function normalizeBudget(raw: unknown): BudgetState {
   if (raw && typeof raw === "object") {
     const o = raw as Partial<BudgetState>
     return {
-      version: 3,
+      version: 4,
       mode: o.mode === "shared" || o.mode === "separate" ? o.mode : "single",
       person1: normalizePerson(o.person1, base.person1),
       person2: normalizePerson(o.person2, base.person2),
       sharedItems: o.sharedItems ? asItems(o.sharedItems) : base.sharedItems,
       categories: normalizeCategories(o.categories),
+      assumptions: normalizeAssumptions(o.assumptions),
     }
   }
   return base
@@ -268,6 +299,9 @@ export function useBudgetController() {
     value: PersonConfig[K]
   ) => setState((p) => ({ ...p, [person]: { ...p[person], [field]: value } }))
 
+  const setAssumptions = (assumptions: BudgetAssumptions) =>
+    setState((p) => ({ ...p, assumptions }))
+
   // --- derived values -----------------------------------------------------
   const incomeOf = (person: PersonConfig, skatNet: number) =>
     person.incomeSource === "skat" ? skatNet : person.manualIncome
@@ -292,6 +326,7 @@ export function useBudgetController() {
     ...derived,
     setMode,
     setPersonField,
+    setAssumptions,
     addItem,
     updateItem,
     removeItem,

@@ -1,7 +1,7 @@
 "use client"
 
 import dynamic from "next/dynamic"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import {
   Button,
@@ -12,16 +12,102 @@ import {
   AccordionItem,
   TextArea,
   CopyButton,
+  Modal,
+  NumberInput,
 } from "@carbon/react"
-import { Calculator, Wallet } from "@carbon/icons-react"
+import { Calculator, Wallet, Edit } from "@carbon/icons-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { useTax } from "@/components/tax-provider"
 import { useBudget } from "@/components/budget-provider"
 import { UNCATEGORIZED_ID } from "@/lib/budget/categories"
+import { comparePeers } from "@/lib/budget/peer-benchmark"
+import type { BudgetAssumptions } from "@/hooks/use-budget"
 import { formatDKK, formatPercent } from "@/lib/format"
 import { buildEconomyPrompt } from "@/lib/result/economy-prompt"
 import type { Slice, SankeyData, SliceDetails } from "./result-charts"
+
+function AssumptionsModal({
+  open,
+  initial,
+  onClose,
+  onSave,
+}: {
+  open: boolean
+  initial: BudgetAssumptions
+  onClose: () => void
+  onSave: (a: BudgetAssumptions) => void
+}) {
+  const [adults, setAdults] = useState(initial.adults)
+  const [children, setChildren] = useState(initial.children)
+  const [cars, setCars] = useState(initial.cars)
+
+  // Re-seed from the current assumptions whenever the modal is opened.
+  useEffect(() => {
+    if (open) {
+      setAdults(initial.adults)
+      setChildren(initial.children)
+      setCars(initial.cars)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  const num = (
+    value: number | string,
+    fallback: number,
+    min: number,
+    max: number
+  ) => {
+    const n = typeof value === "number" ? value : parseInt(value, 10)
+    return Number.isNaN(n) ? fallback : Math.min(max, Math.max(min, n))
+  }
+
+  return (
+    <Modal
+      open={open}
+      modalHeading="Antagelser om husstanden"
+      modalLabel="Sammenligningsgrundlag"
+      primaryButtonText="Gem"
+      secondaryButtonText="Annullér"
+      onRequestClose={onClose}
+      onRequestSubmit={() => {
+        onSave({ adults, children, cars })
+        onClose()
+      }}
+    >
+      <p className="text-muted-foreground mb-4 text-sm">
+        Vi sammenligner dit forbrug med en typisk dansk husstand af samme
+        størrelse. Justér antagelserne, så de passer til din husstand.
+      </p>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <NumberInput
+          id="assume-adults"
+          label="Voksne"
+          min={1}
+          max={2}
+          value={adults}
+          onChange={(_e, { value }) => setAdults(num(value, 2, 1, 2))}
+        />
+        <NumberInput
+          id="assume-children"
+          label="Hjemmeboende børn"
+          min={0}
+          max={10}
+          value={children}
+          onChange={(_e, { value }) => setChildren(num(value, 0, 0, 10))}
+        />
+        <NumberInput
+          id="assume-cars"
+          label="Antal biler"
+          min={0}
+          max={4}
+          value={cars}
+          onChange={(_e, { value }) => setCars(num(value, 0, 0, 4))}
+        />
+      </div>
+    </Modal>
+  )
+}
 
 const ResultCharts = dynamic(
   () => import("./result-charts").then((m) => m.ResultCharts),
@@ -59,6 +145,7 @@ export function ResultOverview() {
   const budget = useBudget()
 
   const [period, setPeriod] = useState<"month" | "year">("month")
+  const [assumptionsOpen, setAssumptionsOpen] = useState(false)
   const mult = period === "year" ? 12 : 1
   const unitSuffix = period === "year" ? "/år" : "/md."
   const word = period === "year" ? "om året" : "om måneden"
@@ -281,6 +368,30 @@ export function ResultOverview() {
     })
   }
 
+  // Peer comparison — where the user spends notably more/less than a typical
+  // household of the assumed composition.
+  const assumptions = budget.state.assumptions
+  const catNameById = new Map(budget.state.categories.map((c) => [c.id, c.name]))
+  const peerInsights = comparePeers(assumptions, byCat)
+    .slice(0, 3)
+    .map((c) => {
+      const name = catNameById.get(c.categoryId) ?? c.categoryId
+      const deviation = formatPercent(Math.abs(c.ratio - 1))
+      return {
+        tone: c.direction === "more" ? ("warning" as const) : ("info" as const),
+        text:
+          c.direction === "more"
+            ? `Du bruger ${deviation} mere på ${name} end en typisk husstand (${fmt(c.userMonthly)} mod ${fmt(c.peerMonthly)} ${word}).`
+            : `Du bruger ${deviation} mindre på ${name} end en typisk husstand (${fmt(c.userMonthly)} mod ${fmt(c.peerMonthly)} ${word}).`,
+      }
+    })
+
+  const assumptionSummary = `${assumptions.adults} ${
+    assumptions.adults === 1 ? "voksen" : "voksne"
+  }, ${assumptions.children} ${
+    assumptions.children === 1 ? "barn" : "børn"
+  }, ${assumptions.cars} ${assumptions.cars === 1 ? "bil" : "biler"}`
+
   return (
     <main
       style={{
@@ -430,9 +541,57 @@ export function ResultOverview() {
                     </li>
                   ))}
                 </ul>
+
+                {positiveExpenses.length > 0 && (
+                  <>
+                    <Separator className="my-4" />
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-sm font-medium">
+                        Sammenlignet med en typisk husstand
+                      </h3>
+                      <Button
+                        kind="ghost"
+                        size="sm"
+                        renderIcon={Edit}
+                        onClick={() => setAssumptionsOpen(true)}
+                      >
+                        Opdatér antagelser
+                      </Button>
+                    </div>
+                    <p className="text-muted-foreground mb-2 text-xs">
+                      Grundlag: en dansk husstand med {assumptionSummary}.
+                    </p>
+                    {peerInsights.length > 0 ? (
+                      <ul className="space-y-2">
+                        {peerInsights.map((ins, i) => (
+                          <li
+                            key={i}
+                            className={`text-sm ${
+                              ins.tone === "warning" ? "text-warning" : ""
+                            }`}
+                          >
+                            {ins.text}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-sm">
+                        Dit forbrug ligner en typisk husstand på de fleste
+                        områder.
+                      </p>
+                    )}
+                  </>
+                )}
               </CardContent>
             </Card>
           )}
+
+          <AssumptionsModal
+            open={assumptionsOpen}
+            initial={assumptions}
+            onClose={() => setAssumptionsOpen(false)}
+            onSave={budget.setAssumptions}
+          />
 
           {/* AI prompt */}
           <Card className="mb-6">

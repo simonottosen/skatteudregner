@@ -22,7 +22,10 @@ import { formatDKK } from "@/lib/format"
 interface BudgetWizardProps {
   open: boolean
   onClose: () => void
-  onGenerate: (items: GeneratedBudgetItem[]) => void
+  onGenerate: (
+    items: GeneratedBudgetItem[],
+    assumptions: { adults: number; children: number; cars: number }
+  ) => void
 }
 
 function toCount(value: number | string, fallback: number, min: number): number {
@@ -78,7 +81,8 @@ export function BudgetWizard({ open, onClose, onGenerate }: BudgetWizardProps) {
         ownsHome,
         vacationLevel,
         lifestyle: lifestyle / 50,
-      })
+      }),
+      { adults, children, cars }
     )
     onClose()
   }

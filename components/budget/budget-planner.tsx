@@ -274,6 +274,7 @@ export function BudgetPlanner() {
     addCategory,
     renameCategory,
     removeCategory,
+    setAssumptions,
   } = budget
   const [wizardOpen, setWizardOpen] = useState(false)
 
@@ -329,7 +330,10 @@ export function BudgetPlanner() {
       <BudgetWizard
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
-        onGenerate={(items) => replaceItems(primaryList, items)}
+        onGenerate={(items, assumptions) => {
+          replaceItems(primaryList, items)
+          setAssumptions(assumptions)
+        }}
       />
 
       {/* Household mode */}
