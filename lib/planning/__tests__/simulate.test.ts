@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest"
-import { simulatePlanning } from "../simulate"
+import {
+  simulatePlanning,
+  solveRequiredMonthlyContribution,
+} from "../simulate"
 import {
   DEFAULT_PENSION_PERSON,
   DEFAULT_PLANNING_STATE,
@@ -685,6 +688,37 @@ describe("simulatePlanning", () => {
     expect(res.successProbability).toBe(1)
   })
 
+  it("taxes investments annually under lager/ASK, but not under realisation", () => {
+    const common = {
+      currentAge: 40,
+      endAge: 50,
+      retirementAge: 65,
+      startInvestments: 1_000_000,
+      monthlyContribution: 0,
+      annualSpending: 0,
+      homeValue: 0,
+      mortgageBalance: 0,
+      assumptions: {
+        ...DEFAULT_PLANNING_STATE.assumptions,
+        investmentReturn: 0.1,
+        investmentFee: 0,
+        inflation: 0,
+        volatility: 0,
+      },
+    }
+    const at50 = (mode: PlanningState["investmentTaxMode"]) =>
+      simulatePlanning(makeState({ ...common, investmentTaxMode: mode })).points.find(
+        (p) => p.age === 50
+      )!.investments
+    const realisation = at50("realisation")
+    const ask = at50("ask")
+    const lager = at50("lager")
+    // Realisation grows untaxed; ASK is taxed 17 %/yr; lager 27/42 %/yr.
+    expect(realisation).toBeCloseTo(1_000_000 * 1.1 ** 10, -2)
+    expect(realisation).toBeGreaterThan(ask)
+    expect(ask).toBeGreaterThan(lager)
+  })
+
   it("spends the cash buffer before selling investments in retirement", () => {
     const res = simulatePlanning(
       makeState({
@@ -771,6 +805,123 @@ describe("simulatePlanning", () => {
     const at65 = res.points.find((p) => p.age === 65)!
     expect(at65.investmentsSold).toBeCloseTo(10_000, 0)
     expect(at65.otherDebt).toBeCloseTo(90_000, 0)
+  })
+
+  it("models property tax in retirement only when enabled", () => {
+    const base = {
+      currentAge: 64,
+      endAge: 67,
+      retirementAge: 65,
+      startInvestments: 5_000_000,
+      monthlyContribution: 0,
+      annualSpending: 0,
+      homeValue: 4_000_000,
+      landValue: 2_000_000,
+      mortgageBalance: 0,
+      assumptions: {
+        ...DEFAULT_PLANNING_STATE.assumptions,
+        investmentReturn: 0,
+        investmentFee: 0,
+        housingReturn: 0,
+        inflation: 0,
+        volatility: 0,
+      },
+      pension: { ...DEFAULT_PLANNING_STATE.pension, includeFolkepension: false },
+    }
+    const off = simulatePlanning(makeState({ ...base, includePropertyTax: false }))
+    const on = simulatePlanning(makeState({ ...base, includePropertyTax: true }))
+    // Off: no property tax line at all.
+    expect(off.points.find((p) => p.age === 66)!.propertyTax).toBe(0)
+    // On: a positive property tax is charged in retirement and funded by selling.
+    const at66 = on.points.find((p) => p.age === 66)!
+    expect(at66.propertyTax).toBeGreaterThan(0)
+    expect(at66.investmentsSold).toBeGreaterThan(0)
+    // The extra cost leaves less wealth than with no property tax.
+    expect(on.points.find((p) => p.age === 67)!.netWorth).toBeLessThan(
+      off.points.find((p) => p.age === 67)!.netWorth
+    )
+  })
+
+  it("widens the net-worth band when home prices are volatile", () => {
+    const base = {
+      currentAge: 40,
+      endAge: 60,
+      retirementAge: 65,
+      startInvestments: 0,
+      monthlyContribution: 0,
+      annualSpending: 0,
+      homeValue: 3_000_000,
+      mortgageBalance: 0,
+    }
+    const width = (housingVolatility: number) => {
+      const r = simulatePlanning(
+        makeState({
+          ...base,
+          assumptions: {
+            ...DEFAULT_PLANNING_STATE.assumptions,
+            volatility: 0, // isolate housing risk
+            housingVolatility,
+          },
+        })
+      )
+      const last = r.points.at(-1)!
+      return last.band[1] - last.band[0]
+    }
+    expect(width(0)).toBeCloseTo(0, -2) // no risk → band collapses
+    expect(width(0.1)).toBeGreaterThan(100_000) // housing risk widens the band
+  })
+
+  it("solves the monthly contribution needed to reach FI by retirement", () => {
+    const state = makeState({
+      currentAge: 35,
+      endAge: 90,
+      retirementAge: 60,
+      startInvestments: 0,
+      monthlyContribution: 0,
+      annualSpending: 300_000,
+      homeValue: 0,
+      mortgageBalance: 0,
+      assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
+    })
+    const req = solveRequiredMonthlyContribution(state)
+    expect(req).not.toBeNull()
+    expect(req!).toBeGreaterThan(0)
+    // The solved amount reaches FI by 60; clearly less does not.
+    const withReq = simulatePlanning({ ...state, monthlyContribution: req! })
+    expect(withReq.fiAge != null && withReq.fiAge <= 60).toBe(true)
+    const withLess = simulatePlanning({
+      ...state,
+      monthlyContribution: req! * 0.5,
+    })
+    expect(withLess.fiAge == null || withLess.fiAge > 60).toBe(true)
+  })
+
+  it("returns 0 when already FI and null when FI can't be reached in time", () => {
+    const alreadyFI = makeState({
+      currentAge: 50,
+      endAge: 90,
+      retirementAge: 65,
+      startInvestments: 20_000_000,
+      monthlyContribution: 0,
+      annualSpending: 300_000,
+      homeValue: 0,
+      mortgageBalance: 0,
+      assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
+    })
+    expect(solveRequiredMonthlyContribution(alreadyFI)).toBe(0)
+    // No years left to save before retirement and not FI yet → unreachable.
+    const unreachable = makeState({
+      currentAge: 65,
+      endAge: 90,
+      retirementAge: 65,
+      startInvestments: 1_000_000,
+      monthlyContribution: 0,
+      annualSpending: 300_000,
+      homeValue: 0,
+      mortgageBalance: 0,
+      assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
+    })
+    expect(solveRequiredMonthlyContribution(unreachable)).toBeNull()
   })
 
   it("is deterministic across runs and keeps p10 <= median <= p90", () => {

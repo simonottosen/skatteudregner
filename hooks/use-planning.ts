@@ -48,6 +48,7 @@ function normalizeAssumptions(value: unknown): PlanningAssumptions {
     investmentReturn: clampNum(o.investmentReturn, DEFAULT_ASSUMPTIONS.investmentReturn, -1, 1),
     investmentFee: clampNum(o.investmentFee, DEFAULT_ASSUMPTIONS.investmentFee, 0, 1),
     volatility: clampNum(o.volatility, DEFAULT_ASSUMPTIONS.volatility, 0, 1),
+    housingVolatility: clampNum(o.housingVolatility, DEFAULT_ASSUMPTIONS.housingVolatility, 0, 1),
     inflation: clampNum(o.inflation, DEFAULT_ASSUMPTIONS.inflation, -1, 1),
     contributionGrowth: clampNum(o.contributionGrowth, DEFAULT_ASSUMPTIONS.contributionGrowth, -1, 1),
     safeWithdrawalRate: clampNum(o.safeWithdrawalRate, DEFAULT_ASSUMPTIONS.safeWithdrawalRate, 0.01, 0.2),
@@ -162,6 +163,10 @@ function normalizePlanning(raw: unknown): PlanningState {
       endAge
     ),
     startInvestments: clampNum(o.startInvestments, 0, 0),
+    investmentTaxMode:
+      o.investmentTaxMode === "lager" || o.investmentTaxMode === "ask"
+        ? o.investmentTaxMode
+        : "realisation",
     cashBuffer: clampNum(o.cashBuffer, 0, 0),
     otherDebtBalance: clampNum(o.otherDebtBalance, 0, 0),
     otherDebtRate: clampNum(o.otherDebtRate, DEFAULT_PLANNING_STATE.otherDebtRate, 0, 0.5),
@@ -172,6 +177,9 @@ function normalizePlanning(raw: unknown): PlanningState {
       40
     ),
     homeValue: clampNum(o.homeValue, 0, 0),
+    landValue: clampNum(o.landValue, 0, 0),
+    includePropertyTax:
+      typeof o.includePropertyTax === "boolean" ? o.includePropertyTax : false,
     mortgageBalance: clampNum(o.mortgageBalance, 0, 0),
     mortgageRate: clampNum(o.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2),
     mortgageTermYears: clampNum(
@@ -245,10 +253,16 @@ export function usePlanning() {
       ? Math.round(computeMortgage(mortgage).loan)
       : Math.round(estimateMortgage(input.mortgageInterest || 0).principal)
 
+    // Land value (grundværdi) for grundskyld; default to ~40 % of home value.
+    const landValue = Math.round(
+      input.property?.landValue || homeValue * 0.4
+    )
+
     return {
       monthlyContribution: remaining,
       annualSpending: Math.round(budgetExpenses * 12),
       homeValue,
+      landValue,
       mortgageBalance,
       mortgageRate: mortgage.enabled
         ? mortgage.interestRate
@@ -283,6 +297,7 @@ export function usePlanning() {
     mortgageMonthly,
     mortgage,
     input.property?.propertyValue,
+    input.property?.landValue,
     input.mortgageInterest,
     input.birthDate,
     input.privatePensionRatepension,

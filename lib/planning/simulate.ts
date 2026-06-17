@@ -25,8 +25,10 @@ import {
   folkepensionAfterModregning,
 } from "./pension"
 import {
+  annualInvestmentTax,
   grossUpStockSale,
   pensionIncomeTax,
+  propertyHoldingTax,
   stockGainTax,
   type TaxContext,
 } from "./taxation"
@@ -80,6 +82,8 @@ interface PathResult {
   investmentsSold: number[]
   /** Per-year amount borrowed against home equity to cover spending. */
   borrowed: number[]
+  /** Per-year property tax (ejendomsværdiskat + grundskyld). */
+  propertyTax: number[]
   /** First age where spending could not be funded (insolvent); null if never. */
   ruinAge: number | null
 }
@@ -326,7 +330,9 @@ function runPath(
   state: PlanningState,
   investmentReturnFor: (yearIndex: number) => number,
   /** Net (after-tax) household pension income per year. */
-  netPensionByYear: number[]
+  netPensionByYear: number[],
+  /** Per-year home-price shock (0 for the deterministic path). */
+  housingShockFor: (yearIndex: number) => number = () => 0
 ): PathResult {
   const years = Math.max(0, Math.round(state.endAge - state.currentAge))
   const byAge = eventsByAge(state.events)
@@ -362,6 +368,12 @@ function runPath(
   const spendingSeries: number[] = [0]
   const investmentsSoldSeries: number[] = [0]
   const borrowedSeries: number[] = [0]
+  const propertyTaxSeries: number[] = [0]
+
+  // Land value as a fraction of home value (kept constant across the projection,
+  // so property events that change the home value scale the land value too).
+  const landFraction =
+    state.homeValue > 0 ? Math.min(1, state.landValue / state.homeValue) : 0
 
   // Mortgage borrowed to fund retirement spending (repaid first from surpluses).
   let borrowedForSpending = 0
@@ -376,6 +388,7 @@ function runPath(
     let spendingThisYear = 0
     let investmentsSoldThisYear = 0
     let borrowedThisYear = 0
+    let propertyTaxThisYear = 0
     const taxCtx: TaxContext = {
       t: y,
       inflation: state.assumptions.inflation,
@@ -383,14 +396,23 @@ function runPath(
       married: !state.pension.single,
     }
 
-    // 1) Investment growth (unrealised — basis unchanged).
+    // 1) Investment growth. Under realisation the gain is unrealised (basis
+    // unchanged); under lager/ASK the year's gain is taxed as it accrues and
+    // the basis catches up to the value (so nothing is taxed again at sale).
     const invBefore = s.investments
     const gain = invBefore * investmentReturnFor(y)
     s.investments = invBefore + gain
+    const annualInvTax = annualInvestmentTax(gain, state.investmentTaxMode, taxCtx)
+    if (annualInvTax !== 0) {
+      s.investments -= annualInvTax
+      investmentTax += annualInvTax
+      s.investmentBasis = s.investments
+    }
 
-    // 2) Home appreciation + mortgage paydown.
+    // 2) Home appreciation (+ a Monte Carlo shock) + mortgage paydown.
     const equityBefore = s.homeValue - s.mortgage
-    s.homeValue *= 1 + s.housingReturn
+    s.homeValue *= 1 + s.housingReturn + housingShockFor(y)
+    if (s.homeValue < 0) s.homeValue = 0
     s.mortgage = amortizeYear(s.mortgage, state.mortgageRate, s.mortgageMonthsLeft)
     s.mortgageMonthsLeft = Math.max(0, s.mortgageMonthsLeft - 12)
 
@@ -420,8 +442,17 @@ function runPath(
       const inflatedSpending =
         state.annualSpending * Math.pow(1 + state.assumptions.inflation, y)
       spendingThisYear = inflatedSpending
-      // Living costs plus any remaining other-debt service must be funded.
-      const need = inflatedSpending + debtServiceThisYear
+      // Ongoing property tax (ejendomsværdiskat + grundskyld), if modelled.
+      if (state.includePropertyTax && s.homeValue > 0) {
+        propertyTaxThisYear = propertyHoldingTax(
+          s.homeValue,
+          s.homeValue * landFraction,
+          age,
+          taxCtx
+        )
+      }
+      // Living costs plus any remaining other-debt service and property tax.
+      const need = inflatedSpending + debtServiceThisYear + propertyTaxThisYear
       const surplus = netPensionByYear[y] - need
       if (surplus >= 0) {
         // A surplus first repays any equity borrowed earlier for spending
@@ -453,7 +484,7 @@ function runPath(
           // Sell exactly enough to net the shortfall after gains tax (so a
           // sufficient pot fully covers spending without spurious borrowing).
           const sell = Math.min(s.investments, grossUpStockSale(shortfall, g, taxCtx))
-          investmentTax = stockGainTax(sell * g, taxCtx)
+          investmentTax += stockGainTax(sell * g, taxCtx)
           investmentsSoldThisYear = sell
           s.investmentBasis = Math.max(0, s.investmentBasis - sell * (1 - g))
           s.investments -= sell
@@ -499,6 +530,7 @@ function runPath(
     spendingSeries.push(spendingThisYear)
     investmentsSoldSeries.push(investmentsSoldThisYear)
     borrowedSeries.push(borrowedThisYear)
+    propertyTaxSeries.push(propertyTaxThisYear)
   }
 
   return {
@@ -515,6 +547,7 @@ function runPath(
     spending: spendingSeries,
     investmentsSold: investmentsSoldSeries,
     borrowed: borrowedSeries,
+    propertyTax: propertyTaxSeries,
     ruinAge,
   }
 }
@@ -536,8 +569,14 @@ function percentile(sortedAsc: number[], p: number): number {
  */
 export function simulatePlanning(state: PlanningState): PlanningResult {
   const years = Math.max(0, Math.round(state.endAge - state.currentAge))
-  const { investmentReturn, investmentFee, volatility, inflation, safeWithdrawalRate } =
-    state.assumptions
+  const {
+    investmentReturn,
+    investmentFee,
+    volatility,
+    housingVolatility,
+    inflation,
+    safeWithdrawalRate,
+  } = state.assumptions
   const meanReturn = investmentReturn - investmentFee
 
   // Net (after-tax) retirement income + pension income tax per year
@@ -560,7 +599,8 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
     const path = runPath(
       state,
       () => meanReturn + volatility * nextNormal(rng),
-      netPensionByYear
+      netPensionByYear,
+      () => housingVolatility * nextNormal(rng)
     )
     if (path.ruinAge !== null) mcFailures++
     for (let y = 0; y <= years; y++) {
@@ -598,14 +638,17 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
     cumHousing += deterministic.housingGains[y]
     cumInvest += deterministic.investmentGains[y]
 
-    if (fiAge === null) {
-      const spendingNeed =
-        state.annualSpending * Math.pow(1 + inflation, y) * fiMultiple
-      if (spendingNeed > 0 && investments >= spendingNeed) fiAge = age
-    }
-
     const sorted = [...mcNetWorthByYear[y]].sort((a, b) => a - b)
     const sortedInv = [...mcInvestmentsByYear[y]].sort((a, b) => a - b)
+
+    if (fiAge === null) {
+      // Use the Monte Carlo median (not the optimistic mean path) so FI reflects
+      // a coin-flip outcome rather than a lucky one.
+      const medianInvestments = percentile(sortedInv, 50)
+      const spendingNeed =
+        state.annualSpending * Math.pow(1 + inflation, y) * fiMultiple
+      if (spendingNeed > 0 && medianInvestments >= spendingNeed) fiAge = age
+    }
     return {
       age,
       investments,
@@ -625,10 +668,14 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
       housingGainYoY: deterministic.housingGains[y],
       investmentGainYoY: deterministic.investmentGains[y],
       retirementIncome: netPensionByYear[y],
-      taxPaid: pensionTaxByYear[y] + deterministic.investmentTax[y],
+      taxPaid:
+        pensionTaxByYear[y] +
+        deterministic.investmentTax[y] +
+        deterministic.propertyTax[y],
       spending: deterministic.spending[y],
       investmentsSold: deterministic.investmentsSold[y],
       borrowed: deterministic.borrowed[y],
+      propertyTax: deterministic.propertyTax[y],
     }
   })
 
@@ -639,4 +686,33 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
     ruinAge: deterministic.ruinAge,
     successProbability,
   }
+}
+
+/**
+ * Smallest monthly contribution that makes the household financially independent
+ * (median investments ≥ 1/SWR × spending) by the retirement age. Returns 0 if
+ * already on track with no extra saving, or null if it can't be reached even
+ * with a very large contribution. A simple monotonic binary search — more saving
+ * never pushes FI later.
+ */
+export function solveRequiredMonthlyContribution(
+  state: PlanningState
+): number | null {
+  const fiByRetirement = (monthly: number): boolean => {
+    const { fiAge } = simulatePlanning({ ...state, monthlyContribution: monthly })
+    return fiAge !== null && fiAge <= state.retirementAge
+  }
+  if (fiByRetirement(0)) return 0
+  // Grow an upper bound until it suffices (or give up).
+  let hi = Math.max(10_000, state.monthlyContribution || 0)
+  for (let i = 0; i < 20 && !fiByRetirement(hi); i++) hi *= 2
+  if (!fiByRetirement(hi)) return null
+  // Binary search for the smallest sufficient contribution.
+  let lo = 0
+  for (let i = 0; i < 28; i++) {
+    const mid = (lo + hi) / 2
+    if (fiByRetirement(mid)) hi = mid
+    else lo = mid
+  }
+  return Math.ceil(hi / 100) * 100
 }

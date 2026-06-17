@@ -7,6 +7,7 @@ import {
   ContentSwitcher,
   Switch,
   Checkbox,
+  Dropdown,
   RadioButtonGroup,
   RadioButton,
   InlineNotification,
@@ -15,12 +16,24 @@ import {
   ToggletipButton,
   ToggletipContent,
 } from "@carbon/react"
-import { Add, Edit, TrashCan, Reset, Information } from "@carbon/icons-react"
+import {
+  Add,
+  Edit,
+  TrashCan,
+  Reset,
+  Information,
+  Calculator,
+  Download,
+} from "@carbon/icons-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { usePlanning } from "@/hooks/use-planning"
-import { simulatePlanning } from "@/lib/planning/simulate"
+import {
+  simulatePlanning,
+  solveRequiredMonthlyContribution,
+} from "@/lib/planning/simulate"
 import type {
+  InvestmentTaxMode,
   NewPlanningEvent,
   PensionPerson,
   PlanningEvent,
@@ -124,6 +137,12 @@ function PensionPersonFields({
   )
 }
 
+const INV_TAX_MODES: { id: InvestmentTaxMode; label: string }[] = [
+  { id: "realisation", label: "Realisation — aktier (27/42 %, ved salg)" },
+  { id: "lager", label: "Lager — ETF/investeringsforening (27/42 %, årligt)" },
+  { id: "ask", label: "Aktiesparekonto (17 %, årligt)" },
+]
+
 const EVENT_TYPE_LABEL: Record<PlanningEvent["type"], string> = {
   expense: "Engangsudgift",
   windfall: "Engangsindtægt",
@@ -152,6 +171,8 @@ export function PlanningOverview() {
   const currentYear = new Date().getFullYear()
   const [editorOpen, setEditorOpen] = useState(false)
   const [editing, setEditing] = useState<PlanningEvent | null>(null)
+  // Goal solver: required monthly saving to reach FI by the retirement age.
+  const [solved, setSolved] = useState<{ value: number | null } | null>(null)
 
   const result = useMemo(() => simulatePlanning(state), [state])
 
@@ -189,6 +210,7 @@ export function PlanningOverview() {
           spending: p.spending / f,
           investmentsSold: p.investmentsSold / f,
           borrowed: p.borrowed / f,
+          propertyTax: p.propertyTax / f,
         }
       }),
     }
@@ -213,6 +235,39 @@ export function PlanningOverview() {
       (p) => p.age >= folkepensionAge && p.retirementIncome > 0
     ) ??
     displayResult.points.find((p) => p.retirementIncome > 0)
+
+  // Export the year-by-year projection as a CSV the user can open in Excel.
+  const exportCsv = () => {
+    const cols: [string, (p: PlanningResult["points"][number]) => number][] = [
+      ["Alder", (p) => p.age],
+      ["År", (p) => currentYear + (p.age - state.currentAge)],
+      ["Investeringer", (p) => p.investments],
+      ["Kontant", (p) => p.cash],
+      ["Friværdi", (p) => p.homeEquity],
+      ["Anden gæld", (p) => p.otherDebt],
+      ["Samlet formue", (p) => p.netWorth],
+      ["Formue p10", (p) => p.band[0]],
+      ["Formue p90", (p) => p.band[1]],
+      ["Pension e. skat", (p) => p.retirementIncome],
+      ["Forbrug", (p) => p.spending],
+      ["Solgt invest.", (p) => p.investmentsSold],
+      ["Lånt i bolig", (p) => p.borrowed],
+      ["Skat betalt", (p) => p.taxPaid],
+    ]
+    const header = cols.map((c) => c[0]).join(";")
+    const rows = displayResult.points.map((p) =>
+      cols.map((c) => Math.round(c[1](p))).join(";")
+    )
+    const basis = real ? "nutidskroner" : "nominelt"
+    const csv = `﻿${header}\n${rows.join("\n")}`
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `planlaegning-${basis}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   const openAdd = () => {
     setEditing(null)
@@ -264,6 +319,14 @@ export function PlanningOverview() {
                 <Switch name="real" text="Nutidskroner" />
               </ContentSwitcher>
             </div>
+            <Button
+              kind="ghost"
+              size="sm"
+              renderIcon={Download}
+              onClick={exportCsv}
+            >
+              Eksportér (CSV)
+            </Button>
           </div>
         </CardHeader>
         <CardContent>
@@ -486,6 +549,41 @@ export function PlanningOverview() {
               }
             />
           </div>
+          <Separator />
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              kind="tertiary"
+              size="sm"
+              renderIcon={Calculator}
+              onClick={() =>
+                setSolved({ value: solveRequiredMonthlyContribution(state) })
+              }
+            >
+              Beregn nødvendig opsparing
+            </Button>
+            {solved && (
+              <p className="text-sm">
+                {solved.value === null ? (
+                  <span className="text-muted-foreground">
+                    Økonomisk uafhængighed nås ikke inden pension ({state.retirementAge})
+                    — prøv en senere pensionsalder eller lavere forbrug.
+                  </span>
+                ) : solved.value <= state.monthlyContribution ? (
+                  <span className="text-success">
+                    Du er på vej: din nuværende opsparing er nok til at blive
+                    økonomisk uafhængig inden pension.
+                  </span>
+                ) : (
+                  <>
+                    Du skal spare ca.{" "}
+                    <strong>{formatDKK(solved.value)}/md.</strong> op for at blive
+                    økonomisk uafhængig som {state.retirementAge}-årig (du sparer{" "}
+                    {formatDKK(state.monthlyContribution)}/md. nu).
+                  </>
+                )}
+              </p>
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -516,9 +614,15 @@ export function PlanningOverview() {
             />
             <PercentField
               id="a-vol"
-              label="Årlig volatilitet"
+              label="Volatilitet, investeringer"
               value={state.assumptions.volatility}
               onChange={(v) => planning.setAssumption("volatility", v)}
+            />
+            <PercentField
+              id="a-vol-housing"
+              label="Volatilitet, bolig"
+              value={state.assumptions.housingVolatility}
+              onChange={(v) => planning.setAssumption("housingVolatility", v)}
             />
             <PercentField
               id="a-infl"
@@ -654,7 +758,48 @@ export function PlanningOverview() {
                 }
               />
             </div>
+            <Dropdown
+              id="plan-inv-tax-mode"
+              titleText="Investeringsbeskatning"
+              label="Vælg beskatning"
+              items={INV_TAX_MODES}
+              selectedItem={INV_TAX_MODES.find(
+                (m) => m.id === state.investmentTaxMode
+              )}
+              itemToString={(m) => (m ? m.label : "")}
+              onChange={({ selectedItem }) => {
+                if (selectedItem)
+                  planning.patch({ investmentTaxMode: selectedItem.id })
+              }}
+            />
           </div>
+          <Separator />
+          <div className="flex flex-wrap items-center gap-8">
+            <Checkbox
+              id="plan-include-prop-tax"
+              labelText="Medregn ejendomsskat (ejendomsværdiskat + grundskyld)"
+              checked={state.includePropertyTax}
+              onChange={(_e, { checked }) =>
+                planning.patch({ includePropertyTax: checked })
+              }
+            />
+          </div>
+          {state.includePropertyTax && (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <MoneyInput
+                id="plan-land-value"
+                label="Grundværdi (til grundskyld)"
+                value={state.landValue}
+                onChange={(v) => planning.patch({ landValue: v })}
+              />
+            </div>
+          )}
+          {state.includePropertyTax && (
+            <p className="text-muted-foreground text-[11px]">
+              Bemærk: medregn kun ejendomsskat her, hvis den ikke allerede indgår
+              i dit månedlige forbrug ovenfor — ellers tæller den dobbelt.
+            </p>
+          )}
         </CardContent>
       </Card>
 

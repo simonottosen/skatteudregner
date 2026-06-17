@@ -39,6 +39,7 @@ interface ChartRow {
   spending: number
   investmentsSold: number
   borrowed: number
+  propertyTax: number
 }
 
 /** "1,2M kr. – 3,4M kr." percentile range. */
@@ -191,6 +192,11 @@ function DetailedTooltip({
               Lånt i friværdi: {formatDKK(row.borrowed)}
             </p>
           )}
+          {row.propertyTax > 0 && (
+            <p className="text-muted-foreground pl-2 text-[11px]">
+              Ejendomsskat: {formatDKK(row.propertyTax)}
+            </p>
+          )}
         </>
       )}
       {row.taxPaid > 0 && (
@@ -236,6 +242,7 @@ export function PlanningChart({
     spending: p.spending,
     investmentsSold: p.investmentsSold,
     borrowed: p.borrowed,
+    propertyTax: p.propertyTax,
   }))
 
   const realSuffix = real ? " · nutidskroner" : ""

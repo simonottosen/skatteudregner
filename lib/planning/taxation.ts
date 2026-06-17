@@ -12,11 +12,19 @@
  * tax — exactly how indexed brackets behave.
  */
 
-import type { PlanningTaxProfile } from "./types"
+import type { InvestmentTaxMode, PlanningTaxProfile } from "./types"
 import { createDefaultInput } from "@/lib/tax/defaults"
 import { calculateTax } from "@/lib/tax/calculator"
 import { getRates } from "@/lib/tax/rates"
+import { getMunicipality } from "@/lib/tax/municipalities"
 import { calculateStockTax } from "@/lib/tax/calculations/stock-tax"
+import { calculatePropertyTax } from "@/lib/tax/calculations/property-tax"
+
+/** Aktiesparekonto: a flat 17 % lagerbeskatning on the yearly gain. */
+export const ASK_TAX_RATE = 0.17
+
+/** Forsigtighedsprincip: property tax bases are ~80 % of the value. */
+const ASSESSMENT_FACTOR = 0.8
 
 /** Per-call context: where the household lives and how far out we are. */
 export interface TaxContext {
@@ -61,6 +69,26 @@ export function pensionIncomeTax(
   return realTax * f
 }
 
+/**
+ * Annual investment tax under the lagerprincip. Returns 0 for the realisation
+ * model (gains are taxed at the drawdown instead). For `lager` the year's gain
+ * is taxed as aktieindkomst (27/42 %), and a loss yields a credit at the low
+ * rate; for `ask` it's a flat 17 % on the gain (or credit on a loss). The gain
+ * can be negative (a down year), in which case the result is a negative tax.
+ */
+export function annualInvestmentTax(
+  nominalGain: number,
+  mode: InvestmentTaxMode,
+  ctx: TaxContext
+): number {
+  if (mode === "realisation" || nominalGain === 0) return 0
+  if (mode === "ask") return ASK_TAX_RATE * nominalGain
+  // lager: positive gains use the full progressive schedule; losses are
+  // deductible against aktieindkomst at the low rate.
+  if (nominalGain > 0) return stockGainTax(nominalGain, ctx)
+  return getRates(ctx.profile.year).stockTaxLowRate * nominalGain
+}
+
 /** Aktieindkomst tax on a year's realised investment gain (27 % / 42 %). */
 export function stockGainTax(nominalGain: number, ctx: TaxContext): number {
   if (nominalGain <= 0) return 0
@@ -70,6 +98,48 @@ export function stockGainTax(nominalGain: number, ctx: TaxContext): number {
   input.married = ctx.married
   input.stockSaleGains = nominalGain / f
   const realTax = calculateStockTax(input, getRates(ctx.profile.year)).totalStockTax
+  return realTax * f
+}
+
+/**
+ * Annual property holding tax (ejendomsværdiskat + grundskyld) on the owned
+ * home, via the real engine. `age` lets the pensioner reduction apply once the
+ * household is retired. Values are deflated to real terms (forsigtigheds-
+ * princippet ≈ 80 % of value) so the rate brackets index with inflation, then
+ * the resulting tax is re-inflated.
+ */
+export function propertyHoldingTax(
+  nominalHomeValue: number,
+  nominalLandValue: number,
+  age: number,
+  ctx: TaxContext
+): number {
+  if (nominalHomeValue <= 0) return 0
+  const muni = getMunicipality(ctx.profile.municipality, ctx.profile.year)
+  if (!muni) return 0
+  const f = realFactor(ctx)
+  const realHome = nominalHomeValue / f
+  const realLand = nominalLandValue / f
+  const input = createDefaultInput()
+  input.year = ctx.profile.year
+  input.municipality = ctx.profile.municipality
+  input.married = ctx.married
+  input.birthDate = `${ctx.profile.year - Math.round(age)}-06-15`
+  input.property = {
+    propertyValue: realHome,
+    assessmentBasis: realHome * ASSESSMENT_FACTOR,
+    landValue: realLand,
+    landAssessmentBasis: realLand * ASSESSMENT_FACTOR,
+    purchasedBefore19980701: false,
+    isCondo: false,
+    ownershipShare: 1,
+    personalTaxDiscount: 0,
+  }
+  const realTax = calculatePropertyTax(
+    input,
+    getRates(ctx.profile.year),
+    muni
+  ).totalPropertyTax
   return realTax * f
 }
 

@@ -9,6 +9,16 @@
 import type { TaxYear } from "@/lib/tax/types"
 
 /**
+ * How the liquid investment portfolio is taxed:
+ * - `realisation`: aktier on the realisationsprincip — gains taxed only when
+ *   sold (27 %/42 %). Cost basis tracked.
+ * - `lager`: ETFs/investeringsforeninger on the lagerprincip — the year's gain
+ *   is taxed annually as aktieindkomst (27 %/42 %), losses give a credit.
+ * - `ask`: aktiesparekonto — the year's gain taxed annually at a flat 17 %.
+ */
+export type InvestmentTaxMode = "realisation" | "lager" | "ask"
+
+/**
  * Profile used to tax pension payouts and realised investment gains with the
  * real Danish tax engine (`@/lib/tax`). The rules year is held constant across
  * the projection; brackets are applied to real (today's-kroner) income so they
@@ -37,8 +47,10 @@ export interface PlanningAssumptions {
   investmentReturn: number
   /** Annual investment management fee, subtracted from the return. */
   investmentFee: number
-  /** Annual return volatility (std-dev) used for the confidence band. */
+  /** Annual investment return volatility (std-dev) used for the confidence band. */
   volatility: number
+  /** Annual home-price volatility (std-dev) — adds housing risk to the band. */
+  housingVolatility: number
   /** General price inflation, used for spending growth + real-terms view. */
   inflation: number
   /** Yearly growth of the monthly contribution (e.g. salary keeping pace). */
@@ -52,6 +64,7 @@ export const DEFAULT_ASSUMPTIONS: PlanningAssumptions = {
   investmentReturn: 0.0577,
   investmentFee: 0.006,
   volatility: 0.12,
+  housingVolatility: 0.08,
   inflation: 0.02,
   contributionGrowth: 0.02,
   safeWithdrawalRate: 0.04,
@@ -178,6 +191,8 @@ export interface PlanningState {
   retirementAge: number
   /** Starting liquid investment portfolio in DKK. */
   startInvestments: number
+  /** How the investment portfolio is taxed (realisation / lager / ASK). */
+  investmentTaxMode: InvestmentTaxMode
   /**
    * Liquid cash buffer (emergency fund) in DKK. Earns no real return (grows with
    * price inflation) and is spent before investments are sold in retirement.
@@ -191,6 +206,10 @@ export interface PlanningState {
   otherDebtTermYears: number
   /** Current home value in DKK (0 if renting). */
   homeValue: number
+  /** Land value (grundværdi) in DKK, used for grundskyld. */
+  landValue: number
+  /** Whether to model ongoing property tax (ejendomsværdiskat + grundskyld). */
+  includePropertyTax: boolean
   /** Outstanding mortgage principal in DKK. */
   mortgageBalance: number
   /** Annual interest rate used to amortize the mortgage. */
@@ -214,11 +233,14 @@ export const DEFAULT_PLANNING_STATE: PlanningState = {
   endAge: 90,
   retirementAge: 65,
   startInvestments: 0,
+  investmentTaxMode: "realisation",
   cashBuffer: 0,
   otherDebtBalance: 0,
   otherDebtRate: 0.07,
   otherDebtTermYears: 10,
   homeValue: 0,
+  landValue: 0,
+  includePropertyTax: false,
   mortgageBalance: 0,
   mortgageRate: 0.041,
   mortgageTermYears: 30,
@@ -271,6 +293,8 @@ export interface PlanningPoint {
   investmentsSold: number
   /** Amount borrowed against home equity to cover spending this year. */
   borrowed: number
+  /** Property tax paid this year (ejendomsværdiskat + grundskyld). */
+  propertyTax: number
 }
 
 export interface PlanningResult {
