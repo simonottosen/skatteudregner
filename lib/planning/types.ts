@@ -6,6 +6,29 @@
  * nominal DKK; the UI can deflate to today's kroner using the inflation rate.
  */
 
+import type { TaxYear } from "@/lib/tax/types"
+
+/**
+ * Profile used to tax pension payouts and realised investment gains with the
+ * real Danish tax engine (`@/lib/tax`). The rules year is held constant across
+ * the projection; brackets are applied to real (today's-kroner) income so they
+ * stay meaningful decades out (no bracket creep). Seeded from the /skat page.
+ */
+export interface PlanningTaxProfile {
+  /** Tax-rules year held constant across the projection. */
+  year: TaxYear
+  /** Municipality of residence (drives kommuneskat + kirkeskat). */
+  municipality: string
+  /** Whether the household pays kirkeskat. */
+  churchMember: boolean
+}
+
+export const DEFAULT_TAX_PROFILE: PlanningTaxProfile = {
+  year: 2026,
+  municipality: "København",
+  churchMember: false,
+}
+
 /** Editable financial assumptions (all rates as fractions, e.g. 0.0577 = 5.77 %). */
 export interface PlanningAssumptions {
   /** Annual appreciation of the home's value. */
@@ -155,6 +178,17 @@ export interface PlanningState {
   retirementAge: number
   /** Starting liquid investment portfolio in DKK. */
   startInvestments: number
+  /**
+   * Liquid cash buffer (emergency fund) in DKK. Earns no real return (grows with
+   * price inflation) and is spent before investments are sold in retirement.
+   */
+  cashBuffer: number
+  /** Outstanding non-mortgage debt in DKK (student/car/consumer, aggregated). */
+  otherDebtBalance: number
+  /** Annual interest rate on the other debt. */
+  otherDebtRate: number
+  /** Remaining term in years over which the other debt is paid off. */
+  otherDebtTermYears: number
   /** Current home value in DKK (0 if renting). */
   homeValue: number
   /** Outstanding mortgage principal in DKK. */
@@ -169,6 +203,8 @@ export interface PlanningState {
   annualSpending: number
   assumptions: PlanningAssumptions
   pension: PensionState
+  /** Tax profile (kommune, kirkeskat, rules year) for the real tax engine. */
+  tax: PlanningTaxProfile
   events: PlanningEvent[]
 }
 
@@ -178,6 +214,10 @@ export const DEFAULT_PLANNING_STATE: PlanningState = {
   endAge: 90,
   retirementAge: 65,
   startInvestments: 0,
+  cashBuffer: 0,
+  otherDebtBalance: 0,
+  otherDebtRate: 0.07,
+  otherDebtTermYears: 10,
   homeValue: 0,
   mortgageBalance: 0,
   mortgageRate: 0.041,
@@ -186,6 +226,7 @@ export const DEFAULT_PLANNING_STATE: PlanningState = {
   annualSpending: 0,
   assumptions: { ...DEFAULT_ASSUMPTIONS },
   pension: { ...DEFAULT_PENSION },
+  tax: { ...DEFAULT_TAX_PROFILE },
   events: [],
 }
 
@@ -196,7 +237,11 @@ export interface PlanningPoint {
   investments: number
   /** Median home equity = home value − mortgage (nominal DKK). */
   homeEquity: number
-  /** Median total wealth = investments + home equity (nominal DKK). */
+  /** Liquid cash buffer (nominal DKK). */
+  cash: number
+  /** Outstanding non-mortgage debt (nominal DKK). */
+  otherDebt: number
+  /** Median total wealth = investments + cash + home equity − other debt. */
   netWorth: number
   /** [p10, p90] of total wealth for the confidence band. */
   band: [number, number]
@@ -234,4 +279,14 @@ export interface PlanningResult {
   fiAge: number | null
   /** Age at which the mortgage is fully repaid (null if none / never). */
   debtFreeAge: number | null
+  /**
+   * Age the deterministic (median) path runs out of money — investments and
+   * home equity exhausted while spending continues. Null if it never happens.
+   */
+  ruinAge: number | null
+  /**
+   * Share (0–1) of Monte Carlo runs that funded spending for the whole horizon
+   * without running out — the plan's "success probability".
+   */
+  successProbability: number
 }

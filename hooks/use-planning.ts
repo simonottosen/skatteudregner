@@ -11,14 +11,18 @@ import {
   DEFAULT_PENSION,
   DEFAULT_PENSION_PERSON,
   DEFAULT_PLANNING_STATE,
+  DEFAULT_TAX_PROFILE,
   type NewPlanningEvent,
   type PensionPerson,
   type PensionState,
   type PlanningAssumptions,
   type PlanningEvent,
   type PlanningState,
+  type PlanningTaxProfile,
 } from "@/lib/planning/types"
 import { folkepensionAge } from "@/lib/planning/pension"
+import { getMunicipality } from "@/lib/tax/municipalities"
+import type { TaxYear } from "@/lib/tax/types"
 
 const STORAGE_KEY = "skatteberegner:planning"
 
@@ -119,6 +123,29 @@ function normalizePension(value: unknown): PensionState {
   }
 }
 
+const TAX_YEARS: TaxYear[] = [2024, 2025, 2026]
+
+function normalizeTaxProfile(value: unknown): PlanningTaxProfile {
+  if (!value || typeof value !== "object") return { ...DEFAULT_TAX_PROFILE }
+  const o = value as Partial<PlanningTaxProfile>
+  const year = TAX_YEARS.includes(o.year as TaxYear)
+    ? (o.year as TaxYear)
+    : DEFAULT_TAX_PROFILE.year
+  // Fall back to the default kommune if the saved one is unknown for that year.
+  const municipality =
+    typeof o.municipality === "string" && getMunicipality(o.municipality, year)
+      ? o.municipality
+      : DEFAULT_TAX_PROFILE.municipality
+  return {
+    year,
+    municipality,
+    churchMember:
+      typeof o.churchMember === "boolean"
+        ? o.churchMember
+        : DEFAULT_TAX_PROFILE.churchMember,
+  }
+}
+
 function normalizePlanning(raw: unknown): PlanningState {
   if (!raw || typeof raw !== "object") return { ...DEFAULT_PLANNING_STATE }
   const o = raw as Partial<PlanningState>
@@ -135,6 +162,15 @@ function normalizePlanning(raw: unknown): PlanningState {
       endAge
     ),
     startInvestments: clampNum(o.startInvestments, 0, 0),
+    cashBuffer: clampNum(o.cashBuffer, 0, 0),
+    otherDebtBalance: clampNum(o.otherDebtBalance, 0, 0),
+    otherDebtRate: clampNum(o.otherDebtRate, DEFAULT_PLANNING_STATE.otherDebtRate, 0, 0.5),
+    otherDebtTermYears: clampNum(
+      o.otherDebtTermYears,
+      DEFAULT_PLANNING_STATE.otherDebtTermYears,
+      1,
+      40
+    ),
     homeValue: clampNum(o.homeValue, 0, 0),
     mortgageBalance: clampNum(o.mortgageBalance, 0, 0),
     mortgageRate: clampNum(o.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2),
@@ -148,6 +184,7 @@ function normalizePlanning(raw: unknown): PlanningState {
     annualSpending: clampNum(o.annualSpending, 0, 0),
     assumptions: normalizeAssumptions(o.assumptions),
     pension: normalizePension(o.pension),
+    tax: normalizeTaxProfile(o.tax),
     events: normalizeEvents(o.events),
   }
 }
@@ -220,6 +257,13 @@ export function usePlanning() {
         ? mortgage.remainingYears
         : DEFAULT_PLANNING_STATE.mortgageTermYears,
       currentAge,
+      tax: {
+        year: input.year,
+        municipality: getMunicipality(input.municipality, input.year)
+          ? input.municipality
+          : DEFAULT_TAX_PROFILE.municipality,
+        churchMember: input.churchMember,
+      },
       pension: {
         single: budget.state.mode === "single",
         // Seed person 1 from the tax page; person 2 only its folkepensionsalder.
@@ -243,6 +287,9 @@ export function usePlanning() {
     input.birthDate,
     input.privatePensionRatepension,
     input.privatePensionLivrente,
+    input.year,
+    input.municipality,
+    input.churchMember,
     budget.state.mode,
   ])
 
@@ -324,6 +371,15 @@ export function usePlanning() {
     }))
   }
 
+  // Tax profile (kommune, kirkeskat, rules year).
+  const setTax = <K extends keyof PlanningTaxProfile>(
+    key: K,
+    value: PlanningTaxProfile[K]
+  ) => {
+    setTouched(true)
+    setState((prev) => ({ ...prev, tax: { ...prev.tax, [key]: value } }))
+  }
+
   // A single person's pension pot/contribution field.
   const setPensionPerson = <K extends keyof PensionPerson>(
     who: "person1" | "person2",
@@ -386,6 +442,7 @@ export function usePlanning() {
     setAssumption,
     setPension,
     setPensionPerson,
+    setTax,
     addEvent,
     updateEvent,
     removeEvent,

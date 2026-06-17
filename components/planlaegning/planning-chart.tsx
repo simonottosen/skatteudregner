@@ -27,6 +27,8 @@ interface ChartRow {
   netWorth: number
   investments: number
   homeEquity: number
+  cash: number
+  otherDebt: number
   band: [number, number]
   investmentsBand: [number, number]
   contributionYoY: number
@@ -153,6 +155,16 @@ function DetailedTooltip({
       <p className="text-muted-foreground pl-2 text-[11px]">
         Boliggevinst: {signed(row.housingGainYoY)} {inYear}
       </p>
+      {row.cash > 0 && (
+        <p className="mt-1 text-xs font-medium">
+          Kontant buffer: {formatDKK(row.cash)}
+        </p>
+      )}
+      {row.otherDebt > 0 && (
+        <p className="mt-1 text-xs font-medium" style={{ color: "#da1e28" }}>
+          Anden gæld: {signed(-row.otherDebt)}
+        </p>
+      )}
       {(row.spending > 0 || row.retirementIncome > 0) && (
         <>
           <p className="mt-1 text-xs font-medium">Pension {inYear}</p>
@@ -212,6 +224,8 @@ export function PlanningChart({
     netWorth: p.netWorth,
     investments: p.investments,
     homeEquity: p.homeEquity,
+    cash: p.cash,
+    otherDebt: p.otherDebt,
     band: p.band,
     investmentsBand: p.investmentsBand,
     contributionYoY: p.contributionYoY,

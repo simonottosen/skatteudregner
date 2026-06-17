@@ -30,6 +30,7 @@ import { formatCompactDKK, formatDKK } from "@/lib/format"
 import { PlanningChart, type WealthView } from "./planning-chart"
 import { MoneyInput } from "./money-input"
 import { EventEditor } from "./event-editor"
+import { MunicipalitySelect } from "@/components/tax-calculator/municipality-select"
 
 function num(value: number | string, fallback: number): number {
   const n = typeof value === "number" ? value : parseFloat(value)
@@ -161,12 +162,16 @@ export function PlanningOverview() {
     return {
       fiAge: result.fiAge,
       debtFreeAge: result.debtFreeAge,
+      ruinAge: result.ruinAge,
+      successProbability: result.successProbability,
       points: result.points.map((p) => {
         const f = Math.pow(1 + inf, p.age - state.currentAge)
         return {
           age: p.age,
           investments: p.investments / f,
           homeEquity: p.homeEquity / f,
+          cash: p.cash / f,
+          otherDebt: p.otherDebt / f,
           netWorth: p.netWorth / f,
           band: [p.band[0] / f, p.band[1] / f] as [number, number],
           investmentsBand: [
@@ -322,6 +327,30 @@ export function PlanningOverview() {
               </p>
             </div>
           </div>
+          {(() => {
+            const pct = Math.round(result.successProbability * 100)
+            const kind = pct >= 90 ? "success" : pct >= 75 ? "warning" : "error"
+            const title =
+              pct >= 90
+                ? "Planen ser robust ud"
+                : pct >= 75
+                  ? "Planen er lidt presset"
+                  : "Planen risikerer at løbe tør"
+            const ruin =
+              result.ruinAge != null
+                ? ` I det forventede forløb løber pengene tør ved alder ${result.ruinAge}.`
+                : ""
+            return (
+              <InlineNotification
+                className="mb-3 max-w-full"
+                kind={kind}
+                lowContrast
+                hideCloseButton
+                title={title}
+                subtitle={`Dine penge rækker hele perioden (til alder ${state.endAge}) i ${pct} % af simuleringerne.${ruin}`}
+              />
+            )
+          })()}
           <PlanningChart
             result={displayResult}
             view={view}
@@ -403,6 +432,12 @@ export function PlanningOverview() {
               onChange={(v) => planning.patch({ startInvestments: v })}
             />
             <MoneyInput
+              id="plan-cash"
+              label="Kontant buffer (opsparingskonto)"
+              value={state.cashBuffer}
+              onChange={(v) => planning.patch({ cashBuffer: v })}
+            />
+            <MoneyInput
               id="plan-monthly"
               label="Månedlig opsparing"
               value={state.monthlyContribution}
@@ -425,6 +460,30 @@ export function PlanningOverview() {
               label="Restgæld på bolig"
               value={state.mortgageBalance}
               onChange={(v) => planning.patch({ mortgageBalance: v })}
+            />
+            <MoneyInput
+              id="plan-other-debt"
+              label="Anden gæld (forbrugs-/billån, SU mv.)"
+              value={state.otherDebtBalance}
+              onChange={(v) => planning.patch({ otherDebtBalance: v })}
+            />
+            <PercentField
+              id="plan-other-debt-rate"
+              label="Rente på anden gæld"
+              value={state.otherDebtRate}
+              onChange={(v) => planning.patch({ otherDebtRate: v })}
+            />
+            <NumberInput
+              id="plan-other-debt-term"
+              label="Afdragstid på anden gæld (år)"
+              min={1}
+              max={40}
+              value={state.otherDebtTermYears}
+              onChange={(_e, { value }) =>
+                planning.patch({
+                  otherDebtTermYears: num(value, state.otherDebtTermYears),
+                })
+              }
             />
           </div>
         </CardContent>
@@ -463,13 +522,13 @@ export function PlanningOverview() {
             />
             <PercentField
               id="a-infl"
-              label="Inflation"
+              label="Prisinflation (forbrug & skat)"
               value={state.assumptions.inflation}
               onChange={(v) => planning.setAssumption("inflation", v)}
             />
             <PercentField
               id="a-contrib"
-              label="Vækst i opsparing pr. år"
+              label="Lønstigning (vækst i opsparing)"
               value={state.assumptions.contributionGrowth}
               onChange={(v) => planning.setAssumption("contributionGrowth", v)}
             />
@@ -486,9 +545,11 @@ export function PlanningOverview() {
           <p className="text-muted-foreground text-sm">
             Indbetalinger og nuværende saldi på dine pensioner. Vi beregner din
             indkomst som pensionist — inkl. folkepension med modregning
-            (aldersopsparing er fritaget). Beløb fra skattesiden er hentet, hvor
-            de findes. De årlige indbetalinger antages at stige med inflationen
-            hvert år.
+            (aldersopsparing er fritaget) — og beskatter udbetalingerne med de
+            samme danske skatteregler som skattesiden (AM-bidrag, bund-/mellem-/
+            top-skat, kommune- og kirkeskat). Beløb fra skattesiden er hentet,
+            hvor de findes. De årlige indbetalinger antages at stige med
+            inflationen hvert år.
           </p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <PercentField
@@ -561,6 +622,39 @@ export function PlanningOverview() {
               />
             </>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Tax */}
+      <Card className="mb-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-lg">Skat</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-muted-foreground text-sm">
+            Skatten på pensionsudbetalinger og investeringsgevinster beregnes med
+            de gældende {state.tax.year}-regler for din kommune. Skattegrænserne
+            (personfradrag, topskattegrænse, aktieindkomstgrænse mv.) reguleres
+            med inflationen hvert år — ligesom de danske skatteregler — så du ikke
+            havner i fx topskat alene på grund af inflation.
+          </p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <MunicipalitySelect
+              value={state.tax.municipality}
+              year={state.tax.year}
+              onChange={(v) => planning.setTax("municipality", v)}
+            />
+            <div className="flex items-end">
+              <Checkbox
+                id="plan-church"
+                labelText="Medlem af folkekirken (kirkeskat)"
+                checked={state.tax.churchMember}
+                onChange={(_e, { checked }) =>
+                  planning.setTax("churchMember", checked)
+                }
+              />
+            </div>
+          </div>
         </CardContent>
       </Card>
 

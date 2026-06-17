@@ -3,9 +3,23 @@ import { simulatePlanning } from "../simulate"
 import {
   DEFAULT_PENSION_PERSON,
   DEFAULT_PLANNING_STATE,
+  DEFAULT_TAX_PROFILE,
   type PlanningState,
 } from "../types"
-import { pensionIncomeTax } from "../tax"
+import { pensionIncomeTax, type TaxContext } from "../taxation"
+import { afterPalReturn } from "../pension"
+
+// Income tax on a year's gross pension income, real terms (inflation 0 in the
+// tests that use this), matching what the engine applies internally.
+function pTax(gross: number, married = false, spouse?: number): number {
+  const ctx: TaxContext = {
+    t: 0,
+    inflation: 0,
+    profile: DEFAULT_TAX_PROFILE,
+    married,
+  }
+  return pensionIncomeTax(gross, ctx, spouse)
+}
 
 function makeState(overrides: Partial<PlanningState> = {}): PlanningState {
   return {
@@ -260,6 +274,7 @@ describe("simulatePlanning", () => {
         annualSpending: 0,
         homeValue: 0,
         mortgageBalance: 0,
+        assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
         pension: {
           person1: {
             ratepensionBalance: 1_000_000,
@@ -280,7 +295,7 @@ describe("simulatePlanning", () => {
     )
     // Age 65: ratepension only (100k gross), net of personal income tax.
     expect(res.points.find((p) => p.age === 65)!.retirementIncome).toBeCloseTo(
-      100000 - pensionIncomeTax(100000),
+      100000 - pTax(100000),
       0
     )
     // Age 67: ratepension + folkepension → higher net income than at 65.
@@ -342,6 +357,7 @@ describe("simulatePlanning", () => {
       annualSpending: 0,
       homeValue: 0,
       mortgageBalance: 0,
+      assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
     }
     const single = simulatePlanning(
       makeState({
@@ -371,9 +387,10 @@ describe("simulatePlanning", () => {
     )
     const at65 = (r: typeof single) =>
       r.points.find((p) => p.age === 65)!.retirementIncome
-    // Net of income tax; the couple has two ratepensions, each taxed alone.
-    expect(at65(single)).toBeCloseTo(100000 - pensionIncomeTax(100000), 0)
-    expect(at65(couple)).toBeCloseTo(2 * (100000 - pensionIncomeTax(100000)), 0)
+    // Net of income tax; the couple has two ratepensions, each taxed alone
+    // (100k is well below any threshold, so the married transfer is a no-op).
+    expect(at65(single)).toBeCloseTo(100000 - pTax(100000), 0)
+    expect(at65(couple)).toBeCloseTo(2 * (100000 - pTax(100000, true, 100000)), 0)
   })
 
   it("spends from investments then borrows against home, only after retirement", () => {
@@ -592,6 +609,168 @@ describe("simulatePlanning", () => {
     const at68 = res.points.find((p) => p.age === 68)!
     expect(at68.homeEquity).toBeCloseTo(5_000_000, -3)
     expect(at68.investments).toBeCloseTo(200_000, 0)
+  })
+
+  it("grows pension pots net of PAL-skat (15,3 %)", () => {
+    expect(afterPalReturn(0.1)).toBeCloseTo(0.0847, 6)
+    expect(afterPalReturn(-0.05)).toBe(-0.05) // losses aren't PAL-taxed here
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 64,
+        endAge: 66,
+        retirementAge: 65,
+        startInvestments: 0,
+        monthlyContribution: 0,
+        annualSpending: 0,
+        homeValue: 0,
+        mortgageBalance: 0,
+        assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
+        pension: {
+          person1: {
+            ...DEFAULT_PENSION_PERSON,
+            ratepensionBalance: 1_000_000,
+            folkepensionAge: 68, // → private payout starts at 65
+          },
+          person2: { ...DEFAULT_PENSION_PERSON },
+          pensionReturn: 0.1,
+          ratepensionYears: 1, // pays the whole (grown) pot in year one
+          single: true,
+          includeFolkepension: false,
+        },
+      })
+    )
+    // The pot earns 10 % gross → 8,47 % after PAL before the lump payout at 65.
+    const gross = 1_000_000 * (1 + afterPalReturn(0.1))
+    expect(res.points.find((p) => p.age === 65)!.retirementIncome).toBeCloseTo(
+      gross - pTax(gross),
+      0
+    )
+  })
+
+  it("flags ruin and a low success probability for an unsustainable plan", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 65,
+        endAge: 90,
+        retirementAge: 65,
+        startInvestments: 100_000,
+        monthlyContribution: 0,
+        annualSpending: 1_000_000, // dwarfs every resource
+        homeValue: 500_000,
+        mortgageBalance: 0,
+        mortgageTermYears: 1,
+        assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
+      })
+    )
+    expect(res.ruinAge).not.toBeNull()
+    expect(res.ruinAge!).toBeLessThan(90)
+    expect(res.successProbability).toBe(0)
+  })
+
+  it("reports full success and no ruin for a comfortable plan", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 65,
+        endAge: 90,
+        retirementAge: 65,
+        startInvestments: 20_000_000,
+        monthlyContribution: 0,
+        annualSpending: 200_000,
+        homeValue: 0,
+        mortgageBalance: 0,
+        assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
+      })
+    )
+    expect(res.ruinAge).toBeNull()
+    expect(res.successProbability).toBe(1)
+  })
+
+  it("spends the cash buffer before selling investments in retirement", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 64,
+        endAge: 70,
+        retirementAge: 65,
+        startInvestments: 1_000_000,
+        cashBuffer: 500_000,
+        monthlyContribution: 0,
+        annualSpending: 300_000,
+        homeValue: 0,
+        mortgageBalance: 0,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0,
+          investmentFee: 0,
+          inflation: 0,
+          volatility: 0,
+        },
+        pension: { ...DEFAULT_PLANNING_STATE.pension, includeFolkepension: false },
+      })
+    )
+    // Age 65: the 300k need comes entirely out of cash → nothing sold.
+    const at65 = res.points.find((p) => p.age === 65)!
+    expect(at65.cash).toBeCloseTo(200_000, 0)
+    expect(at65.investmentsSold).toBeCloseTo(0, 0)
+    expect(at65.investments).toBeCloseTo(1_000_000, 0)
+    // Age 66: 200k cash left covers part, the remaining 100k is sold.
+    const at66 = res.points.find((p) => p.age === 66)!
+    expect(at66.cash).toBeCloseTo(0, 0)
+    expect(at66.investmentsSold).toBeCloseTo(100_000, 0)
+  })
+
+  it("amortizes other debt and subtracts it from net worth", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 40,
+        endAge: 45,
+        retirementAge: 65,
+        startInvestments: 0,
+        monthlyContribution: 0,
+        annualSpending: 0,
+        homeValue: 0,
+        mortgageBalance: 0,
+        otherDebtBalance: 200_000,
+        otherDebtRate: 0,
+        otherDebtTermYears: 10,
+        assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, volatility: 0 },
+      })
+    )
+    expect(res.points[0].otherDebt).toBeCloseTo(200_000, 0)
+    expect(res.points[0].netWorth).toBeCloseTo(-200_000, 0)
+    // 200k over 10 years at 0 % → 20k/yr; after 5 years 100k remains.
+    const at45 = res.points.find((p) => p.age === 45)!
+    expect(at45.otherDebt).toBeCloseTo(100_000, 0)
+    expect(at45.netWorth).toBeCloseTo(-100_000, 0)
+  })
+
+  it("funds other-debt service from the drawdown in retirement", () => {
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 64,
+        endAge: 66,
+        retirementAge: 65,
+        startInvestments: 1_000_000,
+        monthlyContribution: 0,
+        annualSpending: 0,
+        homeValue: 0,
+        mortgageBalance: 0,
+        otherDebtBalance: 100_000,
+        otherDebtRate: 0,
+        otherDebtTermYears: 10, // still being paid off at 65
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0,
+          investmentFee: 0,
+          inflation: 0,
+          volatility: 0,
+        },
+        pension: { ...DEFAULT_PLANNING_STATE.pension, includeFolkepension: false },
+      })
+    )
+    // Age 65: 10k/yr debt service is funded by selling investments.
+    const at65 = res.points.find((p) => p.age === 65)!
+    expect(at65.investmentsSold).toBeCloseTo(10_000, 0)
+    expect(at65.otherDebt).toBeCloseTo(90_000, 0)
   })
 
   it("is deterministic across runs and keeps p10 <= median <= p90", () => {

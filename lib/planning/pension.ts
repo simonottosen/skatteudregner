@@ -19,6 +19,18 @@ export const TILLAEG_RATE_COUPLE = 0.16 // per person
 export const PRIVATE_PAYOUT_OFFSET = 3
 
 /**
+ * PAL-skat: pension returns are taxed yearly at 15,3 % under lagerprincippet
+ * (gains and losses, realised or not). Modelled as a flat haircut on positive
+ * yearly returns, so a pot earning `r` actually grows by `r × (1 − 0,153)`.
+ */
+export const PAL_TAX_RATE = 0.153
+
+/** Net pension return after PAL-skat (only positive returns are taxed). */
+export function afterPalReturn(grossReturn: number): number {
+  return grossReturn > 0 ? grossReturn * (1 - PAL_TAX_RATE) : grossReturn
+}
+
+/**
  * Folkepensionsalder by birth year. Fixed in law through 1970; later cohorts
  * are current projections (subject to future Folketing approval).
  */
