@@ -44,13 +44,14 @@ Beregneren er et estimat og erstatter ikke SKATs officielle beregning.
 - **Usikkerhedsbånd** – Et 10–90 % konfidensbånd (Monte Carlo) omkring den forventede kurve, plus markør for økonomisk uafhængighed (FI) og pensionsalder
 - **Pension** – Ratepension, livrente og aldersopsparing (saldi, indbetalinger, afkast, udbetalingsår); appen beregner indkomst som pensionist inkl. folkepension med modregning (aldersopsparing er fritaget). Ved pensionsalderen stopper opsparingen, og pensionsindkomsten dækker forbruget
 - **Større livsbegivenheder** – Tilføj engangsudgifter (fx bryllup), arv/bonus, ændret opsparing, eller en bolighandel (sælg → køb nyt med valgt belåningsgrad og afkast)
-- **Visninger** – Samlet / opdelt / vækstkilder (indbetalinger vs. bolig- vs. investeringsgevinst) og nominelt / nutidskroner
+- **Scenarier** – Gem navngivne "hvad-nu-hvis" (fx en lønstigning du sparer op) og sammenlign dem med basisplanen side om side. Kan også oprettes af en AI-assistent via MCP-serveren (se nedenfor)
+- **Visninger** – Samlet / detaljeret og nominelt / nutidskroner
 
 ### Generelt
 
 - **Konto & synkronisering** – Valgfri e-mail/adgangskode-login (Supabase) gemmer dine data i skyen; ellers gemmes alt lokalt i browseren
 - **Mørk tilstand** – Tryk `d` for at skifte
-- **211 tests** – Beregnings-, budget- og PDF-moduler er testet
+- **249 tests** – Beregnings-, budget-, planlægnings- og PDF-moduler er testet
 
 ---
 
@@ -101,6 +102,41 @@ Login og synkronisering på tværs af enheder bruger Supabase. Uden konfiguratio
    ```
 
 Værdierne findes under **Project Settings → API**. Skat-, budget- og planlægningsdata gemmes som JSONB pr. bruger og flyttes automatisk fra lokal browser-lagring til kontoen ved første login.
+
+---
+
+## MCP-server (AI-assistent → din plan)
+
+Appen eksponerer en **MCP-server** (Model Context Protocol) over HTTP på `/api/mcp`, så du kan spørge din AI-assistent (fx Claude Desktop eller en anden MCP-klient) om ting som *"Hvad betyder det for min økonomi på lang sigt, hvis min løn stiger 5.000 kr./md. fra nu, og jeg sparer det hele op?"* Assistenten kan så simulere det mod din gemte plan og — hvis du beder om det — gemme det som et navngivet scenarie, der dukker op i appen.
+
+- **Kræver Supabase** (samme `NEXT_PUBLIC_SUPABASE_*` som ovenfor) — serveren logger ind som dig og rører kun din egen række (Row Level Security).
+- **Auth:** HTTP Basic med din konto-e-mail og -adgangskode (`Authorization: Basic base64(email:adgangskode)`). Brug kun over HTTPS.
+- **Læser som standard, skriver kun på opfordring:** `simulate_what_if` ændrer intet; kun `save_scenario` / `delete_scenario` gemmer.
+
+**Værktøjer:** `get_plan` · `simulate_what_if` · `save_scenario` · `list_scenarios` · `delete_scenario`.
+
+**Klientopsætning** (eksempel for en MCP-klient med HTTP-transport):
+
+```json
+{
+  "mcpServers": {
+    "planlaegning": {
+      "url": "https://DIN-HOST/api/mcp",
+      "headers": { "Authorization": "Basic <base64 af email:adgangskode>" }
+    }
+  }
+}
+```
+
+**Test lokalt** med MCP Inspector mod udviklingsserveren:
+
+```bash
+npx @modelcontextprotocol/inspector
+# Transport: Streamable HTTP · URL: http://localhost:3000/api/mcp
+# Tilføj header: Authorization: Basic <base64 af email:adgangskode>
+```
+
+> Sikkerhed: adgangskoden sendes i en HTTPS-header — fint til personligt brug. En oplagt senere forbedring er at skifte til Supabase-access-tokens eller OAuth, så en rå adgangskode aldrig sendes.
 
 ---
 

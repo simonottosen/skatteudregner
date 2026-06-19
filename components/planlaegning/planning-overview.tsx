@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { Fragment, useMemo, useState } from "react"
 import {
   Button,
   NumberInput,
@@ -32,17 +32,23 @@ import {
   simulatePlanning,
   solveRequiredMonthlyContribution,
 } from "@/lib/planning/simulate"
+import { toTodayKroner } from "@/lib/planning/summary"
 import type {
   InvestmentTaxMode,
   NewPlanningEvent,
   PensionPerson,
   PlanningEvent,
   PlanningResult,
+  PlanningScenario,
+  ScenarioChanges,
 } from "@/lib/planning/types"
+import { applyScenario } from "@/lib/planning/scenario"
+import { summarize, type PlanningSummary } from "@/lib/planning/summary"
 import { formatCompactDKK, formatDKK } from "@/lib/format"
 import { PlanningChart, type WealthView } from "./planning-chart"
 import { MoneyInput } from "./money-input"
 import { EventEditor } from "./event-editor"
+import { ScenarioEditor } from "./scenario-editor"
 import { MunicipalitySelect } from "@/components/tax-calculator/municipality-select"
 
 function num(value: number | string, fallback: number): number {
@@ -143,6 +149,106 @@ const INV_TAX_MODES: { id: InvestmentTaxMode; label: string }[] = [
   { id: "ask", label: "Aktiesparekonto (17 %, årligt)" },
 ]
 
+const GREEN = "#198038"
+const RED = "#da1e28"
+
+/** A one-line human description of what a scenario changes. */
+function scenarioSummaryLine(s: PlanningScenario): string {
+  const parts: string[] = []
+  const c = s.changes
+  for (const e of c.addEvents ?? []) {
+    if (e.type === "recurring") {
+      parts.push(`${e.monthlyDelta >= 0 ? "+" : ""}${formatDKK(e.monthlyDelta)}/md.`)
+    } else if (e.type === "windfall") {
+      parts.push(`arv/bonus ${formatDKK(e.amount)} (${e.age} år)`)
+    } else if (e.type === "expense") {
+      parts.push(`udgift ${formatDKK(e.amount)} (${e.age} år)`)
+    }
+  }
+  if (c.overrides?.retirementAge != null) parts.push(`pension ${c.overrides.retirementAge}`)
+  if (c.overrides?.monthlyContribution != null)
+    parts.push(`opsparing ${formatDKK(c.overrides.monthlyContribution)}/md.`)
+  if (c.overrides?.annualSpending != null)
+    parts.push(`forbrug ${formatDKK(Math.round(c.overrides.annualSpending / 12))}/md.`)
+  return parts.length > 0 ? parts.join(" · ") : "Ingen ændringer"
+}
+
+interface CompRow {
+  label: string
+  base: string
+  scenario: string
+  delta: string
+  deltaColor?: string
+}
+
+/** Build the base-vs-scenario comparison rows for the five headline metrics. */
+function comparisonRows(
+  base: PlanningSummary,
+  scen: PlanningSummary,
+  real: boolean,
+  state: { retirementAge: number; endAge: number }
+): CompRow[] {
+  const pick = (d: { nominal: number; real: number }) => (real ? d.real : d.nominal)
+  const money = (d: { nominal: number; real: number }) => formatCompactDKK(pick(d))
+  const moneyDelta = (
+    b: { nominal: number; real: number },
+    s: { nominal: number; real: number }
+  ): Pick<CompRow, "delta" | "deltaColor"> => {
+    const v = pick(s) - pick(b)
+    const sign = v < 0 ? "−" : "+"
+    return {
+      delta: `${sign}${formatCompactDKK(Math.abs(v))}`,
+      deltaColor: v >= 0 ? GREEN : RED,
+    }
+  }
+  const ageStr = (a: number | null) => (a != null ? `${a} år` : "Ikke nået")
+
+  const rows: CompRow[] = []
+  rows.push({
+    label: `Formue v. pension (${state.retirementAge})`,
+    base: money(base.netWorthAtRetirement),
+    scenario: money(scen.netWorthAtRetirement),
+    ...moneyDelta(base.netWorthAtRetirement, scen.netWorthAtRetirement),
+  })
+  rows.push({
+    label: `Formue v. alder ${state.endAge}`,
+    base: money(base.netWorthAtEnd),
+    scenario: money(scen.netWorthAtEnd),
+    ...moneyDelta(base.netWorthAtEnd, scen.netWorthAtEnd),
+  })
+  rows.push({
+    label: "Årlig pension e. skat",
+    base: money(base.annualPensionAfterTax),
+    scenario: money(scen.annualPensionAfterTax),
+    ...moneyDelta(base.annualPensionAfterTax, scen.annualPensionAfterTax),
+  })
+  {
+    const bv = base.fiAge
+    const sv = scen.fiAge
+    const d = bv != null && sv != null ? sv - bv : null
+    rows.push({
+      label: "Økonomisk fri",
+      base: ageStr(bv),
+      scenario: ageStr(sv),
+      delta: d == null ? "–" : `${d > 0 ? "+" : ""}${d} år`,
+      deltaColor: d == null || d === 0 ? undefined : d < 0 ? GREEN : RED,
+    })
+  }
+  {
+    const bp = Math.round(base.successProbability * 100)
+    const sp = Math.round(scen.successProbability * 100)
+    const d = sp - bp
+    rows.push({
+      label: "Holdbarhed",
+      base: `${bp} %`,
+      scenario: `${sp} %`,
+      delta: `${d > 0 ? "+" : ""}${d} pp`,
+      deltaColor: d === 0 ? undefined : d > 0 ? GREEN : RED,
+    })
+  }
+  return rows
+}
+
 const EVENT_TYPE_LABEL: Record<PlanningEvent["type"], string> = {
   expense: "Engangsudgift",
   windfall: "Engangsindtægt",
@@ -173,48 +279,29 @@ export function PlanningOverview() {
   const [editing, setEditing] = useState<PlanningEvent | null>(null)
   // Goal solver: required monthly saving to reach FI by the retirement age.
   const [solved, setSolved] = useState<{ value: number | null } | null>(null)
+  // Scenarios: which one is compared against the base plan, + editor state.
+  const [activeScenarioId, setActiveScenarioId] = useState<string | null>(null)
+  const [scenarioEditorOpen, setScenarioEditorOpen] = useState(false)
+  const [editingScenario, setEditingScenario] = useState<PlanningScenario | null>(null)
 
   const result = useMemo(() => simulatePlanning(state), [state])
 
+  const activeScenario =
+    state.scenarios.find((s) => s.id === activeScenarioId) ?? null
+  const baseSummary = useMemo(() => summarize(state), [state])
+  const scenarioSummary = useMemo(
+    () => (activeScenario ? summarize(applyScenario(state, activeScenario.changes)) : null),
+    [state, activeScenario]
+  )
+
   // Optionally deflate to today's kroner for display.
-  const displayResult: PlanningResult = useMemo(() => {
-    if (!real) return result
-    const inf = state.assumptions.inflation
-    return {
-      fiAge: result.fiAge,
-      debtFreeAge: result.debtFreeAge,
-      ruinAge: result.ruinAge,
-      successProbability: result.successProbability,
-      points: result.points.map((p) => {
-        const f = Math.pow(1 + inf, p.age - state.currentAge)
-        return {
-          age: p.age,
-          investments: p.investments / f,
-          homeEquity: p.homeEquity / f,
-          cash: p.cash / f,
-          otherDebt: p.otherDebt / f,
-          netWorth: p.netWorth / f,
-          band: [p.band[0] / f, p.band[1] / f] as [number, number],
-          investmentsBand: [
-            p.investmentsBand[0] / f,
-            p.investmentsBand[1] / f,
-          ] as [number, number],
-          contributionsTotal: p.contributionsTotal / f,
-          housingGainsTotal: p.housingGainsTotal / f,
-          investmentGainsTotal: p.investmentGainsTotal / f,
-          contributionYoY: p.contributionYoY / f,
-          housingGainYoY: p.housingGainYoY / f,
-          investmentGainYoY: p.investmentGainYoY / f,
-          retirementIncome: p.retirementIncome / f,
-          taxPaid: p.taxPaid / f,
-          spending: p.spending / f,
-          investmentsSold: p.investmentsSold / f,
-          borrowed: p.borrowed / f,
-          propertyTax: p.propertyTax / f,
-        }
-      }),
-    }
-  }, [result, real, state.assumptions.inflation, state.currentAge])
+  const displayResult: PlanningResult = useMemo(
+    () =>
+      real
+        ? toTodayKroner(result, state.assumptions.inflation, state.currentAge)
+        : result,
+    [result, real, state.assumptions.inflation, state.currentAge]
+  )
 
   const retirementPoint =
     displayResult.points.find((p) => p.age === state.retirementAge) ??
@@ -280,6 +367,22 @@ export function PlanningOverview() {
   const saveEvent = (draft: NewPlanningEvent, id?: string) => {
     if (id) planning.updateEvent({ ...draft, id } as PlanningEvent)
     else planning.addEvent(draft)
+  }
+
+  const openAddScenario = () => {
+    setEditingScenario(null)
+    setScenarioEditorOpen(true)
+  }
+  const openEditScenario = (s: PlanningScenario) => {
+    setEditingScenario(s)
+    setScenarioEditorOpen(true)
+  }
+  const saveScenario = (name: string, changes: ScenarioChanges, id?: string) => {
+    if (id) planning.updateScenario(id, { name, changes })
+    else {
+      const created = planning.addScenario(name, changes)
+      setActiveScenarioId(created.id)
+    }
   }
 
   return (
@@ -422,6 +525,118 @@ export function PlanningOverview() {
             currentAge={state.currentAge}
             currentYear={currentYear}
           />
+        </CardContent>
+      </Card>
+
+      {/* Scenarios */}
+      <Card className="mb-6">
+        <CardHeader className="pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-lg">Scenarier</CardTitle>
+            <Button
+              kind="tertiary"
+              size="sm"
+              renderIcon={Add}
+              onClick={openAddScenario}
+            >
+              Tilføj scenarie
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {state.scenarios.length === 0 ? (
+            <p className="text-muted-foreground text-sm">
+              Lav et &ldquo;hvad-nu-hvis&rdquo; — fx en lønstigning du sparer op,
+              en tidligere pension, eller en arv — og sammenlign det med din
+              basisplan. Du kan også bede din AI-assistent oprette scenarier.
+            </p>
+          ) : (
+            <>
+              <RadioButtonGroup
+                legendText="Sammenlign med basisplanen"
+                name="scenario-active"
+                valueSelected={activeScenarioId ?? "none"}
+                onChange={(value) =>
+                  setActiveScenarioId(value === "none" ? null : String(value))
+                }
+              >
+                <RadioButton labelText="Ingen" value="none" id="sc-none" />
+                {state.scenarios.map((s) => (
+                  <RadioButton
+                    key={s.id}
+                    labelText={s.name}
+                    value={s.id}
+                    id={`sc-${s.id}`}
+                  />
+                ))}
+              </RadioButtonGroup>
+
+              <ul className="space-y-2">
+                {state.scenarios.map((s) => (
+                  <li
+                    key={s.id}
+                    className="flex items-center gap-2 border bg-muted/20 p-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{s.name}</p>
+                      <p className="text-muted-foreground text-xs">
+                        {scenarioSummaryLine(s)}
+                      </p>
+                    </div>
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      renderIcon={Edit}
+                      iconDescription="Redigér"
+                      onClick={() => openEditScenario(s)}
+                    />
+                    <Button
+                      kind="danger--ghost"
+                      size="sm"
+                      hasIconOnly
+                      renderIcon={TrashCan}
+                      iconDescription="Fjern"
+                      onClick={() => {
+                        if (activeScenarioId === s.id) setActiveScenarioId(null)
+                        planning.removeScenario(s.id)
+                      }}
+                    />
+                  </li>
+                ))}
+              </ul>
+
+              {activeScenario && scenarioSummary && (
+                <div>
+                  <p className="text-muted-foreground mb-2 text-[11px]">
+                    Sammenligning ({real ? "nutidskroner" : "nominelt"}) —{" "}
+                    {activeScenario.name} vs. basisplan
+                  </p>
+                  <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr] gap-x-3 gap-y-1 text-sm">
+                    <span className="text-muted-foreground text-xs"></span>
+                    <span className="text-muted-foreground text-right text-xs">Basis</span>
+                    <span className="text-muted-foreground text-right text-xs">Scenarie</span>
+                    <span className="text-muted-foreground text-right text-xs">Forskel</span>
+                    {comparisonRows(baseSummary, scenarioSummary, real, state).map(
+                      (r) => (
+                        <Fragment key={r.label}>
+                          <span>{r.label}</span>
+                          <span className="text-right">{r.base}</span>
+                          <span className="text-right font-medium">{r.scenario}</span>
+                          <span
+                            className="text-right font-medium"
+                            style={{ color: r.deltaColor }}
+                          >
+                            {r.delta}
+                          </span>
+                        </Fragment>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -875,6 +1090,16 @@ export function PlanningOverview() {
         maxAge={state.endAge}
         onClose={() => setEditorOpen(false)}
         onSave={saveEvent}
+      />
+
+      <ScenarioEditor
+        open={scenarioEditorOpen}
+        initial={editingScenario}
+        currentAge={state.currentAge}
+        retirementAge={state.retirementAge}
+        endAge={state.endAge}
+        onClose={() => setScenarioEditorOpen(false)}
+        onSave={saveScenario}
       />
     </main>
   )

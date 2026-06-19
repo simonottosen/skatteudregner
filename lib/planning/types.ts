@@ -132,6 +132,35 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown
 /** A planning event without its id, preserving the per-type fields. */
 export type NewPlanningEvent = DistributiveOmit<PlanningEvent, "id">
 
+/**
+ * A set of changes a scenario layers on top of the base plan. All parts are
+ * optional: scalar overrides replace base fields, assumption overrides are
+ * merged into the assumptions, and `addEvents` are appended to the base events.
+ */
+export interface ScenarioChanges {
+  overrides?: Partial<
+    Pick<
+      PlanningState,
+      | "monthlyContribution"
+      | "annualSpending"
+      | "retirementAge"
+      | "startInvestments"
+      | "cashBuffer"
+    >
+  >
+  assumptionOverrides?: Partial<PlanningAssumptions>
+  addEvents?: NewPlanningEvent[]
+}
+
+/** A named, saved what-if layered on top of the base plan. */
+export interface PlanningScenario {
+  id: string
+  name: string
+  /** ISO timestamp of when it was created. */
+  createdAt: string
+  changes: ScenarioChanges
+}
+
 /** One person's pension pots, contributions and state-pension age. */
 export interface PensionPerson {
   /** Current balances (DKK). */
@@ -225,6 +254,8 @@ export interface PlanningState {
   /** Tax profile (kommune, kirkeskat, rules year) for the real tax engine. */
   tax: PlanningTaxProfile
   events: PlanningEvent[]
+  /** Named what-if scenarios layered on top of the base plan for comparison. */
+  scenarios: PlanningScenario[]
 }
 
 export const DEFAULT_PLANNING_STATE: PlanningState = {
@@ -250,6 +281,7 @@ export const DEFAULT_PLANNING_STATE: PlanningState = {
   pension: { ...DEFAULT_PENSION },
   tax: { ...DEFAULT_TAX_PROFILE },
   events: [],
+  scenarios: [],
 }
 
 /** One year of the projected trajectory. */
