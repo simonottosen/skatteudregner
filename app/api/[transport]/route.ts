@@ -1,8 +1,9 @@
 /**
- * Remote MCP server (Streamable HTTP) at /api/mcp. Lets an MCP client (Claude
- * Desktop, the MCP Inspector, etc.) run what-if simulations against the user's
- * saved plan and save named scenarios. Authentication is HTTP Basic with the
- * user's Supabase email + password; every DB access is RLS-scoped to that user.
+ * Remote MCP server (Streamable HTTP) at /api/mcp — in production:
+ * https://skat.simonottosen.dk/api/mcp. Lets an MCP client (Claude Desktop, the
+ * MCP Inspector, etc.) run what-if simulations against the user's saved plan and
+ * save named scenarios. Authentication is HTTP Basic with the user's Supabase
+ * email + password; every DB access is RLS-scoped to that user.
  */
 
 import { createMcpHandler } from "mcp-handler"

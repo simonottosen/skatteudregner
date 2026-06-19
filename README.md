@@ -107,7 +107,9 @@ Værdierne findes under **Project Settings → API**. Skat-, budget- og planlæg
 
 ## MCP-server (AI-assistent → din plan)
 
-Appen eksponerer en **MCP-server** (Model Context Protocol) over HTTP på `/api/mcp`, så du kan spørge din AI-assistent (fx Claude Desktop eller en anden MCP-klient) om ting som *"Hvad betyder det for min økonomi på lang sigt, hvis min løn stiger 5.000 kr./md. fra nu, og jeg sparer det hele op?"* Assistenten kan så simulere det mod din gemte plan og — hvis du beder om det — gemme det som et navngivet scenarie, der dukker op i appen.
+Appen eksponerer en **MCP-server** (Model Context Protocol) over HTTP, så du kan spørge din AI-assistent (fx Claude Desktop eller en anden MCP-klient) om ting som *"Hvad betyder det for min økonomi på lang sigt, hvis min løn stiger 5.000 kr./md. fra nu, og jeg sparer det hele op?"* Assistenten kan så simulere det mod din gemte plan og — hvis du beder om det — gemme det som et navngivet scenarie, der dukker op i appen.
+
+Standard-endpoint (produktion): **`https://skat.simonottosen.dk/api/mcp`**. Kører du lokalt, er det `http://localhost:3000/api/mcp`.
 
 - **Kræver Supabase** (samme `NEXT_PUBLIC_SUPABASE_*` som ovenfor) — serveren logger ind som dig og rører kun din egen række (Row Level Security).
 - **Auth:** HTTP Basic med din konto-e-mail og -adgangskode (`Authorization: Basic base64(email:adgangskode)`). Brug kun over HTTPS.
@@ -121,7 +123,7 @@ Appen eksponerer en **MCP-server** (Model Context Protocol) over HTTP på `/api/
 {
   "mcpServers": {
     "planlaegning": {
-      "url": "https://DIN-HOST/api/mcp",
+      "url": "https://skat.simonottosen.dk/api/mcp",
       "headers": { "Authorization": "Basic <base64 af email:adgangskode>" }
     }
   }
