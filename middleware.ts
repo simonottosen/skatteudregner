@@ -1,8 +1,6 @@
 import { createServerClient } from "@supabase/ssr"
 import { NextResponse, type NextRequest } from "next/server"
-
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+import { getSupabaseEnv } from "@/lib/supabase/env"
 
 /**
  * Refreshes the Supabase auth session cookie on each request so server-side
@@ -11,6 +9,8 @@ const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
  * cross-device sync. No-ops entirely until the project is configured.
  */
 export async function middleware(request: NextRequest) {
+  // Read at runtime so a single Docker image honours env from `docker run`.
+  const { url, anonKey } = getSupabaseEnv()
   if (!url || !anonKey) {
     return NextResponse.next({ request })
   }

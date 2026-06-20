@@ -77,7 +77,7 @@ export default function LoginPage() {
           lowContrast
           hideCloseButton
           title="Login er ikke konfigureret"
-          subtitle="Tilføj NEXT_PUBLIC_SUPABASE_URL og NEXT_PUBLIC_SUPABASE_ANON_KEY i .env.local."
+          subtitle="Sæt NEXT_PUBLIC_SUPABASE_URL og NEXT_PUBLIC_SUPABASE_ANON_KEY som miljøvariabler (.env.local lokalt, eller i Docker/host-miljøet)."
         />
       )}
 

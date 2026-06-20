@@ -11,9 +11,7 @@
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js"
-
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+import { getSupabaseEnv } from "@/lib/supabase/env"
 
 interface BasicCredentials {
   email: string
@@ -45,11 +43,12 @@ function parseBasicAuth(req: Request): BasicCredentials | null {
  * or undefined when auth fails / isn't configured.
  */
 export async function verifyBasicAuth(req: Request): Promise<AuthInfo | undefined> {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return undefined
+  const { url, anonKey } = getSupabaseEnv()
+  if (!url || !anonKey) return undefined
   const creds = parseBasicAuth(req)
   if (!creds) return undefined
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const supabase = createClient(url, anonKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   })
   const { data, error } = await supabase.auth.signInWithPassword({
@@ -79,10 +78,11 @@ export function userClientFromAuth(authInfo: AuthInfo | undefined): {
 } {
   const accessToken = authInfo?.extra?.accessToken as string | undefined
   const userId = authInfo?.extra?.userId as string | undefined
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !accessToken || !userId) {
+  const { url, anonKey } = getSupabaseEnv()
+  if (!url || !anonKey || !accessToken || !userId) {
     throw new Error("Not authenticated")
   }
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  const supabase = createClient(url, anonKey, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
   })

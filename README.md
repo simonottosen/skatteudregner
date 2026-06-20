@@ -229,6 +229,8 @@ docker run -p 3000:3000 \
 
 Åbn [http://localhost:3000](http://localhost:3000) i din browser.
 
+> Supabase-variablerne læses ved **kørsel** (ikke kun ved build), så det samme image virker med de værdier, du sætter i container-miljøet — uden at bygge igen. Sætter du dem i Docker Compose, så brug `environment:`.
+
 ### Byg lokalt
 
 ```bash
@@ -248,6 +250,10 @@ services:
     ports:
       - "3000:3000"
     restart: unless-stopped
+    environment:
+      # Valgfrit — kun for login/synk + MCP-serveren
+      NEXT_PUBLIC_SUPABASE_URL: https://YOUR-PROJECT-REF.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: YOUR-ANON-PUBLIC-KEY
 ```
 
 Images er tagget med `latest` (seneste main-commit) og `sha-<commit>` for præcis versionsstyring.
