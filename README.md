@@ -51,7 +51,7 @@ Beregneren er et estimat og erstatter ikke SKATs officielle beregning.
 
 - **Konto & synkronisering** – Valgfri e-mail/adgangskode-login (Supabase) gemmer dine data i skyen; ellers gemmes alt lokalt i browseren
 - **Mørk tilstand** – Tryk `d` for at skifte
-- **249 tests** – Beregnings-, budget-, planlægnings- og PDF-moduler er testet
+- **263 tests** – Beregnings-, budget-, planlægnings- og PDF-moduler er testet
 
 ---
 
@@ -113,7 +113,7 @@ Standard-endpoint (produktion): **`https://skat.simonottosen.dk/api/mcp`**. Kør
 
 - **Kræver Supabase** (samme `NEXT_PUBLIC_SUPABASE_*` som ovenfor) — serveren logger ind som dig og rører kun din egen række (Row Level Security).
 - **Auth:** HTTP Basic med din konto-e-mail og -adgangskode (`Authorization: Basic base64(email:adgangskode)`). Brug kun over HTTPS.
-- **Læser som standard, skriver kun på opfordring:** `get_plan`, `simulate_what_if`, `get_trajectory`, `list_scenarios` og `solve_required_saving` ændrer intet; kun `update_plan`, `save_scenario`, `update_scenario` og `delete_scenario` gemmer.
+- **Læser som standard, skriver kun på opfordring:** alle `get_*`-, `simulate_what_if`-, `compute_tax`-, `list_scenarios`- og `solve_required_saving`-værktøjer ændrer intet; kun `update_plan`, `save_scenario`, `update_scenario`, `delete_scenario` og `add_event`/`update_event`/`remove_event` gemmer.
 
 **Værktøjer:**
 
@@ -127,6 +127,11 @@ Standard-endpoint (produktion): **`https://skat.simonottosen.dk/api/mcp`**. Kør
 | `save_scenario` | Gem et navngivet hvad-nu-hvis, der vises i appen — skriver |
 | `update_scenario` | Omdøb/redigér et gemt scenarie — skriver |
 | `list_scenarios` / `delete_scenario` | Vis / fjern gemte scenarier |
+| `add_event` / `update_event` / `remove_event` | Tilføj/redigér/fjern en begivenhed i planens "Større ændringer" — skriver |
+| `get_tax` | Skatteresultat for din gemte indkomst: nettoløn, samlet skat, effektiv + marginal sats og fuld opdeling, pr. person + husstand |
+| `compute_tax` | Skat for en hypotetisk indkomst (hvad-nu-hvis), uden at gemme |
+| `get_budget` | Månedligt budget: indkomst (pr. person + i alt), udgifter (i alt + pr. kategori), realkredit, overskud og opsparingsrate |
+| `get_result` | Resultatsidens nøgletal: brutto/skat/netto pr. måned + budgettets indkomst, udgifter, overskud og opsparingsrate |
 
 Et scenarie (og `simulate_what_if`) kan ændre opsparing, forbrug, pensionsalder, start­investeringer, kontant buffer, investeringsbeskatning, ejendomsskat, bolig-/grundværdi, realkredit, anden gæld, antagelser, delte pensionsfelter og skatteprofilen (kommune/kirkeskat/år), samt tilføje begivenheder (engangsudgift/-indtægt, opsparingsændring, bolighandel).
 

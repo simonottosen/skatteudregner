@@ -3,201 +3,37 @@
 import { useEffect, useMemo, useState } from "react"
 import { useRemoteSync } from "@/hooks/use-remote-sync"
 import { useTax } from "@/components/tax-provider"
+import { UNCATEGORIZED_ID } from "@/lib/budget/categories"
+import type { MortgageState } from "@/lib/budget/mortgage"
 import {
-  DEFAULT_CATEGORIES,
-  UNCATEGORIZED_ID,
-  guessCategory,
+  computeBudgetSummary,
+  defaultBudgetState,
+  newBudgetId as newId,
+  normalizeBudget,
+  type BudgetAssumptions,
   type BudgetCategory,
-} from "@/lib/budget/categories"
-import {
-  DEFAULT_MORTGAGE,
-  mortgageMonthlyTotal,
-  type MortgageState,
-} from "@/lib/budget/mortgage"
+  type BudgetItem,
+  type BudgetMode,
+  type BudgetState,
+  type ExpenseList,
+  type IncomeSource,
+  type PersonConfig,
+} from "@/lib/budget/state"
 
-export type { BudgetCategory }
-
-export interface BudgetItem {
-  id: string
-  label: string
-  amount: number
-  categoryId: string
-}
-
-/** Household layout. */
-export type BudgetMode = "single" | "shared" | "separate"
-/** Where a person's monthly net income comes from. */
-export type IncomeSource = "skat" | "manual"
-/** Which expense list an action targets. */
-export type ExpenseList = "shared" | "p1" | "p2"
-
-export interface PersonConfig {
-  name: string
-  incomeSource: IncomeSource
-  manualIncome: number
-  /** Used only in "separate" mode. */
-  items: BudgetItem[]
-}
-
-/** Household composition used to benchmark spending against typical peers. */
-export interface BudgetAssumptions {
-  adults: number
-  children: number
-  cars: number
-}
-
-export interface BudgetState {
-  version: 5
-  mode: BudgetMode
-  person1: PersonConfig
-  person2: PersonConfig
-  /** Shared expense list, used in "single" and "shared" modes. */
-  sharedItems: BudgetItem[]
-  /** Category definitions, shared across all expense lists. */
-  categories: BudgetCategory[]
-  /** Household assumptions for the peer comparison on the results page. */
-  assumptions: BudgetAssumptions
-  /** Realkredit mortgage — kept separate from the categorised expenses. */
-  mortgage: MortgageState
-}
-
-export const DEFAULT_ASSUMPTIONS: BudgetAssumptions = {
-  adults: 2,
-  children: 0,
-  cars: 1,
+// Re-export the budget types so existing importers of "@/hooks/use-budget"
+// keep working (the definitions now live in the pure "@/lib/budget/state").
+export type {
+  BudgetCategory,
+  BudgetItem,
+  BudgetMode,
+  IncomeSource,
+  ExpenseList,
+  PersonConfig,
+  BudgetAssumptions,
+  BudgetState,
 }
 
 const STORAGE_KEY = "skatteberegner:budget-items"
-
-const DEFAULT_SHARED_ITEMS: Omit<BudgetItem, "id">[] = [
-  { label: "Husleje / boliglån", amount: 0, categoryId: "bolig" },
-  { label: "Mad og dagligvarer", amount: 0, categoryId: "mad" },
-  { label: "Transport", amount: 0, categoryId: "transport" },
-  { label: "Abonnementer", amount: 0, categoryId: "abonnementer" },
-  { label: "Forsikringer", amount: 0, categoryId: "forsikring" },
-]
-
-let nextId = 1
-const newId = () => `b-${nextId++}-${Date.now()}`
-
-function defaultPerson(name: string, incomeSource: IncomeSource): PersonConfig {
-  return { name, incomeSource, manualIncome: 0, items: [] }
-}
-
-function defaultState(): BudgetState {
-  return {
-    version: 5,
-    mode: "single",
-    person1: defaultPerson("Person 1", "skat"),
-    person2: defaultPerson("Person 2", "manual"),
-    sharedItems: DEFAULT_SHARED_ITEMS.map((i) => ({ ...i, id: newId() })),
-    categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
-    assumptions: { ...DEFAULT_ASSUMPTIONS },
-    mortgage: { ...DEFAULT_MORTGAGE },
-  }
-}
-
-function asItems(value: unknown): BudgetItem[] {
-  if (!Array.isArray(value)) return []
-  return value
-    .filter((i) => i && typeof i === "object")
-    .map((i) => {
-      const o = i as Partial<BudgetItem>
-      const label = typeof o.label === "string" ? o.label : ""
-      return {
-        id: typeof o.id === "string" ? o.id : newId(),
-        label,
-        amount: typeof o.amount === "number" ? o.amount : 0,
-        categoryId:
-          typeof o.categoryId === "string" ? o.categoryId : guessCategory(label),
-      }
-    })
-}
-
-function normalizePerson(value: unknown, fallback: PersonConfig): PersonConfig {
-  if (!value || typeof value !== "object") return fallback
-  const o = value as Partial<PersonConfig>
-  return {
-    name: typeof o.name === "string" ? o.name : fallback.name,
-    incomeSource: o.incomeSource === "skat" ? "skat" : "manual",
-    manualIncome: typeof o.manualIncome === "number" ? o.manualIncome : 0,
-    items: asItems(o.items),
-  }
-}
-
-function normalizeCategories(value: unknown): BudgetCategory[] {
-  let cats: BudgetCategory[] = Array.isArray(value)
-    ? value
-        .filter(
-          (c): c is BudgetCategory =>
-            !!c &&
-            typeof c === "object" &&
-            typeof (c as BudgetCategory).id === "string" &&
-            typeof (c as BudgetCategory).name === "string"
-        )
-        .map((c) => ({ id: c.id, name: c.name }))
-    : []
-  if (cats.length === 0) cats = DEFAULT_CATEGORIES.map((c) => ({ ...c }))
-  // The catch-all must always exist.
-  if (!cats.some((c) => c.id === UNCATEGORIZED_ID)) {
-    cats = [...cats, { id: UNCATEGORIZED_ID, name: "Øvrigt" }]
-  }
-  return cats
-}
-
-function normalizeAssumptions(value: unknown): BudgetAssumptions {
-  if (!value || typeof value !== "object") return { ...DEFAULT_ASSUMPTIONS }
-  const o = value as Partial<BudgetAssumptions>
-  const clamp = (v: unknown, fallback: number, min: number, max: number) =>
-    typeof v === "number" && Number.isFinite(v)
-      ? Math.min(max, Math.max(min, Math.round(v)))
-      : fallback
-  return {
-    adults: clamp(o.adults, DEFAULT_ASSUMPTIONS.adults, 1, 2),
-    children: clamp(o.children, DEFAULT_ASSUMPTIONS.children, 0, 10),
-    cars: clamp(o.cars, DEFAULT_ASSUMPTIONS.cars, 0, 4),
-  }
-}
-
-function normalizeMortgage(value: unknown): MortgageState {
-  if (!value || typeof value !== "object") return { ...DEFAULT_MORTGAGE }
-  const o = value as Partial<MortgageState>
-  const numOr = (v: unknown, fallback: number, min: number, max: number) =>
-    typeof v === "number" && Number.isFinite(v)
-      ? Math.min(max, Math.max(min, v))
-      : fallback
-  return {
-    enabled: typeof o.enabled === "boolean" ? o.enabled : false,
-    homeValue: numOr(o.homeValue, 0, 0, 1e9),
-    remainingYears: numOr(o.remainingYears, DEFAULT_MORTGAGE.remainingYears, 1, 40),
-    ltv: numOr(o.ltv, DEFAULT_MORTGAGE.ltv, 0, 1),
-    interestRate: numOr(o.interestRate, DEFAULT_MORTGAGE.interestRate, 0, 0.2),
-    bidragssats: numOr(o.bidragssats, DEFAULT_MORTGAGE.bidragssats, 0, 0.05),
-    interestOnly: typeof o.interestOnly === "boolean" ? o.interestOnly : false,
-  }
-}
-
-/** Accepts the legacy array shape, the v2 object shape, and v3–v5. */
-function normalizeBudget(raw: unknown): BudgetState {
-  const base = defaultState()
-  if (Array.isArray(raw)) {
-    return { ...base, sharedItems: asItems(raw) }
-  }
-  if (raw && typeof raw === "object") {
-    const o = raw as Partial<BudgetState>
-    return {
-      version: 5,
-      mode: o.mode === "shared" || o.mode === "separate" ? o.mode : "single",
-      person1: normalizePerson(o.person1, base.person1),
-      person2: normalizePerson(o.person2, base.person2),
-      sharedItems: o.sharedItems ? asItems(o.sharedItems) : base.sharedItems,
-      categories: normalizeCategories(o.categories),
-      assumptions: normalizeAssumptions(o.assumptions),
-      mortgage: normalizeMortgage(o.mortgage),
-    }
-  }
-  return base
-}
 
 /**
  * Owns the budget state. Use it once (via {@link BudgetProvider}) so the whole
@@ -205,7 +41,7 @@ function normalizeBudget(raw: unknown): BudgetState {
  */
 export function useBudgetController() {
   const { monthlyNetIncome, person2MonthlyNetIncome } = useTax()
-  const [state, setState] = useState<BudgetState>(defaultState)
+  const [state, setState] = useState<BudgetState>(defaultBudgetState)
   // Becomes true once the persisted value has been restored. Gating writes on
   // this prevents the initial default state from clobbering saved data before
   // the restore effect's setState has been applied.
@@ -333,23 +169,10 @@ export function useBudgetController() {
     setState((p) => ({ ...p, mortgage: { ...p.mortgage, ...patch } }))
 
   // --- derived values -----------------------------------------------------
-  const incomeOf = (person: PersonConfig, skatNet: number) =>
-    person.incomeSource === "skat" ? skatNet : person.manualIncome
-
-  const derived = useMemo(() => {
-    const p1Income = incomeOf(state.person1, monthlyNetIncome)
-    const p2Income = incomeOf(state.person2, person2MonthlyNetIncome)
-    const sumItems = (items: BudgetItem[]) =>
-      items.reduce((s, i) => s + (i.amount || 0), 0)
-
-    const sharedTotal = sumItems(state.sharedItems)
-    const p1Total = sumItems(state.person1.items)
-    const p2Total = sumItems(state.person2.items)
-    // Mortgage is tracked separately from the categorised expense lists.
-    const mortgageMonthly = mortgageMonthlyTotal(state.mortgage)
-
-    return { p1Income, p2Income, sharedTotal, p1Total, p2Total, mortgageMonthly }
-  }, [state, monthlyNetIncome, person2MonthlyNetIncome])
+  const derived = useMemo(
+    () => computeBudgetSummary(state, monthlyNetIncome, person2MonthlyNetIncome),
+    [state, monthlyNetIncome, person2MonthlyNetIncome]
+  )
 
   return {
     state,

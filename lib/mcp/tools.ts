@@ -8,7 +8,7 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js"
-import { fetchUserData, saveUserData } from "@/lib/supabase/user-data"
+import { fetchUserData, saveUserData, type UserDataRow } from "@/lib/supabase/user-data"
 import { userClientFromAuth } from "@/lib/supabase/mcp-auth"
 import { normalizePlanning, normalizeScenarioChanges, newId } from "@/lib/planning/normalize"
 import { applyScenario } from "@/lib/planning/scenario"
@@ -22,28 +22,85 @@ import {
   type DualAmount,
   type PlanningSummary,
 } from "@/lib/planning/summary"
-import type { PlanningScenario, PlanningState } from "@/lib/planning/types"
+import type {
+  NewPlanningEvent,
+  PlanningEvent,
+  PlanningScenario,
+  PlanningState,
+} from "@/lib/planning/types"
+import { createDefaultInput } from "@/lib/tax/defaults"
+import {
+  readPersistedTaxInputs,
+  safeCalculateTax,
+} from "@/lib/tax/persisted"
+import type { TaxInput, TaxResult } from "@/lib/tax/types"
+import {
+  computeBudgetSummary,
+  computeResultSummary,
+  expensesByCategory,
+  normalizeBudget,
+} from "@/lib/budget/state"
 
 interface ToolExtra {
   authInfo?: AuthInfo
 }
 
-/** Load the user's normalized plan (+ an RLS-scoped client for writes). */
-async function loadPlan(extra: ToolExtra) {
+/** Load the user's data: RLS-scoped client, the raw row, and the normalized plan. */
+async function loadPlan(extra: ToolExtra): Promise<{
+  supabase: ReturnType<typeof userClientFromAuth>["supabase"]
+  userId: string
+  row: UserDataRow | null
+  state: PlanningState
+  grossMonthlySalary: number | null
+}> {
   const { supabase, userId } = userClientFromAuth(extra.authInfo)
   const row = await fetchUserData(supabase, userId)
   const state = normalizePlanning(row?.planning)
   // Best-effort gross salary hint so the LLM can turn "5 % of salary" into kr.
   let grossMonthlySalary: number | null = null
-  const taxInput = row?.tax_input as { workIncome?: unknown } | null
-  if (taxInput && typeof taxInput.workIncome === "number" && taxInput.workIncome > 0) {
-    grossMonthlySalary = Math.round(taxInput.workIncome / 12)
+  const inputs = readPersistedTaxInputs(row?.tax_input)
+  if (inputs[0] && inputs[0].workIncome > 0) {
+    grossMonthlySalary = Math.round(inputs[0].workIncome / 12)
   }
-  return { supabase, userId, state, grossMonthlySalary }
+  return { supabase, userId, row, state, grossMonthlySalary }
 }
 
 const round = (n: number) => Math.round(n)
+/** A rate (0–1) as a percentage with one decimal. */
+const pct1 = (rate: number) => Math.round(rate * 1000) / 10
 const dual = (d: DualAmount) => ({ nominal: round(d.nominal), real: round(d.real) })
+
+/** Per-person monthly take-home from the persisted tax inputs (0 if missing). */
+function monthlyNet(inputs: TaxInput[], index: number): number {
+  const inp = inputs[index]
+  if (!inp) return 0
+  const r = safeCalculateTax(inp)
+  return r ? r.netIncome / 12 : 0
+}
+
+/** Headline figures for one person's tax result. */
+function taxHeadline(input: TaxInput, r: TaxResult) {
+  return {
+    municipality: input.municipality,
+    year: input.year,
+    grossIncome: round(r.amBasis + r.insuranceBasis + r.nonAmIncome),
+    netIncome: round(r.netIncome),
+    totalTax: round(r.totalTax),
+    effectiveTaxRatePct: pct1(r.effectiveTaxRate),
+    marginalTaxRatePct: pct1(r.marginalTaxRate),
+    breakdown: {
+      amBidrag: round(r.amBidrag),
+      bundSkat: round(r.bundSkat),
+      mellemSkat: round(r.mellemSkat),
+      topSkat: round(r.topSkat),
+      topTopSkat: round(r.topTopSkat),
+      kommuneSkat: round(r.kommuneSkat),
+      kirkeSkat: round(r.kirkeSkat),
+      stockTax: round(r.totalStockTax),
+      propertyTax: round(r.totalPropertyTax),
+    },
+  }
+}
 
 /** Headline figures of one plan, nominal + today's kroner. */
 function summaryReport(s: PlanningSummary) {
@@ -162,6 +219,26 @@ const pensionPersonSchema = z.object({
   livrenteAnnual: z.number().optional(),
   aldersopsparingAnnual: z.number().optional(),
   folkepensionAge: z.number().optional(),
+})
+
+/** Curated subset of TaxInput for the ad-hoc `compute_tax` what-if. */
+const taxInputSchema = z.object({
+  year: z.union([z.literal(2024), z.literal(2025), z.literal(2026)]).optional(),
+  municipality: z.string().optional(),
+  churchMember: z.boolean().optional(),
+  married: z.boolean().optional(),
+  workIncome: z.number().optional(),
+  honorarIncome: z.number().optional(),
+  otherAmIncome: z.number().optional(),
+  transferIncome: z.number().optional(),
+  suIncome: z.number().optional(),
+  otherNonAmIncome: z.number().optional(),
+  employeePension: z.number().optional(),
+  privatePensionRatepension: z.number().optional(),
+  privatePensionLivrente: z.number().optional(),
+  stockSaleGains: z.number().optional(),
+  danishDividends: z.number().optional(),
+  mortgageInterest: z.number().optional(),
 })
 
 export function registerPlanningTools(server: McpServer): void {
@@ -452,6 +529,222 @@ export function registerPlanningTools(server: McpServer): void {
         scenario: { id: updated.id, name: updated.name },
         summary: summaryReport(summarize(applyScenario(state, updated.changes))),
       })
+    }
+  )
+
+  // --- Tax (Skat) --------------------------------------------------------
+
+  server.registerTool(
+    "get_tax",
+    {
+      title: "Get the saved tax result (take-home, rates)",
+      description:
+        "Compute the user's tax from their saved tax input: take-home (net) " +
+        "income, total tax, effective + marginal rates and the full breakdown, " +
+        "per household person plus a household total. Read-only. Amounts are " +
+        "yearly in DKK unless named *Monthly.",
+      inputSchema: {},
+    },
+    async (_args, extra) => {
+      const { row } = await loadPlan(extra as ToolExtra)
+      const inputs = readPersistedTaxInputs(row?.tax_input)
+      if (inputs.length === 0) {
+        return json({ note: "No saved tax input — fill in the Skat page first." })
+      }
+      const people = inputs.map((inp, i) => {
+        const r = safeCalculateTax(inp)
+        return r
+          ? { person: i + 1, ...taxHeadline(inp, r) }
+          : { person: i + 1, error: `Unknown municipality: ${inp.municipality}` }
+      })
+      const results = inputs
+        .map((inp) => safeCalculateTax(inp))
+        .filter((r): r is TaxResult => r !== null)
+      const h = computeResultSummary(results)
+      return json({
+        people,
+        household: {
+          grossYear: round(h.grossYear),
+          taxYear: round(h.taxYear),
+          netYear: round(h.netYear),
+          netMonthly: round(h.netMonthly),
+          effectiveTaxRatePct: pct1(h.effectiveRate),
+        },
+      })
+    }
+  )
+
+  server.registerTool(
+    "compute_tax",
+    {
+      title: "Compute tax for an ad-hoc income (what-if)",
+      description:
+        "Compute take-home / marginal & effective rate for a hypothetical " +
+        "income WITHOUT saving anything. Starts from the user's first saved " +
+        "person (kommune, deductions, …) and applies the provided overrides. " +
+        "Read-only. Amounts are yearly DKK.",
+      inputSchema: { input: taxInputSchema },
+    },
+    async (args, extra) => {
+      const { row } = await loadPlan(extra as ToolExtra)
+      const base = readPersistedTaxInputs(row?.tax_input)[0] ?? createDefaultInput()
+      const merged = { ...base, ...args.input } as TaxInput
+      const r = safeCalculateTax(merged)
+      if (!r) {
+        return json({
+          error: `Could not compute (check municipality "${merged.municipality}" and year ${merged.year}).`,
+        })
+      }
+      return json({ appliedInput: args.input, result: taxHeadline(merged, r) })
+    }
+  )
+
+  // --- Budget ------------------------------------------------------------
+
+  server.registerTool(
+    "get_budget",
+    {
+      title: "Get the monthly budget",
+      description:
+        "Read the user's monthly budget: income (per person + total), expenses " +
+        "(total + per category), realkredit payment, monthly surplus and savings " +
+        "rate. Income from the tax page uses the computed take-home. Read-only. " +
+        "Monthly DKK.",
+      inputSchema: {},
+    },
+    async (_args, extra) => {
+      const { row } = await loadPlan(extra as ToolExtra)
+      const budget = normalizeBudget(row?.budget_items)
+      const inputs = readPersistedTaxInputs(row?.tax_input)
+      const s = computeBudgetSummary(budget, monthlyNet(inputs, 0), monthlyNet(inputs, 1))
+      return json({
+        household: s.mode,
+        income: {
+          total: round(s.budgetIncome),
+          person1: round(s.p1Income),
+          person2: round(s.p2Income),
+        },
+        expenses: {
+          total: round(s.budgetExpenses),
+          byCategory: expensesByCategory(budget).map((c) => ({
+            name: c.name,
+            total: round(c.total),
+          })),
+        },
+        mortgageMonthly: round(s.mortgageMonthly),
+        remaining: round(s.remaining),
+        savingsRatePct: pct1(s.savingsRate),
+      })
+    }
+  )
+
+  // --- Resultat (combined) ----------------------------------------------
+
+  server.registerTool(
+    "get_result",
+    {
+      title: "Get the combined result (tax + budget key figures)",
+      description:
+        "The Resultat page's headline figures: monthly gross, tax and take-home " +
+        "(from the tax page) alongside the budget's income, expenses, surplus and " +
+        "savings rate. Read-only. Monthly DKK unless noted.",
+      inputSchema: {},
+    },
+    async (_args, extra) => {
+      const { row } = await loadPlan(extra as ToolExtra)
+      const budget = normalizeBudget(row?.budget_items)
+      const inputs = readPersistedTaxInputs(row?.tax_input)
+      const results = inputs
+        .map((inp) => safeCalculateTax(inp))
+        .filter((r): r is TaxResult => r !== null)
+      const tax = computeResultSummary(results)
+      const b = computeBudgetSummary(budget, monthlyNet(inputs, 0), monthlyNet(inputs, 1))
+      return json({
+        tax: {
+          grossMonthly: round(tax.grossMonthly),
+          taxMonthly: round(tax.taxMonthly),
+          netMonthly: round(tax.netMonthly),
+          effectiveTaxRatePct: pct1(tax.effectiveRate),
+        },
+        budget: {
+          income: round(b.budgetIncome),
+          expenses: round(b.budgetExpenses),
+          mortgageMonthly: round(b.mortgageMonthly),
+          remaining: round(b.remaining),
+          savingsRatePct: pct1(b.savingsRate),
+        },
+      })
+    }
+  )
+
+  // --- Base-plan events (Større ændringer) -------------------------------
+
+  server.registerTool(
+    "add_event",
+    {
+      title: "Add a life event to the plan",
+      description:
+        "Add a one-off/recurring life event to the base plan's 'Større " +
+        "ændringer' (expense, windfall, recurring saving change, or property " +
+        "sale/buy). Writes — only call on the user's request.",
+      inputSchema: { event: eventSchema },
+    },
+    async (args, extra) => {
+      const { supabase, userId, state } = await loadPlan(extra as ToolExtra)
+      const event = { id: newId("pe"), ...args.event } as PlanningEvent
+      const next = normalizePlanning({ ...state, events: [...state.events, event] })
+      await saveUserData(supabase, userId, { planning: next })
+      return json({
+        added: true,
+        event: next.events.find((e) => e.id === event.id) ?? event,
+      })
+    }
+  )
+
+  server.registerTool(
+    "update_event",
+    {
+      title: "Edit a life event",
+      description:
+        "Replace a base-plan event's fields by id (provide the full event). " +
+        "Writes — only call on the user's request.",
+      inputSchema: { id: z.string().min(1), event: eventSchema },
+    },
+    async (args, extra) => {
+      const { supabase, userId, state } = await loadPlan(extra as ToolExtra)
+      if (!state.events.some((e) => e.id === args.id)) {
+        return json({ updated: false, id: args.id, note: "Event not found." })
+      }
+      const replaced = { id: args.id, ...(args.event as NewPlanningEvent) } as PlanningEvent
+      const next = normalizePlanning({
+        ...state,
+        events: state.events.map((e) => (e.id === args.id ? replaced : e)),
+      })
+      await saveUserData(supabase, userId, { planning: next })
+      return json({
+        updated: true,
+        event: next.events.find((e) => e.id === args.id),
+      })
+    }
+  )
+
+  server.registerTool(
+    "remove_event",
+    {
+      title: "Remove a life event",
+      description:
+        "Remove a base-plan event by id. Writes — only call on the user's request.",
+      inputSchema: { id: z.string().min(1) },
+    },
+    async (args, extra) => {
+      const { supabase, userId, state } = await loadPlan(extra as ToolExtra)
+      const exists = state.events.some((e) => e.id === args.id)
+      const next = normalizePlanning({
+        ...state,
+        events: state.events.filter((e) => e.id !== args.id),
+      })
+      await saveUserData(supabase, userId, { planning: next })
+      return json({ removed: exists, id: args.id })
     }
   )
 }
