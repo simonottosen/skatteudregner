@@ -146,9 +146,28 @@ export interface ScenarioChanges {
       | "retirementAge"
       | "startInvestments"
       | "cashBuffer"
+      | "investmentTaxMode"
+      | "homeValue"
+      | "landValue"
+      | "includePropertyTax"
+      | "mortgageBalance"
+      | "mortgageRate"
+      | "mortgageTermYears"
+      | "otherDebtBalance"
+      | "otherDebtRate"
+      | "otherDebtTermYears"
     >
   >
   assumptionOverrides?: Partial<PlanningAssumptions>
+  /** Shared pension fields (return, payout years, household, folkepension flag). */
+  pensionOverrides?: Partial<
+    Pick<
+      PensionState,
+      "pensionReturn" | "ratepensionYears" | "single" | "includeFolkepension"
+    >
+  >
+  /** Tax profile (kommune, kirkeskat, rules year). */
+  taxOverrides?: Partial<PlanningTaxProfile>
   addEvents?: NewPlanningEvent[]
 }
 

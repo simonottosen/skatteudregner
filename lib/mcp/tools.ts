@@ -12,7 +12,16 @@ import { fetchUserData, saveUserData } from "@/lib/supabase/user-data"
 import { userClientFromAuth } from "@/lib/supabase/mcp-auth"
 import { normalizePlanning, normalizeScenarioChanges, newId } from "@/lib/planning/normalize"
 import { applyScenario } from "@/lib/planning/scenario"
-import { summarize, type DualAmount, type PlanningSummary } from "@/lib/planning/summary"
+import {
+  simulatePlanning,
+  solveRequiredMonthlyContribution,
+} from "@/lib/planning/simulate"
+import {
+  summarize,
+  toTodayKroner,
+  type DualAmount,
+  type PlanningSummary,
+} from "@/lib/planning/summary"
 import type { PlanningScenario, PlanningState } from "@/lib/planning/types"
 
 interface ToolExtra {
@@ -71,8 +80,8 @@ function json(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] }
 }
 
-// Zod shape for a scenario change-set (mirrors ScenarioChanges; re-validated by
-// normalizeScenarioChanges before use).
+// Zod shapes (mirror the planning types; everything is re-validated/clamped by
+// normalizeScenarioChanges / normalizePlanning before use).
 const eventSchema = z.object({
   type: z.enum(["expense", "windfall", "recurring", "property"]),
   label: z.string().optional(),
@@ -83,33 +92,77 @@ const eventSchema = z.object({
   mortgageLtv: z.number().optional(),
   housingReturnOverride: z.number().optional(),
 })
+
+/** Top-level scalar plan fields that can be overridden/edited. */
+const scalarFieldsSchema = z.object({
+  monthlyContribution: z.number().optional(),
+  annualSpending: z.number().optional(),
+  retirementAge: z.number().optional(),
+  startInvestments: z.number().optional(),
+  cashBuffer: z.number().optional(),
+  investmentTaxMode: z.enum(["realisation", "lager", "ask"]).optional(),
+  homeValue: z.number().optional(),
+  landValue: z.number().optional(),
+  includePropertyTax: z.boolean().optional(),
+  mortgageBalance: z.number().optional(),
+  mortgageRate: z.number().optional(),
+  mortgageTermYears: z.number().optional(),
+  otherDebtBalance: z.number().optional(),
+  otherDebtRate: z.number().optional(),
+  otherDebtTermYears: z.number().optional(),
+})
+
+const assumptionsSchema = z.object({
+  housingReturn: z.number().optional(),
+  investmentReturn: z.number().optional(),
+  investmentFee: z.number().optional(),
+  volatility: z.number().optional(),
+  housingVolatility: z.number().optional(),
+  inflation: z.number().optional(),
+  contributionGrowth: z.number().optional(),
+  safeWithdrawalRate: z.number().optional(),
+})
+
+/** Shared pension fields a scenario may override. */
+const pensionSharedSchema = z.object({
+  pensionReturn: z.number().optional(),
+  ratepensionYears: z.number().optional(),
+  single: z.boolean().optional(),
+  includeFolkepension: z.boolean().optional(),
+})
+
+const taxSchema = z.object({
+  year: z.number().optional(),
+  municipality: z.string().optional(),
+  churchMember: z.boolean().optional(),
+})
+
 const changesSchema = z
   .object({
-    overrides: z
-      .object({
-        monthlyContribution: z.number().optional(),
-        annualSpending: z.number().optional(),
-        retirementAge: z.number().optional(),
-        startInvestments: z.number().optional(),
-        cashBuffer: z.number().optional(),
-      })
-      .optional(),
-    assumptionOverrides: z
-      .object({
-        housingReturn: z.number().optional(),
-        investmentReturn: z.number().optional(),
-        investmentFee: z.number().optional(),
-        inflation: z.number().optional(),
-        contributionGrowth: z.number().optional(),
-        safeWithdrawalRate: z.number().optional(),
-      })
-      .optional(),
+    overrides: scalarFieldsSchema.optional(),
+    assumptionOverrides: assumptionsSchema.optional(),
+    pensionOverrides: pensionSharedSchema.optional(),
+    taxOverrides: taxSchema.optional(),
     addEvents: z.array(eventSchema).optional(),
   })
   .describe(
     "Changes layered on the base plan. Salary +X kr./mo invested ⇒ " +
-      'addEvents:[{type:"recurring",age:<currentAge>,monthlyDelta:X}].'
+      'addEvents:[{type:"recurring",age:<currentAge>,monthlyDelta:X}]. ' +
+      "Also supports overriding mortgage, other debt, home/land value, " +
+      "investmentTaxMode, includePropertyTax, shared pension fields and the " +
+      "tax profile (kommune/kirkeskat/year)."
   )
+
+/** Per-person pension pots a base-plan edit may set. */
+const pensionPersonSchema = z.object({
+  ratepensionBalance: z.number().optional(),
+  livrenteBalance: z.number().optional(),
+  aldersopsparingBalance: z.number().optional(),
+  ratepensionAnnual: z.number().optional(),
+  livrenteAnnual: z.number().optional(),
+  aldersopsparingAnnual: z.number().optional(),
+  folkepensionAge: z.number().optional(),
+})
 
 export function registerPlanningTools(server: McpServer): void {
   server.registerTool(
@@ -117,29 +170,19 @@ export function registerPlanningTools(server: McpServer): void {
     {
       title: "Get the saved long-term plan",
       description:
-        "Read the user's saved long-term financial plan: key inputs, existing " +
-        "scenarios and the baseline projection (net worth at retirement and end " +
-        "age, yearly pension after tax, financial-independence age, and the " +
-        "Monte-Carlo success probability). Read-only.",
+        "Read the user's full saved long-term financial plan (all inputs, " +
+        "assumptions, pension, tax profile, events and scenarios) plus the " +
+        "baseline projection (net worth at retirement and end age, yearly " +
+        "pension after tax, financial-independence age, and the Monte-Carlo " +
+        "success probability). Read-only.",
       inputSchema: {},
     },
     async (_args, extra) => {
       const { state, grossMonthlySalary } = await loadPlan(extra as ToolExtra)
       return json({
-        inputs: {
-          currentAge: state.currentAge,
-          retirementAge: state.retirementAge,
-          endAge: state.endAge,
-          monthlyContribution: state.monthlyContribution,
-          annualSpending: state.annualSpending,
-          startInvestments: state.startInvestments,
-          cashBuffer: state.cashBuffer,
-          investmentTaxMode: state.investmentTaxMode,
-          household: state.pension.single ? "single" : "couple",
-          grossMonthlySalary,
-        },
+        plan: state,
+        grossMonthlySalary,
         baseline: summaryReport(summarize(state)),
-        scenarios: state.scenarios.map((s) => ({ id: s.id, name: s.name })),
         note: "Amounts are in DKK. 'real' = today's kroner; 'nominal' = future kroner.",
       })
     }
@@ -239,6 +282,176 @@ export function registerPlanningTools(server: McpServer): void {
       })
       await saveUserData(supabase, userId, { planning: next })
       return json({ deleted: exists, id: args.id })
+    }
+  )
+
+  server.registerTool(
+    "solve_required_saving",
+    {
+      title: "Solve required monthly saving for FI",
+      description:
+        "Compute the smallest monthly saving needed to become financially " +
+        "independent by the retirement age (binary search on the median Monte-" +
+        "Carlo path). Read-only.",
+      inputSchema: {},
+    },
+    async (_args, extra) => {
+      const { state } = await loadPlan(extra as ToolExtra)
+      const required = solveRequiredMonthlyContribution(state)
+      const note =
+        required === null
+          ? `Økonomisk uafhængighed nås ikke inden pensionsalderen (${state.retirementAge}).`
+          : required <= state.monthlyContribution
+            ? "Allerede på vej — nuværende opsparing er nok."
+            : `Spar ca. ${required} kr./md. for at nå FI som ${state.retirementAge}-årig.`
+      return json({
+        requiredMonthlyContribution: required,
+        currentMonthlyContribution: state.monthlyContribution,
+        retirementAge: state.retirementAge,
+        note,
+      })
+    }
+  )
+
+  server.registerTool(
+    "get_trajectory",
+    {
+      title: "Get the year-by-year projection",
+      description:
+        "Return the full year-by-year projection (the same data as the app's CSV " +
+        "export): net worth, investments, cash, home equity, other debt, the " +
+        "p10/p90 band, pension after tax, spending, investments sold, equity " +
+        "borrowed and tax paid. Pass `changes` to get a what-if trajectory. " +
+        "Read-only.",
+      inputSchema: {
+        basis: z.enum(["real", "nominal"]).optional(),
+        changes: changesSchema.optional(),
+      },
+    },
+    async (args, extra) => {
+      const { state } = await loadPlan(extra as ToolExtra)
+      const effective = args.changes
+        ? applyScenario(state, normalizeScenarioChanges(args.changes))
+        : state
+      const basis = args.basis ?? "real"
+      let result = simulatePlanning(effective)
+      if (basis === "real") {
+        result = toTodayKroner(
+          result,
+          effective.assumptions.inflation,
+          effective.currentAge
+        )
+      }
+      const thisYear = new Date().getFullYear()
+      const rows = result.points.map((p) => ({
+        age: p.age,
+        year: thisYear + (p.age - effective.currentAge),
+        netWorth: round(p.netWorth),
+        investments: round(p.investments),
+        cash: round(p.cash),
+        homeEquity: round(p.homeEquity),
+        otherDebt: round(p.otherDebt),
+        netWorthP10: round(p.band[0]),
+        netWorthP90: round(p.band[1]),
+        pensionAfterTax: round(p.retirementIncome),
+        spending: round(p.spending),
+        investmentsSold: round(p.investmentsSold),
+        borrowed: round(p.borrowed),
+        taxPaid: round(p.taxPaid),
+      }))
+      return json({
+        basis,
+        fiAge: result.fiAge,
+        debtFreeAge: result.debtFreeAge,
+        ruinAge: result.ruinAge,
+        successProbabilityPct: Math.round(result.successProbability * 100),
+        rows,
+      })
+    }
+  )
+
+  server.registerTool(
+    "update_plan",
+    {
+      title: "Edit the base plan",
+      description:
+        "Update the user's saved base plan in place (NOT a scenario). Only call " +
+        "this when the user has asked to change their actual plan. Any omitted " +
+        "field is left unchanged; values are clamped to valid ranges. Returns " +
+        "the updated plan and its projection.",
+      inputSchema: {
+        fields: scalarFieldsSchema.optional(),
+        assumptions: assumptionsSchema.optional(),
+        pension: pensionSharedSchema
+          .extend({
+            person1: pensionPersonSchema.optional(),
+            person2: pensionPersonSchema.optional(),
+          })
+          .optional(),
+        tax: taxSchema.optional(),
+      },
+    },
+    async (args, extra) => {
+      const { supabase, userId, state } = await loadPlan(extra as ToolExtra)
+      const p = args.pension
+      const next: PlanningState = normalizePlanning({
+        ...state,
+        ...(args.fields ?? {}),
+        assumptions: { ...state.assumptions, ...(args.assumptions ?? {}) },
+        pension: {
+          ...state.pension,
+          ...(p ?? {}),
+          person1: { ...state.pension.person1, ...(p?.person1 ?? {}) },
+          person2: { ...state.pension.person2, ...(p?.person2 ?? {}) },
+        },
+        tax: { ...state.tax, ...(args.tax ?? {}) },
+      })
+      await saveUserData(supabase, userId, { planning: next })
+      return json({
+        updated: true,
+        plan: next,
+        baseline: summaryReport(summarize(next)),
+        note: "Base plan saved. The change is now visible in the app.",
+      })
+    }
+  )
+
+  server.registerTool(
+    "update_scenario",
+    {
+      title: "Rename or edit a saved scenario",
+      description:
+        "Update a saved scenario's name and/or its change-set by id. Only call " +
+        "this when the user has asked to edit a scenario.",
+      inputSchema: {
+        id: z.string().min(1),
+        name: z.string().optional(),
+        changes: changesSchema.optional(),
+      },
+    },
+    async (args, extra) => {
+      const { supabase, userId, state } = await loadPlan(extra as ToolExtra)
+      const existing = state.scenarios.find((s) => s.id === args.id)
+      if (!existing) {
+        return json({ updated: false, id: args.id, note: "Scenario not found." })
+      }
+      const updated: PlanningScenario = {
+        ...existing,
+        name: args.name?.trim() || existing.name,
+        changes: args.changes
+          ? normalizeScenarioChanges(args.changes)
+          : existing.changes,
+      }
+      const next: PlanningState = normalizePlanning({
+        ...state,
+        scenarios: state.scenarios.map((s) => (s.id === args.id ? updated : s)),
+      })
+      await saveUserData(supabase, userId, { planning: next })
+      return json({
+        updated: true,
+        scenario: { id: updated.id, name: updated.name },
+        summary: summaryReport(summarize(applyScenario(state, updated.changes))),
+      })
     }
   )
 }

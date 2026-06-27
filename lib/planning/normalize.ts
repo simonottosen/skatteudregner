@@ -168,6 +168,25 @@ export function normalizeScenarioChanges(value: unknown): ScenarioChanges {
     if ("retirementAge" in ov) out.retirementAge = clampNum(ov.retirementAge, 65, 0, 120)
     if ("startInvestments" in ov) out.startInvestments = clampNum(ov.startInvestments, 0, 0)
     if ("cashBuffer" in ov) out.cashBuffer = clampNum(ov.cashBuffer, 0, 0)
+    if (
+      ov.investmentTaxMode === "lager" ||
+      ov.investmentTaxMode === "ask" ||
+      ov.investmentTaxMode === "realisation"
+    )
+      out.investmentTaxMode = ov.investmentTaxMode
+    if ("homeValue" in ov) out.homeValue = clampNum(ov.homeValue, 0, 0)
+    if ("landValue" in ov) out.landValue = clampNum(ov.landValue, 0, 0)
+    if (typeof ov.includePropertyTax === "boolean") out.includePropertyTax = ov.includePropertyTax
+    if ("mortgageBalance" in ov) out.mortgageBalance = clampNum(ov.mortgageBalance, 0, 0)
+    if ("mortgageRate" in ov)
+      out.mortgageRate = clampNum(ov.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2)
+    if ("mortgageTermYears" in ov)
+      out.mortgageTermYears = clampNum(ov.mortgageTermYears, DEFAULT_PLANNING_STATE.mortgageTermYears, 1, 40)
+    if ("otherDebtBalance" in ov) out.otherDebtBalance = clampNum(ov.otherDebtBalance, 0, 0)
+    if ("otherDebtRate" in ov)
+      out.otherDebtRate = clampNum(ov.otherDebtRate, DEFAULT_PLANNING_STATE.otherDebtRate, 0, 0.5)
+    if ("otherDebtTermYears" in ov)
+      out.otherDebtTermYears = clampNum(ov.otherDebtTermYears, DEFAULT_PLANNING_STATE.otherDebtTermYears, 1, 40)
     if (Object.keys(out).length > 0) changes.overrides = out
   }
 
@@ -182,6 +201,31 @@ export function normalizeScenarioChanges(value: unknown): ScenarioChanges {
       if (k in full) out[k] = full[k]
     }
     if (Object.keys(out).length > 0) changes.assumptionOverrides = out
+  }
+
+  if (o.pensionOverrides && typeof o.pensionOverrides === "object") {
+    const po = o.pensionOverrides as Record<string, unknown>
+    const out: NonNullable<ScenarioChanges["pensionOverrides"]> = {}
+    if ("pensionReturn" in po)
+      out.pensionReturn = clampNum(po.pensionReturn, DEFAULT_PENSION.pensionReturn, -1, 1)
+    if ("ratepensionYears" in po)
+      out.ratepensionYears = clampNum(po.ratepensionYears, DEFAULT_PENSION.ratepensionYears, 1, 40)
+    if (typeof po.single === "boolean") out.single = po.single
+    if (typeof po.includeFolkepension === "boolean")
+      out.includeFolkepension = po.includeFolkepension
+    if (Object.keys(out).length > 0) changes.pensionOverrides = out
+  }
+
+  if (o.taxOverrides && typeof o.taxOverrides === "object") {
+    const to = o.taxOverrides as Record<string, unknown>
+    // Reuse normalizeTaxProfile (validates kommune for the year) on a merged
+    // object, then keep only the keys the caller actually provided.
+    const full = normalizeTaxProfile({ ...DEFAULT_TAX_PROFILE, ...to })
+    const out: Partial<PlanningTaxProfile> = {}
+    if ("year" in to) out.year = full.year
+    if ("municipality" in to) out.municipality = full.municipality
+    if ("churchMember" in to) out.churchMember = full.churchMember
+    if (Object.keys(out).length > 0) changes.taxOverrides = out
   }
 
   if (Array.isArray(o.addEvents)) {

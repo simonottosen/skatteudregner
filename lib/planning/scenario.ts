@@ -27,6 +27,8 @@ export function applyScenario(
     ...base,
     ...(changes.overrides ?? {}),
     assumptions: { ...base.assumptions, ...(changes.assumptionOverrides ?? {}) },
+    pension: { ...base.pension, ...(changes.pensionOverrides ?? {}) },
+    tax: { ...base.tax, ...(changes.taxOverrides ?? {}) },
     events: [...base.events, ...addedEvents],
   }
 }

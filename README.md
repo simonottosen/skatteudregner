@@ -113,9 +113,22 @@ Standard-endpoint (produktion): **`https://skat.simonottosen.dk/api/mcp`**. Kør
 
 - **Kræver Supabase** (samme `NEXT_PUBLIC_SUPABASE_*` som ovenfor) — serveren logger ind som dig og rører kun din egen række (Row Level Security).
 - **Auth:** HTTP Basic med din konto-e-mail og -adgangskode (`Authorization: Basic base64(email:adgangskode)`). Brug kun over HTTPS.
-- **Læser som standard, skriver kun på opfordring:** `simulate_what_if` ændrer intet; kun `save_scenario` / `delete_scenario` gemmer.
+- **Læser som standard, skriver kun på opfordring:** `get_plan`, `simulate_what_if`, `get_trajectory`, `list_scenarios` og `solve_required_saving` ændrer intet; kun `update_plan`, `save_scenario`, `update_scenario` og `delete_scenario` gemmer.
 
-**Værktøjer:** `get_plan` · `simulate_what_if` · `save_scenario` · `list_scenarios` · `delete_scenario`.
+**Værktøjer:**
+
+| Værktøj | Hvad det gør |
+|---|---|
+| `get_plan` | Læser hele den gemte plan (alle felter, antagelser, pension, skat, begivenheder, scenarier) + basisprojektionen |
+| `simulate_what_if` | Beregner effekten af en ændring uden at gemme — basis vs. scenarie + forskelle |
+| `get_trajectory` | Hele år-for-år-forløbet (samme data som CSV-eksporten), evt. for et hvad-nu-hvis |
+| `solve_required_saving` | Hvor meget skal spares op om måneden for at blive økonomisk uafhængig ved pension |
+| `update_plan` | Redigér selve basisplanen (tal, antagelser, pension, skat) — skriver |
+| `save_scenario` | Gem et navngivet hvad-nu-hvis, der vises i appen — skriver |
+| `update_scenario` | Omdøb/redigér et gemt scenarie — skriver |
+| `list_scenarios` / `delete_scenario` | Vis / fjern gemte scenarier |
+
+Et scenarie (og `simulate_what_if`) kan ændre opsparing, forbrug, pensionsalder, start­investeringer, kontant buffer, investeringsbeskatning, ejendomsskat, bolig-/grundværdi, realkredit, anden gæld, antagelser, delte pensionsfelter og skatteprofilen (kommune/kirkeskat/år), samt tilføje begivenheder (engangsudgift/-indtægt, opsparingsændring, bolighandel).
 
 **Klientopsætning** (eksempel for en MCP-klient med HTTP-transport):
 

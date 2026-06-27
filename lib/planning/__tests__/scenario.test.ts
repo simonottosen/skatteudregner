@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { DEFAULT_PLANNING_STATE, type PlanningState } from "../types"
 import { applyScenario } from "../scenario"
-import { normalizePlanning } from "../normalize"
+import { normalizePlanning, normalizeScenarioChanges } from "../normalize"
 import { summarize } from "../summary"
 
 function makeState(overrides: Partial<PlanningState> = {}): PlanningState {
@@ -37,6 +37,73 @@ describe("applyScenario", () => {
     // Base state is not mutated.
     expect(base.monthlyContribution).toBe(10_000)
     expect(base.events).toHaveLength(1)
+  })
+
+  it("merges widened scalar, pension and tax overrides without clobbering persons", () => {
+    const base = makeState({
+      investmentTaxMode: "realisation",
+      mortgageRate: 0.04,
+      pension: {
+        ...DEFAULT_PLANNING_STATE.pension,
+        single: true,
+        pensionReturn: 0.05,
+        person1: {
+          ...DEFAULT_PLANNING_STATE.pension.person1,
+          ratepensionBalance: 111,
+        },
+      },
+      tax: { year: 2026, municipality: "København", churchMember: false },
+    })
+    const out = applyScenario(base, {
+      overrides: { investmentTaxMode: "ask", mortgageRate: 0.06 },
+      pensionOverrides: { single: false, includeFolkepension: false },
+      taxOverrides: { municipality: "Aarhus", churchMember: true },
+    })
+    expect(out.investmentTaxMode).toBe("ask")
+    expect(out.mortgageRate).toBe(0.06)
+    expect(out.pension.single).toBe(false)
+    expect(out.pension.includeFolkepension).toBe(false)
+    expect(out.pension.pensionReturn).toBe(0.05) // untouched
+    expect(out.pension.person1.ratepensionBalance).toBe(111) // persons intact
+    expect(out.tax.municipality).toBe("Aarhus")
+    expect(out.tax.churchMember).toBe(true)
+    expect(out.tax.year).toBe(2026) // untouched
+    expect(base.investmentTaxMode).toBe("realisation") // base not mutated
+  })
+})
+
+describe("normalizeScenarioChanges (widened)", () => {
+  it("validates and clamps the widened override set", () => {
+    const c = normalizeScenarioChanges({
+      overrides: {
+        investmentTaxMode: "ask",
+        mortgageRate: 0.06,
+        mortgageBalance: -500, // clamped to 0
+        includePropertyTax: true,
+        bogus: 123, // dropped
+      },
+      pensionOverrides: { single: false, ratepensionYears: 99, bogus: 1 },
+      taxOverrides: { churchMember: true, year: 2025 },
+      assumptionOverrides: { inflation: 0.03 },
+    })
+    expect(c.overrides?.investmentTaxMode).toBe("ask")
+    expect(c.overrides?.mortgageRate).toBe(0.06)
+    expect(c.overrides?.mortgageBalance).toBe(0)
+    expect(c.overrides?.includePropertyTax).toBe(true)
+    expect("bogus" in (c.overrides as object)).toBe(false)
+    expect(c.pensionOverrides?.single).toBe(false)
+    expect(c.pensionOverrides?.ratepensionYears).toBe(40) // clamped 99 → 40
+    expect(c.taxOverrides?.churchMember).toBe(true)
+    expect(c.taxOverrides?.year).toBe(2025)
+    expect(c.assumptionOverrides?.inflation).toBe(0.03)
+  })
+
+  it("drops an invalid investmentTaxMode but keeps valid fields", () => {
+    const c = normalizeScenarioChanges({
+      overrides: { investmentTaxMode: "bogus", cashBuffer: 10 },
+    })
+    expect(c.overrides && "investmentTaxMode" in c.overrides).toBe(false)
+    expect(c.overrides?.cashBuffer).toBe(10)
   })
 })
 
