@@ -172,6 +172,7 @@ skatteudregner/
 │   ├── resultat/page.tsx   # Samlet resultat
 │   ├── planlaegning/page.tsx # Formue-simulering
 │   ├── login/page.tsx      # Login / opret konto
+│   ├── api/mcp/route.ts    # MCP-server (Streamable HTTP + Basic auth)
 │   └── carbon.scss         # Carbon-tema (white / g100)
 ├── components/
 │   ├── app-header.tsx              # Navigation på tværs af moduler
@@ -208,6 +209,8 @@ skatteudregner/
 │   ├── budget/
 │   │   ├── categories.ts           # Standardkategorier + gæt
 │   │   └── generate-budget.ts      # Startbudget + realkredit-estimat
+│   ├── mcp/
+│   │   └── tools.ts                # MCP-værktøjer (plan, skat, budget, resultat)
 │   ├── planning/
 │   │   ├── types.ts                # Planlægnings-typer + standarder
 │   │   └── simulate.ts             # Formue-simulering + Monte Carlo-bånd
@@ -313,11 +316,11 @@ npm run test:run
 ```
 
 ```
-Test Files  15 passed
-Tests       211 passed
+Test Files  25 passed
+Tests       266 passed
 ```
 
-Testfiler dækker skatteberegningens moduler, budget-generatoren, lønseddel-sammenligning samt PDF-parsing og formatering. Excel-scenarierne i `excel-scenarios.test.ts` verificerer beregneren mod kendte skatteberegninger.
+Testfiler dækker skatteberegningens moduler, budget-generatoren, lønseddel-sammenligning, planlægningsmotoren samt PDF-parsing og formatering. Excel-scenarierne i `excel-scenarios.test.ts` verificerer beregneren mod kendte skatteberegninger, og `lib/mcp/__tests__/handler.test.ts` tjekker MCP-serverens protokol-wiring.
 
 ---
 
@@ -331,6 +334,7 @@ Testfiler dækker skatteberegningens moduler, budget-generatoren, lønseddel-sam
 | Ikoner | [@carbon/icons-react](https://carbondesignsystem.com/elements/icons/library/) |
 | Grafer | [Recharts](https://recharts.org) |
 | Auth & DB | [Supabase](https://supabase.com) |
+| MCP | [mcp-handler](https://github.com/vercel/mcp-handler) + [@modelcontextprotocol/server](https://github.com/modelcontextprotocol) |
 | PDF-parsing | [pdfjs-dist](https://mozilla.github.io/pdf.js/) |
 | OCR | [tesseract.js](https://tesseract.projectnaptha.com) |
 | Mørk tilstand | [next-themes](https://github.com/pacocoursey/next-themes) |

@@ -4,10 +4,14 @@
  * MCP Inspector, etc.) run what-if simulations against the user's saved plan and
  * save named scenarios. Authentication is HTTP Basic with the user's Supabase
  * email + password; every DB access is RLS-scoped to that user.
+ *
+ * mcp-handler 2 serves whatever route it is mounted at (routing belongs to the
+ * host framework), so this lives at a static `mcp` segment rather than the
+ * `[transport]` catch-all that v1's `basePath` option required. The public URL
+ * is unchanged.
  */
 
 import { createMcpHandler } from "mcp-handler"
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js"
 import { registerPlanningTools } from "@/lib/mcp/tools"
 import { verifyBasicAuth } from "@/lib/supabase/mcp-auth"
 
@@ -19,8 +23,7 @@ const baseHandler = createMcpHandler(
   (server) => {
     registerPlanningTools(server)
   },
-  { serverInfo: { name: "skatteberegner-planlaegning", version: "1.0.0" } },
-  { basePath: "/api", maxDuration: 60, disableSse: true }
+  { serverInfo: { name: "skatteberegner-planlaegning", version: "1.0.0" } }
 )
 
 /** Gate every request on Basic auth, then attach the session for the tools. */
@@ -43,7 +46,9 @@ async function handler(req: Request): Promise<Response> {
       }
     )
   }
-  ;(req as Request & { auth?: AuthInfo }).auth = auth
+  // mcp-handler augments the global `Request` with `auth`; it forwards this to
+  // each tool handler's `extra.authInfo`.
+  req.auth = auth
   return baseHandler(req)
 }
 

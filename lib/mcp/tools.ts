@@ -6,8 +6,7 @@
  */
 
 import { z } from "zod"
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js"
+import type { AuthInfo, McpServer } from "@modelcontextprotocol/server"
 import { fetchUserData, saveUserData, type UserDataRow } from "@/lib/supabase/user-data"
 import { userClientFromAuth } from "@/lib/supabase/mcp-auth"
 import { normalizePlanning, normalizeScenarioChanges, newId } from "@/lib/planning/normalize"

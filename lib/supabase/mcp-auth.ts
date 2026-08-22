@@ -10,7 +10,7 @@
  */
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js"
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js"
+import type { AuthInfo } from "@modelcontextprotocol/server"
 import { getSupabaseEnv } from "@/lib/supabase/env"
 
 interface BasicCredentials {
