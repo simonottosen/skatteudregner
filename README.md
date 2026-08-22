@@ -52,7 +52,7 @@ Beregneren er et estimat og erstatter ikke SKATs officielle beregning.
 - **Konto & synkronisering** – Valgfri e-mail/adgangskode-login (Supabase) gemmer dine data i skyen; ellers gemmes alt lokalt i browseren
 - **Mørk tilstand** – Tryk `d` for at skifte
 - **AI-assistent** – Spørg din assistent om planen via [MCP-serveren](#mcp-server-ai-assistent--din-plan) over HTTP, eller installér den samme værktøjskasse som en lokal [MCP-bundle](#mcp-bundle-mcpb) med ét klik
-- **296 tests** – Beregnings-, budget-, planlægnings- og PDF-moduler er testet
+- **302 tests** – Beregnings-, budget-, planlægnings- og PDF-moduler er testet
 
 ---
 
@@ -399,11 +399,11 @@ npm run test:run
 ```
 
 ```
-Test Files  27 passed
-Tests       296 passed
+Test Files  28 passed
+Tests       302 passed
 ```
 
-Testfiler dækker skatteberegningens moduler, budget-generatoren, lønseddel-sammenligning, planlægningsmotoren samt PDF-parsing og formatering. Excel-scenarierne i `excel-scenarios.test.ts` verificerer beregneren mod kendte skatteberegninger, `lib/mcp/__tests__/handler.test.ts` tjekker MCP-serverens protokol-wiring, og `mcpb/__tests__/` dækker bundlens konfigurationsvalidering og log-hygiejne.
+Testfiler dækker skatteberegningens moduler, budget-generatoren, lønseddel-sammenligning, planlægningsmotoren samt PDF-parsing og formatering. Excel-scenarierne i `excel-scenarios.test.ts` verificerer beregneren mod kendte skatteberegninger, `lib/mcp/__tests__/handler.test.ts` tjekker MCP-serverens protokol-wiring, `lib/mcp/__tests__/auth.test.ts` fastholder at et værktøjskald får sin identitet fra `ctx.http.authInfo` (HTTP) eller `getAuthInfo` (stdio), og `mcpb/__tests__/` dækker bundlens konfigurationsvalidering og log-hygiejne.
 
 Selve MCP-bundlen testes desuden mod det byggede artefakt frem for mod kildekoden — `npm run smoke:mcpb` starter `mcpb/server/index.js` som en rigtig vært ville, og fører en MCP-samtale over stdio. `npm run build:mcpb` kører det automatisk i både normal og skrivebeskyttet tilstand.
 

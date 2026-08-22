@@ -40,16 +40,26 @@ import {
   normalizeBudget,
 } from "@/lib/budget/state"
 
+/**
+ * The slice of the SDK's tool context this module reads.
+ *
+ * `authInfo` lives under `http` because that is where an HTTP transport puts
+ * it — `@modelcontextprotocol/server` v2 moved it there from the old top-level
+ * `extra.authInfo`. Deliberately structural rather than an import of the SDK's
+ * context type: it documents exactly what we depend on, and tool callbacks are
+ * assigned to it without a cast so the compiler catches the next such move.
+ */
 interface ToolExtra {
-  authInfo?: AuthInfo
+  /** Present on HTTP requests; absent on stdio, which has no per-request identity. */
+  http?: { authInfo?: AuthInfo }
 }
 
 export interface PlanningToolsOptions {
   /**
    * Auth to fall back on when the transport carries none per request. The HTTP
-   * route authenticates each request and sets `extra.authInfo`, but a stdio
-   * bundle signs in once at startup and has no per-request identity — it passes
-   * that single session in here.
+   * route authenticates every request and the SDK surfaces that as
+   * `ctx.http.authInfo`, but a stdio bundle signs in once at startup and has no
+   * per-request identity — it passes that single session in here.
    *
    * May be async so a long-lived session can refresh an expiring token before
    * the call goes out.
@@ -68,7 +78,7 @@ async function loadPlan(
   state: PlanningState
   grossMonthlySalary: number | null
 }> {
-  const { supabase, userId } = userClientFromAuth(extra.authInfo ?? (await getFallbackAuth?.()))
+  const { supabase, userId } = userClientFromAuth(extra.http?.authInfo ?? (await getFallbackAuth?.()))
   const row = await fetchUserData(supabase, userId)
   const state = normalizePlanning(row?.planning)
   // Best-effort gross salary hint so the LLM can turn "5 % of salary" into kr.
@@ -276,7 +286,7 @@ export function registerPlanningTools(
       inputSchema: {},
     },
     async (_args, extra) => {
-      const { state, grossMonthlySalary } = await load(extra as ToolExtra)
+      const { state, grossMonthlySalary } = await load(extra)
       return json({
         plan: state,
         grossMonthlySalary,
@@ -297,7 +307,7 @@ export function registerPlanningTools(
       inputSchema: { changes: changesSchema },
     },
     async (args, extra) => {
-      const { state } = await load(extra as ToolExtra)
+      const { state } = await load(extra)
       const changes = normalizeScenarioChanges(args.changes)
       const base = summarize(state)
       const scen = summarize(applyScenario(state, changes))
@@ -322,7 +332,7 @@ export function registerPlanningTools(
       inputSchema: { name: z.string().min(1), changes: changesSchema },
     },
     async (args, extra) => {
-      const { supabase, userId, state } = await load(extra as ToolExtra)
+      const { supabase, userId, state } = await load(extra)
       const scenario: PlanningScenario = {
         id: newId("sc"),
         name: args.name.trim() || "Scenarie",
@@ -350,7 +360,7 @@ export function registerPlanningTools(
       inputSchema: {},
     },
     async (_args, extra) => {
-      const { state } = await load(extra as ToolExtra)
+      const { state } = await load(extra)
       return json({
         scenarios: state.scenarios.map((s) => ({
           id: s.id,
@@ -372,7 +382,7 @@ export function registerPlanningTools(
       inputSchema: { id: z.string().min(1) },
     },
     async (args, extra) => {
-      const { supabase, userId, state } = await load(extra as ToolExtra)
+      const { supabase, userId, state } = await load(extra)
       const exists = state.scenarios.some((s) => s.id === args.id)
       const next: PlanningState = normalizePlanning({
         ...state,
@@ -394,7 +404,7 @@ export function registerPlanningTools(
       inputSchema: {},
     },
     async (_args, extra) => {
-      const { state } = await load(extra as ToolExtra)
+      const { state } = await load(extra)
       const required = solveRequiredMonthlyContribution(state)
       const note =
         required === null
@@ -427,7 +437,7 @@ export function registerPlanningTools(
       },
     },
     async (args, extra) => {
-      const { state } = await load(extra as ToolExtra)
+      const { state } = await load(extra)
       const effective = args.changes
         ? applyScenario(state, normalizeScenarioChanges(args.changes))
         : state
@@ -490,7 +500,7 @@ export function registerPlanningTools(
       },
     },
     async (args, extra) => {
-      const { supabase, userId, state } = await load(extra as ToolExtra)
+      const { supabase, userId, state } = await load(extra)
       const p = args.pension
       const next: PlanningState = normalizePlanning({
         ...state,
@@ -528,7 +538,7 @@ export function registerPlanningTools(
       },
     },
     async (args, extra) => {
-      const { supabase, userId, state } = await load(extra as ToolExtra)
+      const { supabase, userId, state } = await load(extra)
       const existing = state.scenarios.find((s) => s.id === args.id)
       if (!existing) {
         return json({ updated: false, id: args.id, note: "Scenario not found." })
@@ -567,7 +577,7 @@ export function registerPlanningTools(
       inputSchema: {},
     },
     async (_args, extra) => {
-      const { row } = await load(extra as ToolExtra)
+      const { row } = await load(extra)
       const inputs = readPersistedTaxInputs(row?.tax_input)
       if (inputs.length === 0) {
         return json({ note: "No saved tax input — fill in the Skat page first." })
@@ -607,7 +617,7 @@ export function registerPlanningTools(
       inputSchema: { input: taxInputSchema },
     },
     async (args, extra) => {
-      const { row } = await load(extra as ToolExtra)
+      const { row } = await load(extra)
       const base = readPersistedTaxInputs(row?.tax_input)[0] ?? createDefaultInput()
       const merged = { ...base, ...args.input } as TaxInput
       const r = safeCalculateTax(merged)
@@ -634,7 +644,7 @@ export function registerPlanningTools(
       inputSchema: {},
     },
     async (_args, extra) => {
-      const { row } = await load(extra as ToolExtra)
+      const { row } = await load(extra)
       const budget = normalizeBudget(row?.budget_items)
       const inputs = readPersistedTaxInputs(row?.tax_input)
       const s = computeBudgetSummary(budget, monthlyNet(inputs, 0), monthlyNet(inputs, 1))
@@ -672,7 +682,7 @@ export function registerPlanningTools(
       inputSchema: {},
     },
     async (_args, extra) => {
-      const { row } = await load(extra as ToolExtra)
+      const { row } = await load(extra)
       const budget = normalizeBudget(row?.budget_items)
       const inputs = readPersistedTaxInputs(row?.tax_input)
       const results = inputs
@@ -711,7 +721,7 @@ export function registerPlanningTools(
       inputSchema: { event: eventSchema },
     },
     async (args, extra) => {
-      const { supabase, userId, state } = await load(extra as ToolExtra)
+      const { supabase, userId, state } = await load(extra)
       const event = { id: newId("pe"), ...args.event } as PlanningEvent
       const next = normalizePlanning({ ...state, events: [...state.events, event] })
       await saveUserData(supabase, userId, { planning: next })
@@ -732,7 +742,7 @@ export function registerPlanningTools(
       inputSchema: { id: z.string().min(1), event: eventSchema },
     },
     async (args, extra) => {
-      const { supabase, userId, state } = await load(extra as ToolExtra)
+      const { supabase, userId, state } = await load(extra)
       if (!state.events.some((e) => e.id === args.id)) {
         return json({ updated: false, id: args.id, note: "Event not found." })
       }
@@ -758,7 +768,7 @@ export function registerPlanningTools(
       inputSchema: { id: z.string().min(1) },
     },
     async (args, extra) => {
-      const { supabase, userId, state } = await load(extra as ToolExtra)
+      const { supabase, userId, state } = await load(extra)
       const exists = state.events.some((e) => e.id === args.id)
       const next = normalizePlanning({
         ...state,

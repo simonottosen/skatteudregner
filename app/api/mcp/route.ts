@@ -46,8 +46,10 @@ async function handler(req: Request): Promise<Response> {
       }
     )
   }
-  // mcp-handler augments the global `Request` with `auth`; it forwards this to
-  // each tool handler's `extra.authInfo`.
+  // mcp-handler augments the global `Request` with `auth` and reads it back off
+  // that same object, so a plain assignment is the supported channel — it is what
+  // the package's own `withMcpAuth` does. The SDK then surfaces it to each tool
+  // as `ctx.http.authInfo` (top-level `extra.authInfo` in v1; moved in v2).
   req.auth = auth
   return baseHandler(req)
 }
