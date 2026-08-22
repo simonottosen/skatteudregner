@@ -1,0 +1,10 @@
+# Everything the archive doesn't need. The shipped bundle is exactly
+# manifest.json + icon.png + server/ (a single self-contained index.js).
+
+src/
+__tests__/
+.mcpbignore
+*.map
+*.tsbuildinfo
+.DS_Store
+node_modules/

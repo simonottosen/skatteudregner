@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Harness git worktree copies — stale duplicates that pollute lint.
     ".claude/**",
+    // Generated MCPB bundle output (esbuild), not hand-written source.
+    "mcpb/server/**",
+    "dist/**",
   ]),
 ]);
 

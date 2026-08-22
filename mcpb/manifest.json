@@ -1,0 +1,187 @@
+{
+  "manifest_version": "0.3",
+  "name": "skatteberegner-planlaegning",
+  "display_name": "Skatteberegner — dansk skat og pensionsplanlægning",
+  "version": "1.0.0",
+  "description": "Kør what-if-analyser på din langsigtede økonomiske plan, beregn dansk skat og gem scenarier.",
+  "long_description": "Local MCP server for the **Skatteberegner** app (https://skat.simonottosen.dk).\n\nIt gives an assistant access to your own saved financial plan so it can answer questions like \"what happens if I retire at 62?\" or \"how much more do I need to save each month to hit 3 million by 60?\" — and, when you ask it to, save the answer as a named scenario that shows up in the web app.\n\n**Tools cover four areas**\n\n- *Planning* — read the plan, simulate a change without saving, solve for a required monthly contribution, project a year-by-year trajectory, and manage named scenarios.\n- *Tax* — read your saved Danish tax profile or compute a fresh result (AM-bidrag, bund-/mellem-/top-/top-topskat, kommuneskat, kirkeskat, aktieindkomst, PAL-skat).\n- *Budget* — read the saved budget and the combined result view.\n- *Events* — add, edit and remove one-off and recurring life events (house purchase, sabbatical, inheritance, …).\n\n**Because it runs locally** you sign in once instead of on every request, long Monte-Carlo runs are not cut short by a serverless timeout, and the assistant can open the relevant page of the app in your browser.\n\n**Your data** stays between this machine and your own Supabase project. The server signs in as you and every query is constrained by row-level security to your own row — it cannot read anyone else's data. Set *Read-only mode* if you want the assistant to be able to look but not touch.",
+  "author": {
+    "name": "Simon Ottosen",
+    "url": "https://github.com/simonottosen"
+  },
+  "homepage": "https://skat.simonottosen.dk",
+  "documentation": "https://github.com/simonottosen/skatteudregner#mcp-bundle-mcpb",
+  "support": "https://github.com/simonottosen/skatteudregner/issues",
+  "icon": "icon.png",
+  "license": "MIT",
+  "keywords": ["skat", "pension", "denmark", "tax", "financial-planning", "supabase"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/simonottosen/skatteudregner"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "SKAT_EMAIL": "${user_config.email}",
+        "SKAT_PASSWORD": "${user_config.password}",
+        "SKAT_APP_URL": "${user_config.app_url}",
+        "SKAT_READ_ONLY": "${user_config.read_only}",
+        "SKAT_DISABLE_OPEN": "${user_config.disable_open}",
+        "SKAT_TOOL_TIMEOUT_MS": "${user_config.tool_timeout_ms}",
+        "SKAT_LOG_LEVEL": "${user_config.log_level}"
+      }
+    }
+  },
+  "user_config": {
+    "email": {
+      "type": "string",
+      "title": "E-mail",
+      "description": "The email you use to sign in to the Skatteberegner app.",
+      "required": true
+    },
+    "password": {
+      "type": "string",
+      "title": "Adgangskode",
+      "description": "Your Skatteberegner password. Stored in your operating system's keychain, never written to the bundle.",
+      "sensitive": true,
+      "required": true
+    },
+    "app_url": {
+      "type": "string",
+      "title": "App-URL",
+      "description": "Where the app is hosted. Change this only if you run your own copy.",
+      "default": "https://skat.simonottosen.dk",
+      "required": false
+    },
+    "read_only": {
+      "type": "boolean",
+      "title": "Skrivebeskyttet",
+      "description": "Hide every tool that changes the saved plan. The assistant can read and simulate, but not save, edit or delete.",
+      "default": false,
+      "required": false
+    },
+    "disable_open": {
+      "type": "boolean",
+      "title": "Åbn ikke browseren",
+      "description": "Stop the assistant from opening pages on your screen. It will hand you the link instead.",
+      "default": false,
+      "required": false
+    },
+    "tool_timeout_ms": {
+      "type": "number",
+      "title": "Timeout pr. værktøj (ms)",
+      "description": "Abort a tool call that takes longer than this. Monte-Carlo projections are the slow ones.",
+      "default": 30000,
+      "min": 5000,
+      "max": 120000,
+      "required": false
+    },
+    "log_level": {
+      "type": "string",
+      "title": "Logniveau",
+      "description": "How much the server writes to the host's log: debug, info, warn, error or silent.",
+      "default": "info",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  },
+  "tools_generated": false,
+  "tools": [
+    {
+      "name": "get_plan",
+      "description": "Read the full saved long-term plan plus the baseline projection (net worth at retirement, pension after tax, financial-independence age, Monte-Carlo success probability)."
+    },
+    {
+      "name": "simulate_what_if",
+      "description": "Project the impact of a change without saving it. Returns baseline, modified plan and the deltas."
+    },
+    {
+      "name": "solve_required_saving",
+      "description": "Solve for the monthly contribution needed to hit a target amount at a given age."
+    },
+    {
+      "name": "get_trajectory",
+      "description": "Year-by-year projection of net worth, contributions and withdrawals."
+    },
+    {
+      "name": "update_plan",
+      "description": "Write changes to the saved plan (assumptions, pension, retirement age, …)."
+    },
+    {
+      "name": "save_scenario",
+      "description": "Persist a named what-if so it appears in the app's Scenarier card."
+    },
+    {
+      "name": "list_scenarios",
+      "description": "List the saved scenarios with their change-sets."
+    },
+    {
+      "name": "update_scenario",
+      "description": "Rename a saved scenario or change its change-set."
+    },
+    {
+      "name": "delete_scenario",
+      "description": "Delete a saved scenario."
+    },
+    {
+      "name": "get_tax",
+      "description": "Read the saved Danish tax profile and its calculated result."
+    },
+    {
+      "name": "compute_tax",
+      "description": "Calculate Danish income tax for a given set of inputs without saving anything."
+    },
+    {
+      "name": "get_budget",
+      "description": "Read the saved budget: income, expenses by category and the monthly surplus."
+    },
+    {
+      "name": "get_result",
+      "description": "Read the combined result view — take-home pay against the budget."
+    },
+    {
+      "name": "add_event",
+      "description": "Add a one-off or recurring life event to the plan (house purchase, sabbatical, inheritance, …)."
+    },
+    {
+      "name": "update_event",
+      "description": "Change an existing plan event."
+    },
+    {
+      "name": "remove_event",
+      "description": "Remove a plan event."
+    },
+    {
+      "name": "open_app",
+      "description": "Open a page of the app in the default browser on this machine."
+    }
+  ],
+  "prompts": [
+    {
+      "name": "plan_review",
+      "description": "Review the saved plan and suggest concrete improvements.",
+      "text": "Read my saved plan with get_plan. Summarise where I stand — net worth at retirement, pension after tax, financial-independence age and the Monte-Carlo success probability. Then name the two or three changes that would most improve the outcome, and use simulate_what_if to quantify each one. Do not save anything unless I ask."
+    },
+    {
+      "name": "retire_earlier",
+      "description": "Work out what it would take to retire earlier than planned.",
+      "arguments": ["age"],
+      "text": "I want to retire at ${arguments.age}. Use get_plan for my current position, then simulate_what_if to see what retiring at that age does to the projection. If it falls short, use solve_required_saving to tell me the monthly contribution that would close the gap. Report amounts in today's kroner."
+    },
+    {
+      "name": "tax_check",
+      "description": "Explain this year's Danish tax bill and where it could be reduced.",
+      "text": "Use get_tax to read my saved tax profile. Break the bill down — AM-bidrag, bundskat, mellemskat, topskat, topskat 2, kommuneskat, kirkeskat, aktieindkomst — and explain which brackets I am in and by how much. Then use compute_tax to test any adjustment that looks worthwhile, for example a larger pension contribution."
+    }
+  ]
+}

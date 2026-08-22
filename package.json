@@ -11,7 +11,10 @@
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "build:mcpb": "node scripts/build-mcpb.mjs",
+    "build:mcpb:fast": "node scripts/build-mcpb.mjs --no-pack",
+    "smoke:mcpb": "node scripts/smoke-mcpb.mjs"
   },
   "dependencies": {
     "@carbon/icons-react": "^11.86.0",
@@ -43,6 +46,7 @@
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
     "eslint-config-next": "16.3.1",
     "postcss": "^8.5.26",

@@ -19,6 +19,11 @@ test-payslip.pdf
 # production
 /build
 
+# mcpb bundle build output (`npm run build:mcpb`)
+/dist/
+/mcpb/server/
+*.mcpb
+
 # misc
 .DS_Store
 *.pem

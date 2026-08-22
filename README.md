@@ -51,7 +51,8 @@ Beregneren er et estimat og erstatter ikke SKATs officielle beregning.
 
 - **Konto & synkronisering** – Valgfri e-mail/adgangskode-login (Supabase) gemmer dine data i skyen; ellers gemmes alt lokalt i browseren
 - **Mørk tilstand** – Tryk `d` for at skifte
-- **263 tests** – Beregnings-, budget-, planlægnings- og PDF-moduler er testet
+- **AI-assistent** – Spørg din assistent om planen via [MCP-serveren](#mcp-server-ai-assistent--din-plan) over HTTP, eller installér den samme værktøjskasse som en lokal [MCP-bundle](#mcp-bundle-mcpb) med ét klik
+- **296 tests** – Beregnings-, budget-, planlægnings- og PDF-moduler er testet
 
 ---
 
@@ -86,6 +87,9 @@ Appen virker uden konfiguration — den gemmer data lokalt i browseren. Konto-lo
 | `npm run typecheck` | TypeScript typetjek |
 | `npm run lint` | ESLint |
 | `npm run format` | Prettier formattering |
+| `npm run build:mcpb` | Byg, test og pak MCP-bundlen til `dist/*.mcpb` |
+| `npm run build:mcpb:fast` | Kun bundtning — uden at pakke arkivet |
+| `npm run smoke:mcpb` | Kør en MCP-samtale mod den byggede bundle over stdio |
 
 ---
 
@@ -110,6 +114,8 @@ Værdierne findes under **Project Settings → API**. Skat-, budget- og planlæg
 Appen eksponerer en **MCP-server** (Model Context Protocol) over HTTP, så du kan spørge din AI-assistent (fx Claude Desktop eller en anden MCP-klient) om ting som *"Hvad betyder det for min økonomi på lang sigt, hvis min løn stiger 5.000 kr./md. fra nu, og jeg sparer det hele op?"* Assistenten kan så simulere det mod din gemte plan og — hvis du beder om det — gemme det som et navngivet scenarie, der dukker op i appen.
 
 Standard-endpoint (produktion): **`https://skat.simonottosen.dk/api/mcp`**. Kører du lokalt, er det `http://localhost:3000/api/mcp`.
+
+> Foretrækker du ét-kliks-installation frem for at rode med headers, findes de samme værktøjer som en [MCP-bundle](#mcp-bundle-mcpb) der kører lokalt.
 
 - **Kræver Supabase** (samme `NEXT_PUBLIC_SUPABASE_*` som ovenfor) — serveren logger ind som dig og rører kun din egen række (Row Level Security).
 - **Auth:** HTTP Basic med din konto-e-mail og -adgangskode (`Authorization: Basic base64(email:adgangskode)`). Brug kun over HTTPS.
@@ -157,6 +163,70 @@ npx @modelcontextprotocol/inspector
 ```
 
 > Sikkerhed: adgangskoden sendes i en HTTPS-header — fint til personligt brug. En oplagt senere forbedring er at skifte til Supabase-access-tokens eller OAuth, så en rå adgangskode aldrig sendes.
+
+---
+
+## MCP-bundle (MCPB)
+
+Samme værktøjer, pakket som en **MCP Bundle** (`.mcpb`) du installerer med ét klik i fx Claude Desktop. Serveren kører så *lokalt på din maskine* over stdio i stedet for som HTTP-endpoint.
+
+Værktøjskoden er nøjagtig den samme (`lib/mcp/tools.ts` — én implementering, to transporter). Forskellene følger alle af, at den kører lokalt:
+
+| | HTTP (`/api/mcp`) | MCPB-bundle (stdio) |
+|---|---|---|
+| Login | Basic-header på **hver** forespørgsel | Én gang ved opstart, fornys automatisk før udløb |
+| Opsætning | Base64-kodet header i klientens config | Dialog i værten; adgangskoden gemmes i OS-nøgleringen |
+| Tidsgrænse | Serverless-loft på 60 s | Din egen (5–120 s) — lange Monte-Carlo-kørsler når at blive færdige |
+| Ekstra værktøj | — | `open_app` åbner den relevante side i din browser |
+| Skrivebeskyttelse | — | Slå `Skrivebeskyttet` til, så de 7 skrive-værktøjer slet ikke udbydes |
+
+### Byg og installér
+
+```bash
+npm run build:mcpb
+# → dist/skatteberegner-planlaegning-1.0.0.mcpb
+```
+
+Træk `.mcpb`-filen ind i din MCP-vært (Claude Desktop: **Settings → Extensions**) og udfyld e-mail + adgangskode — de samme som du logger ind i appen med.
+
+`npm run build:mcpb` gør fire ting: bundter `mcpb/src/server.ts` og hele den delte motor til én fil med esbuild, kører en fuld MCP-samtale mod resultatet over stdio, validerer manifestet mod MCPB-specifikationen og pakker arkivet. Arkivet indeholder præcis fire filer (~400 kB) og har ingen `node_modules` — hverken Next.js eller React ender i bundtet, og bygget fejler hvis de gør.
+
+### Indstillinger
+
+Alle er valgfri på nær de to første. Værten sender dem videre som miljøvariabler (se `mcp_config.env` i `mcpb/manifest.json`).
+
+| Indstilling | Miljøvariabel | Standard | Hvad den gør |
+|---|---|---|---|
+| E-mail | `SKAT_EMAIL` | — | Din konto i appen. **Påkrævet** |
+| Adgangskode | `SKAT_PASSWORD` | — | Gemmes i OS-nøgleringen, aldrig i bundtet. **Påkrævet** |
+| App-URL | `SKAT_APP_URL` | `https://skat.simonottosen.dk` | Kun relevant hvis du hoster din egen kopi |
+| Skrivebeskyttet | `SKAT_READ_ONLY` | `false` | Skjuler alle værktøjer der ændrer planen |
+| Åbn ikke browseren | `SKAT_DISABLE_OPEN` | `false` | `open_app` returnerer linket i stedet for at åbne det |
+| Timeout pr. værktøj | `SKAT_TOOL_TIMEOUT_MS` | `30000` | Klippes til 5.000–120.000 ms |
+| Logniveau | `SKAT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` eller `silent` |
+
+Supabase-URL og anon-nøgle spørges du **ikke** om: de er offentlige (det er Row Level Security der beskytter dataene) og hentes automatisk fra `window.__ENV__` på app-URL'en. Kører du din egen Supabase, kan du sætte `SUPABASE_URL` og `SUPABASE_ANON_KEY` eksplicit.
+
+### Fejlfinding
+
+Al diagnostik går til **stderr** — stdout er selve protokollen, og ét enkelt `console.log` det forkerte sted ville ødelægge forbindelsen. Værten samler stderr op i sin serverlog (Claude Desktop: **Settings → Extensions → Skatteberegner → Logs**). Sæt logniveauet til `debug` for at se hvert enkelt værktøjskald med varighed. Adgangskoder og tokens redigeres ud af logs uanset niveau.
+
+Almindelige fejl og hvad de betyder:
+
+- **"Missing required configuration"** — e-mail eller adgangskode er ikke udfyldt i værtens dialog.
+- **"Supabase rejected the sign-in"** — forkerte loginoplysninger. Serveren starter alligevel, så du kan se værktøjslisten; fejlen dukker op ved første kald.
+- **`{"error":{"kind":"timeout"}}`** — værktøjet nåede ikke at blive færdigt. Hæv `SKAT_TOOL_TIMEOUT_MS`.
+
+Kør serveren i hånden, uden at pakke:
+
+```bash
+npm run build:mcpb:fast     # kun bundtning
+npm run smoke:mcpb          # 11 tjek: handshake, værktøjsliste, fejlformat, ingen hemmeligheder i loggen
+npm run smoke:mcpb -- --read-only
+
+# eller mod MCP Inspector:
+npx @modelcontextprotocol/inspector node mcpb/server/index.js
+```
 
 ---
 
@@ -210,7 +280,7 @@ skatteudregner/
 │   │   ├── categories.ts           # Standardkategorier + gæt
 │   │   └── generate-budget.ts      # Startbudget + realkredit-estimat
 │   ├── mcp/
-│   │   └── tools.ts                # MCP-værktøjer (plan, skat, budget, resultat)
+│   │   └── tools.ts                # MCP-værktøjer (plan, skat, budget, resultat) — delt af begge transporter
 │   ├── planning/
 │   │   ├── types.ts                # Planlægnings-typer + standarder
 │   │   └── simulate.ts             # Formue-simulering + Monte Carlo-bånd
@@ -222,6 +292,19 @@ skatteudregner/
 │       ├── municipalities.ts       # Kommuner med satser
 │       ├── calculator.ts           # Hoved-orkestrator
 │       └── calculations/           # Delberegninger (AM, indkomst, bolig …)
+├── mcpb/                           # MCP-bundle (kører lokalt over stdio)
+│   ├── manifest.json               # MCPB-manifest: værktøjer, prompts, user_config
+│   ├── icon.png                    # Genereret af scripts/make-mcpb-icon.mjs
+│   └── src/
+│       ├── server.ts               # stdio-entry: timeouts, fejlhåndtering, skrivebeskyttelse
+│       ├── config.ts               # Validering af miljø + auto-opdagelse af Supabase-config
+│       ├── auth.ts                 # Ét login, fornyet før udløb
+│       ├── local-tools.ts          # open_app — kun muligt fordi den kører lokalt
+│       └── log.ts                  # stderr-logning med redigering af hemmeligheder
+├── scripts/
+│   ├── build-mcpb.mjs              # esbuild-bundtning → validering → pak
+│   ├── smoke-mcpb.mjs              # MCP-samtale mod den byggede bundle
+│   └── make-mcpb-icon.mjs          # Genererer ikonet (Dannebrog) uden billed-afhængigheder
 ├── supabase/schema.sql             # Database-skema + RLS
 ├── middleware.ts                   # Supabase session-håndtering
 └── vitest.config.ts
@@ -316,11 +399,13 @@ npm run test:run
 ```
 
 ```
-Test Files  25 passed
-Tests       266 passed
+Test Files  27 passed
+Tests       296 passed
 ```
 
-Testfiler dækker skatteberegningens moduler, budget-generatoren, lønseddel-sammenligning, planlægningsmotoren samt PDF-parsing og formatering. Excel-scenarierne i `excel-scenarios.test.ts` verificerer beregneren mod kendte skatteberegninger, og `lib/mcp/__tests__/handler.test.ts` tjekker MCP-serverens protokol-wiring.
+Testfiler dækker skatteberegningens moduler, budget-generatoren, lønseddel-sammenligning, planlægningsmotoren samt PDF-parsing og formatering. Excel-scenarierne i `excel-scenarios.test.ts` verificerer beregneren mod kendte skatteberegninger, `lib/mcp/__tests__/handler.test.ts` tjekker MCP-serverens protokol-wiring, og `mcpb/__tests__/` dækker bundlens konfigurationsvalidering og log-hygiejne.
+
+Selve MCP-bundlen testes desuden mod det byggede artefakt frem for mod kildekoden — `npm run smoke:mcpb` starter `mcpb/server/index.js` som en rigtig vært ville, og fører en MCP-samtale over stdio. `npm run build:mcpb` kører det automatisk i både normal og skrivebeskyttet tilstand.
 
 ---
 
@@ -335,6 +420,7 @@ Testfiler dækker skatteberegningens moduler, budget-generatoren, lønseddel-sam
 | Grafer | [Recharts](https://recharts.org) |
 | Auth & DB | [Supabase](https://supabase.com) |
 | MCP | [mcp-handler](https://github.com/vercel/mcp-handler) + [@modelcontextprotocol/server](https://github.com/modelcontextprotocol) |
+| MCP-bundle | [MCPB](https://github.com/anthropics/mcpb) + [esbuild](https://esbuild.github.io) |
 | PDF-parsing | [pdfjs-dist](https://mozilla.github.io/pdf.js/) |
 | OCR | [tesseract.js](https://tesseract.projectnaptha.com) |
 | Mørk tilstand | [next-themes](https://github.com/pacocoursey/next-themes) |

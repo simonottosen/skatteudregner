@@ -38,34 +38,48 @@ function parseBasicAuth(req: Request): BasicCredentials | null {
 }
 
 /**
- * Verify the Basic credentials by signing in to Supabase. Returns an AuthInfo
- * carrying the user's id + access token (used to rebuild an RLS-scoped client),
- * or undefined when auth fails / isn't configured.
+ * Sign in to Supabase and package the session as an AuthInfo carrying the user's
+ * id + access token (used to rebuild an RLS-scoped client). Returns undefined
+ * when Supabase isn't configured or the credentials are rejected.
+ *
+ * Shared by the HTTP route (which authenticates every request) and the stdio
+ * MCP bundle (which signs in once and refreshes before `expiresAt`).
  */
-export async function verifyBasicAuth(req: Request): Promise<AuthInfo | undefined> {
+export async function signInForAuthInfo(
+  email: string,
+  password: string
+): Promise<AuthInfo | undefined> {
   const { url, anonKey } = getSupabaseEnv()
   if (!url || !anonKey) return undefined
-  const creds = parseBasicAuth(req)
-  if (!creds) return undefined
 
   const supabase = createClient(url, anonKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   })
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email: creds.email,
-    password: creds.password,
-  })
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password })
   if (error || !data.session || !data.user) return undefined
 
   return {
     token: data.session.access_token,
-    clientId: creds.email,
+    clientId: email,
     scopes: [],
+    // Seconds since epoch, per the MCP AuthInfo contract. Lets a long-lived
+    // stdio session know when to re-authenticate.
+    expiresAt: data.session.expires_at,
     extra: {
       userId: data.user.id,
       accessToken: data.session.access_token,
     },
   }
+}
+
+/**
+ * Verify the Basic credentials by signing in to Supabase. Returns an AuthInfo,
+ * or undefined when auth fails / isn't configured.
+ */
+export async function verifyBasicAuth(req: Request): Promise<AuthInfo | undefined> {
+  const creds = parseBasicAuth(req)
+  if (!creds) return undefined
+  return signInForAuthInfo(creds.email, creds.password)
 }
 
 /**
