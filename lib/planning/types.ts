@@ -260,11 +260,12 @@ export interface PlanningState {
   /** Whether to model ongoing property tax (ejendomsværdiskat + grundskyld). */
   includePropertyTax: boolean
   /**
-   * Whether the budget's expense lines already include ejendomsskat. The
-   * working-years contribution is derived from the budget, so a household that
-   * already lists it would be charged twice if the simulator added it on top.
-   * Retirement is unaffected — there the outflow is `annualSpending`, which the
-   * property tax has always been added to.
+   * Whether the budget's expense lines already include ejendomsskat. This
+   * describes the *budget*, and both halves of the projection are derived from
+   * it — the working-years contribution from the surplus, `annualSpending` from
+   * the expense total (`hooks/use-planning.ts`) — so the flag gates the property
+   * tax before and after retirement alike. Charging it in either period on top
+   * of a budget that already lists it counts it twice.
    */
   propertyTaxInBudget: boolean
   /** Outstanding mortgage principal in DKK. */
@@ -300,8 +301,9 @@ export const DEFAULT_PLANNING_STATE: PlanningState = {
   homeValue: 0,
   landValue: 0,
   includePropertyTax: false,
-  // Assume it is already budgeted, so upgrading a saved plan changes nothing.
-  propertyTaxInBudget: true,
+  // Charge it unless the user says their budget already covers it: a projection
+  // that silently drops a real, lifelong expense reads as too optimistic.
+  propertyTaxInBudget: false,
   mortgageBalance: 0,
   mortgageRate: 0.041,
   mortgageTermYears: 30,
@@ -347,7 +349,7 @@ export interface PlanningPoint {
   investmentGainYoY: number
   /** Net annual retirement income after tax (pensions + folkepension). */
   retirementIncome: number
-  /** Total tax paid this year (pension income tax + realised investment gains). */
+  /** Total tax paid this year (pension income + investment gains + ejendomsskat). */
   taxPaid: number
   /** Inflation-grown annual spending drawn this year (0 before retirement). */
   spending: number

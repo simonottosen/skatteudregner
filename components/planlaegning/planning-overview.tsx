@@ -1012,32 +1012,31 @@ export function PlanningOverview() {
             />
           </div>
           {state.includePropertyTax && (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <MoneyInput
-                id="plan-land-value"
-                label="Grundværdi (til grundskyld)"
-                value={state.landValue}
-                onChange={(v) => planning.patch({ landValue: v })}
-              />
-              <div className="flex items-end">
-                <Checkbox
-                  id="plan-prop-tax-in-budget"
-                  labelText="Ejendomsskatten står allerede som en udgift i mit budget"
-                  checked={state.propertyTaxInBudget}
-                  onChange={(_e, { checked }) =>
-                    planning.patch({ propertyTaxInBudget: checked })
-                  }
+            <>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <MoneyInput
+                  id="plan-land-value"
+                  label="Grundværdi (til grundskyld)"
+                  value={state.landValue}
+                  onChange={(v) => planning.patch({ landValue: v })}
                 />
+                <div className="flex items-end">
+                  <Checkbox
+                    id="plan-prop-tax-in-budget"
+                    labelText="Ejendomsskatten står allerede som en udgift i mit budget"
+                    checked={state.propertyTaxInBudget}
+                    onChange={(_e, { checked }) =>
+                      planning.patch({ propertyTaxInBudget: checked })
+                    }
+                  />
+                </div>
               </div>
-            </div>
-          )}
-          {state.includePropertyTax && (
-            <p className="text-muted-foreground text-[11px]">
-              Før pension betales ejendomsskatten af lønnen, så den trækkes fra
-              det, du kan lægge til side hver måned — medmindre den allerede står
-              i dit budget, jf. fluebenet ovenfor. Efter pension lægges den oven i
-              dit månedlige forbrug, så medregn den ikke også dér.
-            </p>
+              <p className="text-muted-foreground text-[11px]">
+                Ejendomsskatten betales hele livet — også efter pension. Står den
+                allerede i dit budget, så sæt fluebenet ovenfor; ellers beregnes
+                den og trækkes både før og efter pension.
+              </p>
+            </>
           )}
         </CardContent>
       </Card>

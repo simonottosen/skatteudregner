@@ -88,6 +88,47 @@ interface PathResult {
   ruinAge: number | null
 }
 
+/**
+ * Draws `shortfall` kroner out of the household's assets — cash buffer, then a
+ * taxed sale, then a loan against home equity — mutating `s` and reporting what
+ * each step produced. Shared by both halves of the projection: a property tax
+ * that outruns the monthly saving is funded exactly the way retirement spending
+ * is.
+ */
+function fundShortfall(
+  s: SimState,
+  shortfall: number,
+  taxCtx: TaxContext
+): { tax: number; sold: number; borrowed: number; unfunded: number } {
+  let tax = 0
+  let sold = 0
+  let borrowed = 0
+
+  if (s.cash > 0) {
+    const cashUsed = Math.min(s.cash, shortfall)
+    s.cash -= cashUsed
+    shortfall -= cashUsed
+  }
+  if (shortfall > 0 && s.investments > 0) {
+    const g = Math.max(0, (s.investments - s.investmentBasis) / s.investments)
+    // Sell exactly enough to net the shortfall after gains tax, so a sufficient
+    // pot covers the need without spurious borrowing.
+    sold = Math.min(s.investments, grossUpStockSale(shortfall, g, taxCtx))
+    tax = stockGainTax(sold * g, taxCtx)
+    s.investmentBasis = Math.max(0, s.investmentBasis - sold * (1 - g))
+    s.investments -= sold
+    shortfall -= sold - tax // net proceeds of this sale
+  }
+  // Borrow the rest against home equity (a loan — not taxed). The 1-krone floor
+  // avoids a spurious micro-loan from tax-rounding residue.
+  if (shortfall > 1) {
+    borrowed = Math.min(shortfall, Math.max(0, s.homeValue - s.mortgage))
+    s.mortgage += borrowed
+    shortfall -= borrowed
+  }
+  return { tax, sold, borrowed, unfunded: Math.max(0, shortfall) }
+}
+
 const MC_RUNS = 400
 const MC_SEED = 0x9e3779b9
 
@@ -433,15 +474,18 @@ function runPath(
     // pension income, then by selling investments (gains taxed), then by
     // borrowing against the home equity.
     let contribThisYear = 0
-    // Ongoing property tax (ejendomsværdiskat + grundskyld), if modelled. The
-    // house is owned and the tax is due in every year, working or retired — but
-    // in working years it is only charged here when the household's budget does
-    // not already list it, since the contribution is derived from that budget
-    // and would otherwise be reduced twice. `propertyHoldingTax` age-gates the
-    // pensioner nedslag internally, so charging it earlier cannot leak the
-    // discount to someone below the qualifying age.
-    const chargePropertyTax = retired || !state.propertyTaxInBudget
-    if (state.includePropertyTax && s.homeValue > 0 && chargePropertyTax) {
+    const drawFromAssets = (need: number) => {
+      const funded = fundShortfall(s, need, taxCtx)
+      investmentTax += funded.tax
+      investmentsSoldThisYear += funded.sold
+      borrowedThisYear += funded.borrowed
+      borrowedForSpending += funded.borrowed
+      if (funded.unfunded > 1 && ruinAge === null) ruinAge = age
+    }
+    // Ejendomsværdiskat + grundskyld fall due in every year the house is owned,
+    // working or retired — but both the contribution and `annualSpending` derive
+    // from the budget, so a budget that already lists the tax would count it twice.
+    if (state.includePropertyTax && s.homeValue > 0 && !state.propertyTaxInBudget) {
       propertyTaxThisYear = propertyHoldingTax(
         s.homeValue,
         s.homeValue * landFraction,
@@ -450,10 +494,15 @@ function runPath(
       )
     }
     if (!retired) {
-      // Paid out of salary, so it comes off what is left to invest.
-      contribThisYear = contribution - propertyTaxThisYear
+      // Paid out of salary, so it comes off what is left to invest. A tax that
+      // outruns the saving is drawn from assets rather than deposited as a
+      // negative amount, which would quietly drain the portfolio and report the
+      // year as a withdrawal under "Indbetalinger".
+      const net = contribution - propertyTaxThisYear
+      contribThisYear = Math.max(0, net)
       s.investments += contribThisYear
-      s.investmentBasis = Math.max(0, s.investmentBasis + contribThisYear)
+      s.investmentBasis += contribThisYear
+      if (net < 0) drawFromAssets(-net)
       contribution *= 1 + state.assumptions.contributionGrowth
     } else {
       const inflatedSpending =
@@ -477,38 +526,7 @@ function runPath(
           s.investmentBasis += extra
         }
       } else {
-        let shortfall = -surplus
-        // Spend the liquid cash buffer first (no tax, no realised gains).
-        if (s.cash > 0) {
-          const cashUsed = Math.min(s.cash, shortfall)
-          s.cash -= cashUsed
-          shortfall -= cashUsed
-        }
-        if (shortfall > 0 && s.investments > 0) {
-          const g =
-            s.investments > 0
-              ? Math.max(0, (s.investments - s.investmentBasis) / s.investments)
-              : 0
-          // Sell exactly enough to net the shortfall after gains tax (so a
-          // sufficient pot fully covers spending without spurious borrowing).
-          const sell = Math.min(s.investments, grossUpStockSale(shortfall, g, taxCtx))
-          investmentTax += stockGainTax(sell * g, taxCtx)
-          investmentsSoldThisYear = sell
-          s.investmentBasis = Math.max(0, s.investmentBasis - sell * (1 - g))
-          s.investments -= sell
-          shortfall -= sell - investmentTax // net obtained from the sale
-        }
-        // Borrow the rest against home equity (a loan — not taxed). The 1-krone
-        // floor avoids a spurious micro-loan from tax-rounding residue.
-        if (shortfall > 1) {
-          const availableEquity = Math.max(0, s.homeValue - s.mortgage)
-          const borrow = Math.min(shortfall, availableEquity)
-          s.mortgage += borrow
-          borrowedForSpending += borrow
-          borrowedThisYear = borrow
-          shortfall -= borrow // any remainder is unfunded (insolvent)
-          if (shortfall > 1 && ruinAge === null) ruinAge = age
-        }
+        drawFromAssets(-surplus)
       }
     }
     if (s.investments < 0) s.investments = 0
@@ -529,8 +547,7 @@ function runPath(
     cashSeries.push(s.cash)
     otherDebtSeries.push(s.debt)
     netWorth.push(s.investments + s.cash + homeEquity - s.debt)
-    // "Indbetalinger" only counts deposits while working.
-    contributions.push(retired ? 0 : contribThisYear)
+    contributions.push(contribThisYear)
     housingGains.push(housingGain)
     investmentGains.push(gain)
     mortgageSeries.push(s.mortgage)

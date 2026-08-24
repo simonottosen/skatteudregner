@@ -808,7 +808,8 @@ describe("simulatePlanning", () => {
   })
 
   it("models property tax in retirement only when enabled", () => {
-    // `propertyTaxInBudget` defaults to true, so working years stay untouched.
+    // The projection starts at 64 and retires at 65, so every charged year is a
+    // retired one — nothing here depends on the working-year branch.
     const base = {
       currentAge: 64,
       endAge: 67,
@@ -843,6 +844,76 @@ describe("simulatePlanning", () => {
     )
   })
 
+  it("skips property tax in retirement too when the budget already covers it", () => {
+    // `annualSpending` is derived from the same budget as the working-year
+    // contribution (hooks/use-planning.ts), so a household that answers "it is
+    // already in my budget" must not be charged on top of its forbrug either.
+    const base = {
+      currentAge: 64,
+      endAge: 67,
+      retirementAge: 65,
+      startInvestments: 5_000_000,
+      monthlyContribution: 0,
+      annualSpending: 200_000,
+      homeValue: 4_000_000,
+      landValue: 2_000_000,
+      mortgageBalance: 0,
+      includePropertyTax: true,
+      assumptions: {
+        ...DEFAULT_PLANNING_STATE.assumptions,
+        investmentReturn: 0,
+        investmentFee: 0,
+        housingReturn: 0,
+        inflation: 0,
+        volatility: 0,
+      },
+      pension: { ...DEFAULT_PLANNING_STATE.pension, includeFolkepension: false },
+    }
+    const inBudget = simulatePlanning(makeState({ ...base, propertyTaxInBudget: true }))
+    const onTop = simulatePlanning(makeState({ ...base, propertyTaxInBudget: false }))
+    expect(inBudget.points.find((p) => p.age === 66)!.propertyTax).toBe(0)
+    expect(onTop.points.find((p) => p.age === 66)!.propertyTax).toBeGreaterThan(0)
+    // Charging it on top leaves the household poorer by exactly that much.
+    expect(onTop.points.find((p) => p.age === 67)!.netWorth).toBeLessThan(
+      inBudget.points.find((p) => p.age === 67)!.netWorth
+    )
+  })
+
+  it("funds a retirement shortfall from the pot alone under lagerbeskatning", () => {
+    // Under lager the year's unrealised gain is already taxed in step 1. The
+    // drawdown must net the sale against *its own* gains tax only; counting the
+    // lager tax again would understate the proceeds and mortgage the house to
+    // cover a gap the portfolio can plainly fund on its own.
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 64,
+        endAge: 67,
+        retirementAge: 65,
+        startInvestments: 10_000_000,
+        investmentTaxMode: "lager",
+        monthlyContribution: 0,
+        annualSpending: 300_000,
+        homeValue: 4_000_000,
+        mortgageBalance: 0,
+        includePropertyTax: false,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0.07,
+          investmentFee: 0,
+          housingReturn: 0,
+          inflation: 0,
+          volatility: 0,
+        },
+        pension: { ...DEFAULT_PLANNING_STATE.pension, includeFolkepension: false },
+      })
+    )
+    const at66 = res.points.find((p) => p.age === 66)!
+    expect(at66.investmentsSold).toBeGreaterThan(0)
+    expect(at66.borrowed).toBe(0)
+    expect(at66.homeEquity).toBeCloseTo(4_000_000, 0)
+    expect(res.ruinAge).toBeNull()
+  })
+
   describe("property tax before retirement", () => {
     // A household still working for the whole projection, so nothing here can
     // be explained by the retirement branch.
@@ -869,9 +940,8 @@ describe("simulatePlanning", () => {
     }
 
     it("charges nothing while the budget already covers it", () => {
-      // The default. The contribution is derived from the budget, so an
-      // ejendomsskat line there has already reduced it — charging again would
-      // double-count.
+      // The contribution is derived from the budget, so an ejendomsskat line
+      // there has already reduced it — charging again would double-count.
       const res = simulatePlanning(
         makeState({ ...base, propertyTaxInBudget: true })
       )
@@ -900,6 +970,51 @@ describe("simulatePlanning", () => {
         })
       )
       expect(res.points.find((p) => p.age === 41)!.propertyTax).toBe(0)
+    })
+
+    it("keeps the deposit at zero when the tax outruns the contribution", () => {
+      // 1.200 kr/yr saved against a 4 mio. kr home: the tax is far larger. The
+      // year must not be recorded as a negative deposit — that would silently
+      // drain the pot and make the cumulative "Indbetalinger" line fall.
+      const res = simulatePlanning(
+        makeState({
+          ...base,
+          monthlyContribution: 100,
+          startInvestments: 1_000_000,
+          propertyTaxInBudget: false,
+        })
+      )
+      const at41 = res.points.find((p) => p.age === 41)!
+      expect(at41.propertyTax).toBeGreaterThan(1_200)
+      // The whole 1.200 kr goes to the tax, so nothing is deposited — and the
+      // year is recorded as a deposit of zero, not of the negative remainder.
+      expect(at41.contributionYoY).toBe(0)
+      // The excess is funded the way retirement spending is: from the portfolio.
+      expect(at41.investmentsSold).toBeGreaterThan(0)
+      expect(at41.borrowed).toBe(0)
+      // Cumulative deposits can only ever climb.
+      const totals = res.points.map((p) => p.contributionsTotal)
+      for (let i = 1; i < totals.length; i++) {
+        expect(totals[i]).toBeGreaterThanOrEqual(totals[i - 1])
+      }
+    })
+
+    it("reports ruin when the tax cannot be funded from anywhere", () => {
+      // Nothing saved, nothing invested, and the home is underwater — so there
+      // is no cash, no pot to sell and no equity to borrow against.
+      const res = simulatePlanning(
+        makeState({
+          ...base,
+          monthlyContribution: 0,
+          startInvestments: 0,
+          cashBuffer: 0,
+          mortgageBalance: 8_000_000,
+          mortgageRate: 0,
+          propertyTaxInBudget: false,
+        })
+      )
+      expect(res.points.find((p) => p.age === 41)!.propertyTax).toBeGreaterThan(0)
+      expect(res.ruinAge).toBe(41)
     })
 
     it("does not hand a 40-year-old the pensioner nedslag", () => {
