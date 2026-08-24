@@ -23,8 +23,12 @@ import { calculatePropertyTax } from "@/lib/tax/calculations/property-tax"
 /** Aktiesparekonto: a flat 17 % lagerbeskatning on the yearly gain. */
 export const ASK_TAX_RATE = 0.17
 
-/** Forsigtighedsprincip: property tax bases are ~80 % of the value. */
-const ASSESSMENT_FACTOR = 0.8
+/**
+ * Forsigtighedsprincip: property tax bases are ~80 % of the value. The rate
+ * thresholds in `rates.ts` are stated on that *basis*, not on the valuation, so
+ * a threshold of 9.200.000 means the high rate starts at a 11.500.000 valuation.
+ */
+export const ASSESSMENT_FACTOR = 0.8
 
 /** Per-call context: where the household lives and how far out we are. */
 export interface TaxContext {

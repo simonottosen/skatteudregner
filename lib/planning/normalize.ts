@@ -38,6 +38,15 @@ export function clampNum(
     : fallback
 }
 
+/**
+ * Always pass the shared default as `fallback`. A saved plan that predates a
+ * flag has no opinion about it, so it has to land wherever a fresh plan lands —
+ * spelling the fallback out here instead lets the two drift apart silently.
+ */
+function boolOr(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback
+}
+
 export function normalizeAssumptions(value: unknown): PlanningAssumptions {
   if (!value || typeof value !== "object") return { ...DEFAULT_ASSUMPTIONS }
   const o = value as Partial<PlanningAssumptions>
@@ -123,11 +132,11 @@ export function normalizePension(value: unknown): PensionState {
     person2: normalizePensionPerson(o.person2),
     pensionReturn: clampNum(o.pensionReturn, DEFAULT_PENSION.pensionReturn, -1, 1),
     ratepensionYears: clampNum(o.ratepensionYears, DEFAULT_PENSION.ratepensionYears, 1, 40),
-    single: typeof o.single === "boolean" ? o.single : DEFAULT_PENSION.single,
-    includeFolkepension:
-      typeof o.includeFolkepension === "boolean"
-        ? o.includeFolkepension
-        : DEFAULT_PENSION.includeFolkepension,
+    single: boolOr(o.single, DEFAULT_PENSION.single),
+    includeFolkepension: boolOr(
+      o.includeFolkepension,
+      DEFAULT_PENSION.includeFolkepension
+    ),
   }
 }
 
@@ -147,10 +156,7 @@ export function normalizeTaxProfile(value: unknown): PlanningTaxProfile {
   return {
     year,
     municipality,
-    churchMember:
-      typeof o.churchMember === "boolean"
-        ? o.churchMember
-        : DEFAULT_TAX_PROFILE.churchMember,
+    churchMember: boolOr(o.churchMember, DEFAULT_TAX_PROFILE.churchMember),
   }
 }
 
@@ -177,6 +183,8 @@ export function normalizeScenarioChanges(value: unknown): ScenarioChanges {
     if ("homeValue" in ov) out.homeValue = clampNum(ov.homeValue, 0, 0)
     if ("landValue" in ov) out.landValue = clampNum(ov.landValue, 0, 0)
     if (typeof ov.includePropertyTax === "boolean") out.includePropertyTax = ov.includePropertyTax
+    if (typeof ov.propertyTaxInBudget === "boolean")
+      out.propertyTaxInBudget = ov.propertyTaxInBudget
     if ("mortgageBalance" in ov) out.mortgageBalance = clampNum(ov.mortgageBalance, 0, 0)
     if ("mortgageRate" in ov)
       out.mortgageRate = clampNum(ov.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2)
@@ -288,8 +296,14 @@ export function normalizePlanning(raw: unknown): PlanningState {
     ),
     homeValue: clampNum(o.homeValue, 0, 0),
     landValue: clampNum(o.landValue, 0, 0),
-    includePropertyTax:
-      typeof o.includePropertyTax === "boolean" ? o.includePropertyTax : false,
+    includePropertyTax: boolOr(
+      o.includePropertyTax,
+      DEFAULT_PLANNING_STATE.includePropertyTax
+    ),
+    propertyTaxInBudget: boolOr(
+      o.propertyTaxInBudget,
+      DEFAULT_PLANNING_STATE.propertyTaxInBudget
+    ),
     mortgageBalance: clampNum(o.mortgageBalance, 0, 0),
     mortgageRate: clampNum(o.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2),
     mortgageTermYears: clampNum(
