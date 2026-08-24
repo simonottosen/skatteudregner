@@ -4,6 +4,7 @@ import {
   computeBudgetSummary,
   computeResultSummary,
   expensesByCategory,
+  planningContribution,
 } from "../state"
 
 describe("normalizeBudget", () => {
@@ -97,13 +98,10 @@ describe("the mortgage comes off the surplus", () => {
 
   it("matches the contribution /planlaegning derives from the same budget", () => {
     const sum = computeBudgetSummary(withMortgage(), 40000, 0)
-    // Mirrors `derivedDefaults` in hooks/use-planning.ts, which has always netted
-    // out the mortgage. This is the parity that issue #2 reported as broken.
-    const planningContribution = Math.max(
-      0,
-      Math.round(sum.budgetIncome - sum.budgetExpenses - sum.mortgageMonthly)
-    )
-    expect(Math.round(sum.remaining)).toBe(planningContribution)
+    // hooks/use-planning.ts feeds the simulator exactly this. Both sides call
+    // planningContribution rather than re-deriving income − expenses − mortgage,
+    // so there is no second formula left to drift (issue #2).
+    expect(planningContribution(sum.remaining)).toBe(Math.round(sum.remaining))
   })
 
   it("reports a deficit rather than clamping at zero", () => {
@@ -113,6 +111,62 @@ describe("the mortgage comes off the surplus", () => {
     const sum = computeBudgetSummary(withMortgage(), 8000, 0)
     expect(sum.remaining).toBeLessThan(0)
     expect(sum.savingsRate).toBeLessThan(0)
+  })
+
+  it("hands the simulator zero in a deficit without losing the shortfall", () => {
+    const sum = computeBudgetSummary(withMortgage(), 8000, 0)
+    // The clamp applies at the simulator boundary and nowhere else…
+    expect(planningContribution(sum.remaining)).toBe(0)
+    // …so `remaining` still carries the real shortfall, which is what /resultat
+    // displays and what the "budget balancerer ikke" warning reads. Clamping it
+    // any earlier would show a household in the red a plan that saves nothing
+    // and says nothing about why.
+    expect(Math.round(sum.remaining)).toBe(
+      Math.round(8000 - 7000 - sum.mortgageMonthly)
+    )
+    expect(sum.remaining).toBeLessThan(0)
+  })
+
+  it("nets the mortgage out in separate mode too", () => {
+    // The mortgage is a household obligation, so it comes off the surplus
+    // whichever way the couple splits their expenses.
+    // NB: /budget's two per-person cards still show `income − exp` and allocate
+    // the mortgage nowhere, so their sum overstates by mortgageMonthly. That is
+    // a display bug in components/budget/budget-planner.tsx, not here — this
+    // pins the shared summary so a fix there has something to agree with.
+    const s = normalizeBudget({
+      mode: "separate",
+      person1: {
+        name: "P1",
+        incomeSource: "manual",
+        manualIncome: 20000,
+        items: [{ id: "x", label: "a", amount: 8000, categoryId: "mad" }],
+      },
+      person2: {
+        name: "P2",
+        incomeSource: "manual",
+        manualIncome: 25000,
+        items: [{ id: "y", label: "b", amount: 7000, categoryId: "mad" }],
+      },
+      mortgage: {
+        enabled: true,
+        homeValue: 3_000_000,
+        remainingYears: 30,
+        ltv: 0.8,
+        interestRate: 0.04,
+        bidragssats: 0.006,
+        interestOnly: false,
+      },
+    })
+    const sum = computeBudgetSummary(s, 0, 0)
+    expect(sum.mortgageMonthly).toBeGreaterThan(0)
+    expect(sum.budgetExpenses).toBe(15000)
+    expect(sum.remaining).toBeCloseTo(45000 - 15000 - sum.mortgageMonthly, 6)
+    // The naive per-person sum the cards currently render.
+    expect(sum.p1Income - sum.p1Total + (sum.p2Income - sum.p2Total)).toBeCloseTo(
+      sum.remaining + sum.mortgageMonthly,
+      6
+    )
   })
 
   it("leaves a household without a mortgage untouched", () => {

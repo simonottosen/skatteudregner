@@ -263,6 +263,17 @@ export function computeBudgetSummary(
   }
 }
 
+/**
+ * The monthly saving /planlaegning can actually simulate. A negative surplus is
+ * meaningless as a contribution, so it floors at zero — but the deficit is not
+ * lost: it stays on `remaining`, which /resultat displays and /planlaegning
+ * warns about. Keeping the clamp here, rather than inline in the planning hook,
+ * is what stops the two pages from re-deriving the surplus and drifting apart.
+ */
+export function planningContribution(remaining: number): number {
+  return Math.max(0, Math.round(remaining))
+}
+
 /** Per-category expense totals for the active expense list(s). */
 export function expensesByCategory(
   state: BudgetState

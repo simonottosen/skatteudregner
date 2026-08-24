@@ -672,6 +672,18 @@ export function PlanningOverview() {
               subtitle="Tallene er hentet fra dine skat- og budgetsider. Ret dem frit — så holder de op med at opdatere automatisk."
             />
           )}
+          {planning.budgetRemaining < 0 && (
+            <InlineNotification
+              className="max-w-full"
+              kind="warning"
+              lowContrast
+              hideCloseButton
+              title="Dit budget balancerer ikke"
+              subtitle={`Dine udgifter overstiger din indkomst med ${formatDKK(
+                Math.abs(Math.round(planning.budgetRemaining))
+              )}/md. Månedlig opsparing er derfor sat til 0, så fremskrivningen viser hverken opsparing eller det underskud, der reelt tærer på formuen. Ret budgettet, eller indtast selv et beløb herunder.`}
+            />
+          )}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <NumberInput
               id="plan-current-age"
