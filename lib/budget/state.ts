@@ -215,11 +215,11 @@ export interface BudgetSummary {
   mortgageMonthly: number
   /** Household monthly income (both people unless single). */
   budgetIncome: number
-  /** Household monthly expenses (per the mode). */
+  /** Household monthly expenses (per the mode), excluding the mortgage. */
   budgetExpenses: number
-  /** Income − expenses (monthly). */
+  /** Income − expenses − mortgage (monthly); negative when overspending. */
   remaining: number
-  /** remaining / income. */
+  /** remaining / income; negative when overspending. */
   savingsRate: number
 }
 
@@ -242,7 +242,10 @@ export function computeBudgetSummary(
   const twoPeople = state.mode !== "single"
   const budgetIncome = twoPeople ? p1Income + p2Income : p1Income
   const budgetExpenses = state.mode === "separate" ? p1Total + p2Total : sharedTotal
-  const remaining = budgetIncome - budgetExpenses
+  // The realkredit payment sits outside the categorised expense lines but is a
+  // real outflow, so it comes off the surplus. /planlaegning has always netted
+  // it out; /resultat used to not, and the two pages disagreed by exactly this.
+  const remaining = budgetIncome - budgetExpenses - mortgageMonthly
   const savingsRate = budgetIncome > 0 ? remaining / budgetIncome : 0
 
   return {

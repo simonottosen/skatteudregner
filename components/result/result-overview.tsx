@@ -154,14 +154,13 @@ export function ResultOverview() {
   const mode = budget.state.mode
   const twoPeople = mode !== "single"
 
-  // Budget side — monthly base figures (may come from skat or manual income).
-  const budgetIncome = twoPeople
-    ? budget.p1Income + budget.p2Income
-    : budget.p1Income
-  const budgetExpenses =
-    mode === "separate" ? budget.p1Total + budget.p2Total : budget.sharedTotal
-  const remaining = budgetIncome - budgetExpenses
-  const savingsRate = budgetIncome > 0 ? remaining / budgetIncome : 0
+  // Budget side — read straight off the shared summary rather than re-derived,
+  // so /resultat, /budget and /planlaegning cannot drift apart again.
+  const { budgetIncome, budgetExpenses, mortgageMonthly, remaining, savingsRate } =
+    budget
+  // The mortgage is a real outflow but sits outside the categorised lines, so
+  // the headline expenses figure adds it back in — same as /budget.
+  const totalExpenses = budgetExpenses + mortgageMonthly
 
   // Tax side (household, annual → monthly base).
   const grossYear = results.reduce(
@@ -196,6 +195,19 @@ export function ResultOverview() {
     .map((c) => ({ id: c.id, name: c.name, value: byCat.get(c.id) ?? 0 }))
     .filter((c) => c.value > 0)
 
+  // Everything the household spends, for the charts and insights. The mortgage
+  // is not a categorised line, so it is appended as its own slice — without it
+  // the donut and Sankey would lose that money now that it comes off
+  // `remaining`. The "mortgage" id matches no real category, so the detail
+  // panel correctly finds no line items to expand.
+  const spending =
+    mortgageMonthly > 0
+      ? [
+          ...categoryTotals,
+          { id: "mortgage", name: "Realkreditlån", value: mortgageMonthly },
+        ]
+      : categoryTotals
+
   const taxSplit: Slice[] | null = hasTax
     ? [
         { name: "Skat & AM-bidrag", value: Math.round(taxMonthly * mult) },
@@ -204,7 +216,7 @@ export function ResultOverview() {
     : null
 
   const categorySplit: Slice[] = [
-    ...categoryTotals.map((c) => ({
+    ...spending.map((c) => ({
       name: c.name,
       value: Math.round(c.value * mult),
     })),
@@ -213,7 +225,7 @@ export function ResultOverview() {
       : []),
   ]
 
-  const categoryBars: Slice[] = [...categoryTotals]
+  const categoryBars: Slice[] = [...spending]
     .sort((a, b) => b.value - a.value)
     .map((c) => ({ name: c.name, value: Math.round(c.value * mult) }))
 
@@ -309,11 +321,11 @@ export function ResultOverview() {
     taxMonthly,
     effectiveRate,
     budgetIncomeMonthly: budgetIncome,
-    budgetExpensesMonthly: budgetExpenses,
+    budgetExpensesMonthly: totalExpenses,
     remainingMonthly: remaining,
     savingsRate,
     taxBreakdown,
-    categories: [...categoryTotals]
+    categories: [...spending]
       .sort((a, b) => b.value - a.value)
       .map((c) => ({
         name: c.name,
@@ -346,11 +358,9 @@ export function ResultOverview() {
           }
     )
   }
-  if (categoryTotals.length > 0) {
-    const biggest = categoryTotals.reduce((a, b) =>
-      b.value > a.value ? b : a
-    )
-    const share = budgetExpenses > 0 ? biggest.value / budgetExpenses : 0
+  if (spending.length > 0) {
+    const biggest = spending.reduce((a, b) => (b.value > a.value ? b : a))
+    const share = totalExpenses > 0 ? biggest.value / totalExpenses : 0
     insights.push({
       tone: "info",
       text: `Din største kategori er “${biggest.name}”: ${fmt(biggest.value)} ${word} (${formatPercent(share)} af dine udgifter).`,
@@ -465,7 +475,10 @@ export function ResultOverview() {
                   value={fmt(budgetIncome)}
                   tone="income"
                 />
-                <Figure label="Udgifter" value={fmt(budgetExpenses)} />
+                <Figure
+                  label={mortgageMonthly > 0 ? "Udgifter (inkl. lån)" : "Udgifter"}
+                  value={fmt(totalExpenses)}
+                />
                 <Figure
                   label="Til rådighed"
                   value={fmt(remaining)}
