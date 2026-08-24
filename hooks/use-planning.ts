@@ -6,6 +6,7 @@ import { useTax } from "@/components/tax-provider"
 import { useBudget } from "@/components/budget-provider"
 import { estimateMortgage } from "@/lib/budget/generate-budget"
 import { computeMortgage } from "@/lib/budget/mortgage"
+import { planningContribution } from "@/lib/budget/state"
 import {
   DEFAULT_PLANNING_STATE,
   DEFAULT_TAX_PROFILE,
@@ -53,24 +54,15 @@ export function usePlanning() {
   const [hydrated, setHydrated] = useState(false)
   const [touched, setTouched] = useState(false)
 
-  // Values inferred from the tax + budget pages.
-  const twoPeople = budget.state.mode !== "single"
-  const budgetIncome = twoPeople ? budget.p1Income + budget.p2Income : budget.p1Income
-  const budgetExpenses =
-    budget.state.mode === "separate"
-      ? budget.p1Total + budget.p2Total
-      : budget.sharedTotal
+  // Values inferred from the tax + budget pages. The surplus and the expense
+  // total come off the shared budget summary rather than being derived a second
+  // time here — /resultat reads that same object, and re-deriving it is how the
+  // two pages came to disagree in the first place (issue #2).
+  const { budgetExpenses, remaining: budgetRemaining } = budget
 
   const mortgage = budget.state.mortgage
-  const mortgageMonthly = budget.mortgageMonthly
 
   const derivedDefaults = useMemo(() => {
-    // Savings rate nets out the mortgage payment (it's a real cash outflow);
-    // the mortgage itself is modelled separately, so it's excluded from forbrug.
-    const remaining = Math.max(
-      0,
-      Math.round(budgetIncome - budgetExpenses - mortgageMonthly)
-    )
     const currentAge =
       ageFromBirthDate(input.birthDate) ?? DEFAULT_PLANNING_STATE.currentAge
     const birthYear = new Date().getFullYear() - currentAge
@@ -89,7 +81,7 @@ export function usePlanning() {
     )
 
     return {
-      monthlyContribution: remaining,
+      monthlyContribution: planningContribution(budgetRemaining),
       annualSpending: Math.round(budgetExpenses * 12),
       homeValue,
       landValue,
@@ -122,9 +114,8 @@ export function usePlanning() {
       },
     }
   }, [
-    budgetIncome,
+    budgetRemaining,
     budgetExpenses,
-    mortgageMonthly,
     mortgage,
     input.property?.propertyValue,
     input.property?.landValue,
@@ -317,6 +308,14 @@ export function usePlanning() {
     /** True while the linked fields still mirror tax/budget. */
     linked: !touched,
     derivedDefaults,
+    /**
+     * The budget's monthly surplus, unclamped — negative when the household
+     * overspends. `derivedDefaults.monthlyContribution` floors at zero for the
+     * simulator, so this is the only place a deficit survives for the UI to
+     * report. Without it a household in the red would be shown a projection
+     * built on a saving of zero and no hint that the premise is impossible.
+     */
+    budgetRemaining,
     patch,
     setAssumption,
     setPension,
