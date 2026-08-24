@@ -186,6 +186,7 @@ const scalarFieldsSchema = z.object({
   homeValue: z.number().optional(),
   landValue: z.number().optional(),
   includePropertyTax: z.boolean().optional(),
+  propertyTaxInBudget: z.boolean().optional(),
   mortgageBalance: z.number().optional(),
   mortgageRate: z.number().optional(),
   mortgageTermYears: z.number().optional(),

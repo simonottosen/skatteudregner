@@ -177,6 +177,8 @@ export function normalizeScenarioChanges(value: unknown): ScenarioChanges {
     if ("homeValue" in ov) out.homeValue = clampNum(ov.homeValue, 0, 0)
     if ("landValue" in ov) out.landValue = clampNum(ov.landValue, 0, 0)
     if (typeof ov.includePropertyTax === "boolean") out.includePropertyTax = ov.includePropertyTax
+    if (typeof ov.propertyTaxInBudget === "boolean")
+      out.propertyTaxInBudget = ov.propertyTaxInBudget
     if ("mortgageBalance" in ov) out.mortgageBalance = clampNum(ov.mortgageBalance, 0, 0)
     if ("mortgageRate" in ov)
       out.mortgageRate = clampNum(ov.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2)
@@ -290,6 +292,9 @@ export function normalizePlanning(raw: unknown): PlanningState {
     landValue: clampNum(o.landValue, 0, 0),
     includePropertyTax:
       typeof o.includePropertyTax === "boolean" ? o.includePropertyTax : false,
+    // Defaults true so plans saved before this field existed keep their numbers.
+    propertyTaxInBudget:
+      typeof o.propertyTaxInBudget === "boolean" ? o.propertyTaxInBudget : true,
     mortgageBalance: clampNum(o.mortgageBalance, 0, 0),
     mortgageRate: clampNum(o.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2),
     mortgageTermYears: clampNum(

@@ -808,6 +808,7 @@ describe("simulatePlanning", () => {
   })
 
   it("models property tax in retirement only when enabled", () => {
+    // `propertyTaxInBudget` defaults to true, so working years stay untouched.
     const base = {
       currentAge: 64,
       endAge: 67,
@@ -840,6 +841,84 @@ describe("simulatePlanning", () => {
     expect(on.points.find((p) => p.age === 67)!.netWorth).toBeLessThan(
       off.points.find((p) => p.age === 67)!.netWorth
     )
+  })
+
+  describe("property tax before retirement", () => {
+    // A household still working for the whole projection, so nothing here can
+    // be explained by the retirement branch.
+    const base = {
+      currentAge: 40,
+      endAge: 43,
+      retirementAge: 65,
+      startInvestments: 0,
+      monthlyContribution: 10_000,
+      annualSpending: 0,
+      homeValue: 4_000_000,
+      landValue: 2_000_000,
+      mortgageBalance: 0,
+      includePropertyTax: true,
+      assumptions: {
+        ...DEFAULT_PLANNING_STATE.assumptions,
+        investmentReturn: 0,
+        investmentFee: 0,
+        housingReturn: 0,
+        inflation: 0,
+        volatility: 0,
+        contributionGrowth: 0,
+      },
+    }
+
+    it("charges nothing while the budget already covers it", () => {
+      // The default. The contribution is derived from the budget, so an
+      // ejendomsskat line there has already reduced it — charging again would
+      // double-count.
+      const res = simulatePlanning(
+        makeState({ ...base, propertyTaxInBudget: true })
+      )
+      const at41 = res.points.find((p) => p.age === 41)!
+      expect(at41.propertyTax).toBe(0)
+      expect(at41.investments).toBeCloseTo(120_000, 0)
+    })
+
+    it("takes it out of the contribution when the budget does not", () => {
+      const res = simulatePlanning(
+        makeState({ ...base, propertyTaxInBudget: false })
+      )
+      const at41 = res.points.find((p) => p.age === 41)!
+      expect(at41.propertyTax).toBeGreaterThan(0)
+      // Paid from salary, so it is exactly what no longer reaches investments.
+      expect(at41.investments).toBeCloseTo(120_000 - at41.propertyTax, 0)
+      expect(at41.contributionYoY).toBeCloseTo(120_000 - at41.propertyTax, 0)
+    })
+
+    it("still charges nothing when property tax is off entirely", () => {
+      const res = simulatePlanning(
+        makeState({
+          ...base,
+          includePropertyTax: false,
+          propertyTaxInBudget: false,
+        })
+      )
+      expect(res.points.find((p) => p.age === 41)!.propertyTax).toBe(0)
+    })
+
+    it("does not hand a 40-year-old the pensioner nedslag", () => {
+      // The reduction is age-gated inside propertyHoldingTax; extending the
+      // charge to working years must not leak it to someone too young.
+      const young = simulatePlanning(
+        makeState({ ...base, propertyTaxInBudget: false })
+      ).points.find((p) => p.age === 41)!.propertyTax
+      const old = simulatePlanning(
+        makeState({
+          ...base,
+          currentAge: 70,
+          endAge: 73,
+          retirementAge: 95,
+          propertyTaxInBudget: false,
+        })
+      ).points.find((p) => p.age === 71)!.propertyTax
+      expect(old).toBeLessThan(young)
+    })
   })
 
   it("widens the net-worth band when home prices are volatile", () => {

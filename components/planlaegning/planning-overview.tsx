@@ -1019,12 +1019,24 @@ export function PlanningOverview() {
                 value={state.landValue}
                 onChange={(v) => planning.patch({ landValue: v })}
               />
+              <div className="flex items-end">
+                <Checkbox
+                  id="plan-prop-tax-in-budget"
+                  labelText="Ejendomsskatten står allerede som en udgift i mit budget"
+                  checked={state.propertyTaxInBudget}
+                  onChange={(_e, { checked }) =>
+                    planning.patch({ propertyTaxInBudget: checked })
+                  }
+                />
+              </div>
             </div>
           )}
           {state.includePropertyTax && (
             <p className="text-muted-foreground text-[11px]">
-              Bemærk: medregn kun ejendomsskat her, hvis den ikke allerede indgår
-              i dit månedlige forbrug ovenfor — ellers tæller den dobbelt.
+              Før pension betales ejendomsskatten af lønnen, så den trækkes fra
+              det, du kan lægge til side hver måned — medmindre den allerede står
+              i dit budget, jf. fluebenet ovenfor. Efter pension lægges den oven i
+              dit månedlige forbrug, så medregn den ikke også dér.
             </p>
           )}
         </CardContent>

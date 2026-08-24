@@ -433,24 +433,32 @@ function runPath(
     // pension income, then by selling investments (gains taxed), then by
     // borrowing against the home equity.
     let contribThisYear = 0
+    // Ongoing property tax (ejendomsværdiskat + grundskyld), if modelled. The
+    // house is owned and the tax is due in every year, working or retired — but
+    // in working years it is only charged here when the household's budget does
+    // not already list it, since the contribution is derived from that budget
+    // and would otherwise be reduced twice. `propertyHoldingTax` age-gates the
+    // pensioner nedslag internally, so charging it earlier cannot leak the
+    // discount to someone below the qualifying age.
+    const chargePropertyTax = retired || !state.propertyTaxInBudget
+    if (state.includePropertyTax && s.homeValue > 0 && chargePropertyTax) {
+      propertyTaxThisYear = propertyHoldingTax(
+        s.homeValue,
+        s.homeValue * landFraction,
+        age,
+        taxCtx
+      )
+    }
     if (!retired) {
-      contribThisYear = contribution
-      s.investments += contribution
-      s.investmentBasis += contribution
+      // Paid out of salary, so it comes off what is left to invest.
+      contribThisYear = contribution - propertyTaxThisYear
+      s.investments += contribThisYear
+      s.investmentBasis = Math.max(0, s.investmentBasis + contribThisYear)
       contribution *= 1 + state.assumptions.contributionGrowth
     } else {
       const inflatedSpending =
         state.annualSpending * Math.pow(1 + state.assumptions.inflation, y)
       spendingThisYear = inflatedSpending
-      // Ongoing property tax (ejendomsværdiskat + grundskyld), if modelled.
-      if (state.includePropertyTax && s.homeValue > 0) {
-        propertyTaxThisYear = propertyHoldingTax(
-          s.homeValue,
-          s.homeValue * landFraction,
-          age,
-          taxCtx
-        )
-      }
       // Living costs plus any remaining other-debt service and property tax.
       const need = inflatedSpending + debtServiceThisYear + propertyTaxThisYear
       const surplus = netPensionByYear[y] - need

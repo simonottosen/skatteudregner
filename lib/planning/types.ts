@@ -150,6 +150,7 @@ export interface ScenarioChanges {
       | "homeValue"
       | "landValue"
       | "includePropertyTax"
+      | "propertyTaxInBudget"
       | "mortgageBalance"
       | "mortgageRate"
       | "mortgageTermYears"
@@ -258,6 +259,14 @@ export interface PlanningState {
   landValue: number
   /** Whether to model ongoing property tax (ejendomsværdiskat + grundskyld). */
   includePropertyTax: boolean
+  /**
+   * Whether the budget's expense lines already include ejendomsskat. The
+   * working-years contribution is derived from the budget, so a household that
+   * already lists it would be charged twice if the simulator added it on top.
+   * Retirement is unaffected — there the outflow is `annualSpending`, which the
+   * property tax has always been added to.
+   */
+  propertyTaxInBudget: boolean
   /** Outstanding mortgage principal in DKK. */
   mortgageBalance: number
   /** Annual interest rate used to amortize the mortgage. */
@@ -291,6 +300,8 @@ export const DEFAULT_PLANNING_STATE: PlanningState = {
   homeValue: 0,
   landValue: 0,
   includePropertyTax: false,
+  // Assume it is already budgeted, so upgrading a saved plan changes nothing.
+  propertyTaxInBudget: true,
   mortgageBalance: 0,
   mortgageRate: 0.041,
   mortgageTermYears: 30,
