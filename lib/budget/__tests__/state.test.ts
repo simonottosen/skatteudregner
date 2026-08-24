@@ -130,10 +130,6 @@ describe("the mortgage comes off the surplus", () => {
   it("nets the mortgage out in separate mode too", () => {
     // The mortgage is a household obligation, so it comes off the surplus
     // whichever way the couple splits their expenses.
-    // NB: /budget's two per-person cards still show `income − exp` and allocate
-    // the mortgage nowhere, so their sum overstates by mortgageMonthly. That is
-    // a display bug in components/budget/budget-planner.tsx, not here — this
-    // pins the shared summary so a fix there has something to agree with.
     const s = normalizeBudget({
       mode: "separate",
       person1: {
@@ -162,7 +158,10 @@ describe("the mortgage comes off the surplus", () => {
     expect(sum.mortgageMonthly).toBeGreaterThan(0)
     expect(sum.budgetExpenses).toBe(15000)
     expect(sum.remaining).toBeCloseTo(45000 - 15000 - sum.mortgageMonthly, 6)
-    // The naive per-person sum the cards currently render.
+    // /budget's per-person cards render `income − exp`, which leaves the loan
+    // unallocated — hence the label "Til rådighed før lån" and the separate
+    // household card that reports `remaining`. Pinning the gap at exactly
+    // mortgageMonthly is what makes that labelling honest.
     expect(sum.p1Income - sum.p1Total + (sum.p2Income - sum.p2Total)).toBeCloseTo(
       sum.remaining + sum.mortgageMonthly,
       6

@@ -268,6 +268,9 @@ export function BudgetPlanner() {
     sharedTotal,
     p1Total,
     p2Total,
+    budgetIncome,
+    budgetExpenses,
+    remaining,
     setMode,
     setPersonField,
     addItem,
@@ -308,11 +311,13 @@ export function BudgetPlanner() {
   const skatMissing =
     state.person1.incomeSource === "skat" && monthlyNetIncome <= 0
 
-  const combinedIncome = twoPeople ? p1Income + p2Income : p1Income
-  const combinedSpent = sharedTotal + mortgageMonthly
-  const combinedRemaining = combinedIncome - combinedSpent
+  // Household totals come off the shared summary rather than being derived here
+  // — the same re-derivation is what let /resultat and /planlaegning drift
+  // apart (issue #2). The mortgage sits outside the categorised lines, so it is
+  // added back for display.
+  const combinedSpent = budgetExpenses + mortgageMonthly
   const spentPct =
-    combinedIncome > 0 ? Math.min((combinedSpent / combinedIncome) * 100, 100) : 0
+    budgetIncome > 0 ? Math.min((combinedSpent / budgetIncome) * 100, 100) : 0
 
   return (
     <main
@@ -676,40 +681,77 @@ export function BudgetPlanner() {
 
       {/* Summary + expenses */}
       {state.mode === "separate" ? (
-        <div className="grid gap-4 md:grid-cols-2">
-          {(["p1", "p2"] as const).map((key) => {
-            const person = key === "p1" ? state.person1 : state.person2
-            const income = key === "p1" ? p1Income : p2Income
-            const exp = key === "p1" ? p1Total : p2Total
-            return (
-              <Card
-                key={key}
-                className="border-t-4 border-[var(--cds-border-interactive)]"
-              >
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg">{person.name}</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid grid-cols-3 gap-3">
-                    <Figure label="Indkomst" amount={income} tone="income" />
-                    <Figure label="Udgifter" amount={exp} />
-                    <Figure
-                      label="Til rådighed"
-                      amount={income - exp}
-                      tone="remaining"
+        <>
+          <div className="grid gap-4 md:grid-cols-2">
+            {(["p1", "p2"] as const).map((key) => {
+              const person = key === "p1" ? state.person1 : state.person2
+              const income = key === "p1" ? p1Income : p2Income
+              const exp = key === "p1" ? p1Total : p2Total
+              return (
+                <Card
+                  key={key}
+                  className="border-t-4 border-[var(--cds-border-interactive)]"
+                >
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg">{person.name}</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-3 gap-3">
+                      <Figure label="Indkomst" amount={income} tone="income" />
+                      <Figure label="Udgifter" amount={exp} />
+                      {/* The realkredit payment is a household obligation with no
+                          stated split, so it is not apportioned to either person
+                          — the label says so, and the card below carries it. */}
+                      <Figure
+                        label={
+                          mortgageMonthly > 0
+                            ? "Til rådighed før lån"
+                            : "Til rådighed"
+                        }
+                        amount={income - exp}
+                        tone="remaining"
+                      />
+                    </div>
+                    <CategorizedExpenses
+                      list={key}
+                      items={person.items}
+                      categories={state.categories}
+                      handlers={handlers}
                     />
-                  </div>
-                  <CategorizedExpenses
-                    list={key}
-                    items={person.items}
-                    categories={state.categories}
-                    handlers={handlers}
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
+
+          {mortgageMonthly > 0 && (
+            <Card className="mt-4 border-t-4 border-[var(--cds-border-interactive)]">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg">Husstanden samlet</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid grid-cols-3 gap-4">
+                  <Figure
+                    label="Samlet indkomst"
+                    amount={budgetIncome}
+                    tone="income"
                   />
-                </CardContent>
-              </Card>
-            )
-          })}
-        </div>
+                  <Figure label="Udgifter (inkl. lån)" amount={combinedSpent} />
+                  <Figure
+                    label="Til rådighed"
+                    amount={remaining}
+                    tone="remaining"
+                  />
+                </div>
+                <p className="text-muted-foreground text-xs">
+                  Realkreditlånet ({formatDKK(mortgageMonthly)}/md.) er en fælles
+                  udgift og er ikke fordelt mellem jer. Derfor er summen af de to
+                  beløb ovenfor højere end husstandens reelle rådighedsbeløb.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </>
       ) : (
         <>
           <Card className="mb-6 border-t-4 border-[var(--cds-border-interactive)]">
@@ -720,7 +762,7 @@ export function BudgetPlanner() {
               <div className="grid grid-cols-3 gap-4">
                 <Figure
                   label={twoPeople ? "Samlet indkomst" : "Nettoløn / md."}
-                  amount={combinedIncome}
+                  amount={budgetIncome}
                   tone="income"
                 />
                 <Figure
@@ -731,17 +773,17 @@ export function BudgetPlanner() {
                 />
                 <Figure
                   label="Til rådighed"
-                  amount={combinedRemaining}
+                  amount={remaining}
                   tone="remaining"
                 />
               </div>
-              {combinedIncome > 0 && (
+              {budgetIncome > 0 && (
                 <ProgressBar
                   label="Andel af indkomst brugt"
                   helperText={`${Math.round(spentPct)}% af indkomsten er disponeret`}
                   value={spentPct}
                   max={100}
-                  status={combinedRemaining < 0 ? "error" : "active"}
+                  status={remaining < 0 ? "error" : "active"}
                 />
               )}
               {twoPeople && (
@@ -767,10 +809,10 @@ export function BudgetPlanner() {
             <span className="text-sm font-medium">Til rådighed efter udgifter</span>
             <span
               className={`text-lg font-bold ${
-                combinedRemaining < 0 ? "text-error" : "text-success"
+                remaining < 0 ? "text-error" : "text-success"
               }`}
             >
-              {formatDKK(combinedRemaining)} / md.
+              {formatDKK(remaining)} / md.
             </span>
           </div>
         </>
