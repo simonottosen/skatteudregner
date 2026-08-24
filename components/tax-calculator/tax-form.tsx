@@ -1,7 +1,9 @@
 "use client"
 
-import { Accordion, AccordionItem } from "@carbon/react"
+import { useState } from "react"
+import { Accordion, AccordionItem, InlineNotification } from "@carbon/react"
 import { PdfUpload } from "./pdf-upload"
+import { PAYSLIP_ASSUMED_FIELDS } from "@/lib/paycheck/to-tax-input"
 import { PersonalInfoSection } from "./sections/personal-info-section"
 import { IncomeSection } from "./sections/income-section"
 import { DeductionsSection } from "./sections/deductions-section"
@@ -32,11 +34,31 @@ export function TaxForm({
   toggleProperty,
   onImport,
 }: TaxFormProps) {
+  // Tracks the last import's document kind: a forskudsopgørelse fills the three
+  // fields below, a payslip cannot, so the notice must clear when one follows
+  // the other.
+  const [payslipImported, setPayslipImported] = useState(false)
+
   return (
     <>
-      <PdfUpload onImport={onImport} />
+      <PdfUpload
+        onImport={(data, kind) => {
+          setPayslipImported(kind === "loenseddel")
+          onImport(data)
+        }}
+      />
       <Accordion>
         <AccordionItem title="Personlige oplysninger" open>
+          {payslipImported && (
+            <InlineNotification
+              className="mb-4 max-w-full"
+              kind="info"
+              lowContrast
+              title="Tjek disse tre felter"
+              subtitle={`${PAYSLIP_ASSUMED_FIELDS.join(", ")} står ikke på en lønseddel. Værdierne herunder er standardværdier — ikke noget vi har læst fra din PDF — og de påvirker skatten mærkbart.`}
+              onCloseButtonClick={() => setPayslipImported(false)}
+            />
+          )}
           <PersonalInfoSection input={input} setField={setField} />
         </AccordionItem>
 
