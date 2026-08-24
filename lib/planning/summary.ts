@@ -80,9 +80,19 @@ function pensionSteadyStateAge(state: PlanningState): number {
       )
 }
 
-/** Run the simulation and extract the headline figures (nominal + today's-kr). */
-export function summarize(state: PlanningState): PlanningSummary {
-  const result = simulatePlanning(state)
+/**
+ * Extract the headline figures from an already-simulated result. Split out of
+ * `summarize` so a caller that needs both the summary and the points (the
+ * planning page charts them) pays for one Monte Carlo run, not two.
+ *
+ * `result` must be the *nominal* output of `simulatePlanning(state)` — the
+ * real-terms figures are derived here, so passing a `toTodayKroner` result
+ * would deflate twice.
+ */
+export function summarizeResult(
+  result: PlanningResult,
+  state: PlanningState
+): PlanningSummary {
   const { inflation } = state.assumptions
   const dual = (age: number, value: number): DualAmount => ({
     nominal: value,
@@ -111,4 +121,9 @@ export function summarize(state: PlanningState): PlanningSummary {
       ? dual(pensionPoint.age, pensionPoint.retirementIncome)
       : { nominal: 0, real: 0 },
   }
+}
+
+/** Run the simulation and extract the headline figures (nominal + today's-kr). */
+export function summarize(state: PlanningState): PlanningSummary {
+  return summarizeResult(simulatePlanning(state), state)
 }

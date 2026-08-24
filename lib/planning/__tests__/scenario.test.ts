@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest"
 import { DEFAULT_PLANNING_STATE, type PlanningState } from "../types"
 import { applyScenario } from "../scenario"
 import { normalizePlanning, normalizeScenarioChanges } from "../normalize"
-import { summarize } from "../summary"
+import { summarize, summarizeResult } from "../summary"
+import { simulatePlanning } from "../simulate"
 
 function makeState(overrides: Partial<PlanningState> = {}): PlanningState {
   return {
@@ -184,5 +185,64 @@ describe("summarize", () => {
     expect(summarize(boosted).netWorthAtRetirement.nominal).toBeGreaterThan(
       summarize(base).netWorthAtRetirement.nominal
     )
+  })
+})
+
+/**
+ * The planning page charts the scenario as a second curve, so it needs the
+ * scenario's *points* as well as its summary. These pin the contract that lets
+ * it simulate once and derive both, instead of running the Monte Carlo twice.
+ */
+describe("summarizeResult", () => {
+  const base = makeState({
+    currentAge: 35,
+    endAge: 90,
+    retirementAge: 65,
+    startInvestments: 100_000,
+    monthlyContribution: 10_000,
+    annualSpending: 300_000,
+  })
+
+  it("matches summarize() on the same state", () => {
+    // The Monte Carlo is seeded, so this is an exact equality, not an epsilon.
+    expect(summarizeResult(simulatePlanning(base), base)).toEqual(summarize(base))
+  })
+
+  it("deflates with the scenario's own inflation, not the base plan's", () => {
+    // A scenario may override inflation. Summarizing its result against the
+    // *base* state would then report today's-kroner figures deflated at the
+    // wrong rate — the base and scenario curves would not be comparable.
+    const scenario = applyScenario(base, {
+      assumptionOverrides: { inflation: 0.05 },
+    })
+    const result = simulatePlanning(scenario)
+    const correct = summarizeResult(result, scenario)
+    const wrong = summarizeResult(result, base)
+
+    expect(correct.netWorthAtRetirement.nominal).toBe(
+      wrong.netWorthAtRetirement.nominal
+    )
+    // 5 % over the 30 years to retirement deflates much harder than 2 %.
+    expect(correct.netWorthAtRetirement.real).toBeLessThan(
+      wrong.netWorthAtRetirement.real
+    )
+    const years = base.retirementAge - base.currentAge
+    expect(correct.netWorthAtRetirement.real).toBeCloseTo(
+      correct.netWorthAtRetirement.nominal / Math.pow(1.05, years),
+      6
+    )
+  })
+
+  it("keeps the scenario's points aligned age-for-age with the base plan", () => {
+    // The chart joins the two series on age. `currentAge`/`endAge` are not
+    // overridable, so the join is total — no scenario point goes unplotted.
+    const scenario = applyScenario(base, {
+      overrides: { monthlyContribution: 15_000 },
+    })
+    const baseAges = simulatePlanning(base).points.map((p) => p.age)
+    const scenarioAges = simulatePlanning(scenario).points.map((p) => p.age)
+    expect(scenarioAges).toEqual(baseAges)
+    expect(baseAges[0]).toBe(base.currentAge)
+    expect(baseAges.at(-1)).toBe(base.endAge)
   })
 })
