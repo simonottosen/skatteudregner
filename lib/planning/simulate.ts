@@ -443,14 +443,25 @@ function onePersonPensionByYear(
   return out
 }
 
-/**
- * Household net retirement income per year, after personal income tax on the
- * taxable pension (applied per person), plus tax-free aldersopsparing.
- */
-function pensionNetIncomeByYear(state: PlanningState): {
+/** A household's yearly pension income, before and after tax. */
+interface PensionIncome {
+  /** After personal income tax, plus the tax-free aldersopsparing lump. */
   net: number[]
+  /** The personal income tax itself. */
   tax: number[]
-} {
+  /**
+   * Gross taxable pension income, both partners summed — i.e. the household's
+   * personlig indkomst, which ejendomsskattelovens § 26 grades the pensioner
+   * nedslag against.
+   */
+  taxable: number[]
+}
+
+/**
+ * Household retirement income per year, with personal income tax on the taxable
+ * pension applied per person and the tax-free aldersopsparing added back.
+ */
+function pensionNetIncomeByYear(state: PlanningState): PensionIncome {
   const years = Math.max(0, Math.round(state.endAge - state.currentAge))
   const married = !state.pension.single
   const inflation = state.assumptions.inflation
@@ -462,6 +473,7 @@ function pensionNetIncomeByYear(state: PlanningState): {
 
   const net = new Array<number>(years + 1).fill(0)
   const tax = new Array<number>(years + 1).fill(0)
+  const taxableByYear = new Array<number>(years + 1).fill(0)
   for (let y = 0; y <= years; y++) {
     const ctx: TaxContext = { t: y, inflation, profile: state.tax, married }
     for (let i = 0; i < incomes.length; i++) {
@@ -470,10 +482,11 @@ function pensionNetIncomeByYear(state: PlanningState): {
       const spouseTaxable = married ? incomes[1 - i][y].taxable : undefined
       const t = pensionIncomeTax(taxable, ctx, spouseTaxable)
       tax[y] += t
+      taxableByYear[y] += taxable
       net[y] += taxable - t + taxFree
     }
   }
-  return { net, tax }
+  return { net, tax, taxable: taxableByYear }
 }
 
 /**
@@ -482,15 +495,15 @@ function pensionNetIncomeByYear(state: PlanningState): {
  * random draw for a Monte Carlo run. Returns per-year totals (length = years+1,
  * including the starting year).
  *
- * `incomeByYear` is the gross retirement income; from the retirement age the
- * portfolio takes in (retirement income − annual spending) instead of a
- * contribution, i.e. it draws down when pensions don't cover spending.
+ * From the retirement age the portfolio takes in (retirement income − annual
+ * spending) instead of a contribution, i.e. it draws down when pensions don't
+ * cover spending.
  */
 function runPath(
   state: PlanningState,
   investmentReturnFor: (yearIndex: number) => number,
-  /** Net (after-tax) household pension income per year. */
-  netPensionByYear: number[],
+  /** The household's pension income per year, net and gross. */
+  pension: PensionIncome,
   /** What the mortgage costs, modelled and as the budget already saw it. */
   mortgage: MortgageCost,
   /** Per-year home-price shock (0 for the deterministic path). */
@@ -623,7 +636,22 @@ function runPath(
         s.homeValue,
         s.homeValue * landFraction,
         age,
-        taxCtx
+        taxCtx,
+        {
+          // Zero before retirement: the plan models a contribution (the budget's
+          // surplus), never a salary, so there is no working-year income to give.
+          // Harmless while retirement starts at or after folkepensionsalderen,
+          // which is the only time the nedslag this grades is granted at all.
+          personalIncome: pension.taxable[y],
+          // The aktieindkomst the year has produced by this point. Under lager
+          // that is the whole of it — the gain is taxed as it accrues, sold or
+          // not. An ASK gain is not aktieindkomst at all (aktiesparekontoloven
+          // taxes it on its own), and a realisation-mode drawdown is realised
+          // below, sized by the very charge being computed here, so folding it
+          // in would make the two mutually recursive.
+          positiveStockIncome:
+            state.investmentTaxMode === "lager" ? Math.max(0, gain) : 0,
+        }
       )
     }
     if (!retired) {
@@ -667,7 +695,7 @@ function runPath(
         debtServiceThisYear +
         propertyTaxThisYear +
         borrowedInterestThisYear
-      const surplus = netPensionByYear[y] - need
+      const surplus = pension.net[y] - need
       if (surplus >= 0) {
         // A surplus first repays any equity borrowed earlier for spending
         // (restoring home equity), then tops up investments. Only the borrowed
@@ -762,16 +790,14 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
   } = state.assumptions
   const meanReturn = investmentReturn - investmentFee
 
-  // Net (after-tax) retirement income + pension income tax per year
-  // (deterministic — shared by all paths).
-  const { net: netPensionByYear, tax: pensionTaxByYear } =
-    pensionNetIncomeByYear(state)
+  // Retirement income per year (deterministic — shared by all paths).
+  const pension = pensionNetIncomeByYear(state)
 
   // Also deterministic: the loan schedule doesn't care about return draws.
   const mortgage = mortgageCost(state, years)
 
   // Deterministic path (median + growth sources).
-  const deterministic = runPath(state, () => meanReturn, netPensionByYear, mortgage)
+  const deterministic = runPath(state, () => meanReturn, pension, mortgage)
 
   // Monte Carlo paths for the bands (only investment return is randomised).
   const mcNetWorthByYear: number[][] = Array.from({ length: years + 1 }, () => [])
@@ -785,7 +811,7 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
     const path = runPath(
       state,
       () => meanReturn + volatility * nextNormal(rng),
-      netPensionByYear,
+      pension,
       mortgage,
       () => housingVolatility * nextNormal(rng)
     )
@@ -854,9 +880,9 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
       contributionYoY: deterministic.contributions[y],
       housingGainYoY: deterministic.housingGains[y],
       investmentGainYoY: deterministic.investmentGains[y],
-      retirementIncome: netPensionByYear[y],
+      retirementIncome: pension.net[y],
       taxPaid:
-        pensionTaxByYear[y] +
+        pension.tax[y] +
         deterministic.investmentTax[y] +
         deterministic.propertyTax[y],
       spending: deterministic.spending[y],

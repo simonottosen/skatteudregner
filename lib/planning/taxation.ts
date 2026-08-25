@@ -106,17 +106,36 @@ export function stockGainTax(nominalGain: number, ctx: TaxContext): number {
 }
 
 /**
+ * The year's income for ejendomsskattelovens § 26, which grades the § 25
+ * pensioner nedslag down by 5 % of the part above a grundbeløb. Nominal kroner,
+ * deflated here along with everything else.
+ *
+ * A household total: § 26 grades spouses who are married and cohabiting on their
+ * *combined* amounts, and `ctx.married` already picks the matching grundbeløb.
+ */
+export interface PensionerIncomeYear {
+  /**
+   * Personlig indkomst. Pension payouts carry no AM-bidrag, so the gross amount
+   * is the personal income — the same quantity `pensionIncomeTax` is handed.
+   */
+  personalIncome: number
+  /** Positiv aktieindkomst realised or accrued in the year. */
+  positiveStockIncome: number
+}
+
+/**
  * Annual property holding tax (ejendomsværdiskat + grundskyld) on the owned
  * home, via the real engine. `age` lets the pensioner reduction apply once the
- * household is retired. Values are deflated to real terms (forsigtigheds-
- * princippet ≈ 80 % of value) so the rate brackets index with inflation, then
- * the resulting tax is re-inflated.
+ * household is retired, and `income` grades it under § 26. Values are deflated
+ * to real terms (forsigtighedsprincippet ≈ 80 % of value) so the rate brackets
+ * index with inflation, then the resulting tax is re-inflated.
  */
 export function propertyHoldingTax(
   nominalHomeValue: number,
   nominalLandValue: number,
   age: number,
-  ctx: TaxContext
+  ctx: TaxContext,
+  income: PensionerIncomeYear
 ): number {
   if (nominalHomeValue <= 0) return 0
   const muni = getMunicipality(ctx.profile.municipality, ctx.profile.year)
@@ -139,15 +158,17 @@ export function propertyHoldingTax(
     ownershipShare: 1,
     personalTaxDiscount: 0,
   }
-  // § 26 grades the pensioner nedslag down by 5 % of income above a grundbeløb,
-  // but the year's income — pension payouts, drawdowns, lager gains — is
-  // assembled in simulate.ts and never reaches this call, so there is nothing
-  // honest to pass but zero. Every retired household therefore keeps the full
-  // § 25 nedslag, which is what this function has always done. Tracked in #32.
   const realTax = calculatePropertyTax(
     input,
     getRates(ctx.profile.year),
-    { personalIncome: 0, positiveCapitalIncome: 0, positiveStockIncome: 0 },
+    {
+      personalIncome: Math.max(0, income.personalIncome) / f,
+      // The projection holds no interest-bearing assets, and the one piece of
+      // kapitalindkomst it does model — mortgage interest — is a deduction, so
+      // the net is negative and § 26 counts only the positive part.
+      positiveCapitalIncome: 0,
+      positiveStockIncome: Math.max(0, income.positiveStockIncome) / f,
+    },
     muni
   ).totalPropertyTax
   return realTax * f

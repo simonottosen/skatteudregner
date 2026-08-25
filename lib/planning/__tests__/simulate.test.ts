@@ -1705,6 +1705,90 @@ describe("simulatePlanning", () => {
     })
   })
 
+  /**
+   * Ejendomsskatteloven § 26 takes 5 % of the household's income above a
+   * grundbeløb off the § 25 pensioner nedslag. That income is assembled here and
+   * not in `propertyHoldingTax`, so until it was passed along every retired
+   * household kept the whole 6.000 kr. however large its payouts were — an error
+   * of up to 6.000 kr. a year, for the rest of the plan, always optimistic.
+   *
+   * Both cases below clear the grundbeløb by enough to lose the nedslag outright,
+   * so the gap is the whole reduction and does not restate the graduation.
+   */
+  describe("the pensioner nedslag is graded on the year's income", () => {
+    const retiredHomeowner = (overrides: Partial<PlanningState>) =>
+      simulatePlanning(
+        makeState({
+          currentAge: 70,
+          endAge: 72,
+          retirementAge: 70,
+          startInvestments: 5_000_000,
+          monthlyContribution: 0,
+          annualSpending: 0,
+          homeValue: 4_000_000,
+          landValue: 2_000_000,
+          mortgageBalance: 0,
+          includePropertyTax: true,
+          propertyTaxInBudget: false,
+          assumptions: {
+            ...DEFAULT_PLANNING_STATE.assumptions,
+            investmentReturn: 0,
+            investmentFee: 0,
+            housingReturn: 0,
+            inflation: 0,
+            volatility: 0,
+          },
+          pension: { ...DEFAULT_PLANNING_STATE.pension, includeFolkepension: false },
+          ...overrides,
+        })
+      ).points.find((p) => p.age === 71)!
+
+    it("counts the year's pension payout", () => {
+      const withRatepension = (ratepensionBalance: number) =>
+        retiredHomeowner({
+          pension: {
+            person1: {
+              ...DEFAULT_PENSION_PERSON,
+              ratepensionBalance,
+              folkepensionAge: 70,
+            },
+            person2: { ...DEFAULT_PENSION_PERSON },
+            pensionReturn: 0,
+            ratepensionYears: 10,
+            single: true,
+            includeFolkepension: false, // isolate the ratepension payout
+          },
+        })
+      const modest = withRatepension(0)
+      const large = withRatepension(10_000_000) // ~1 mio. kr. a year
+      expect(modest.retirementIncome).toBe(0)
+      expect(large.retirementIncome).toBeGreaterThan(0)
+      expect(large.propertyTax - modest.propertyTax).toBe(6_000)
+    })
+
+    it("counts a lager-taxed pot's gain, which is income whether or not it is sold", () => {
+      // Same pot and same gain either way; only the tax model differs. Under
+      // realisation nothing is sold, so the year produces no aktieindkomst at
+      // all — the household keeps the nedslag it is entitled to.
+      const gains = (investmentTaxMode: PlanningState["investmentTaxMode"]) =>
+        retiredHomeowner({
+          investmentTaxMode,
+          startInvestments: 10_000_000,
+          assumptions: {
+            ...DEFAULT_PLANNING_STATE.assumptions,
+            investmentReturn: 0.1, // ~1 mio. kr. of gain a year
+            investmentFee: 0,
+            housingReturn: 0,
+            inflation: 0,
+            volatility: 0,
+          },
+        })
+      expect(
+        gains("lager").propertyTax - gains("realisation").propertyTax
+      ).toBe(6_000)
+    })
+  })
+
   it("widens the net-worth band when home prices are volatile", () => {
     const base = {
       currentAge: 40,
