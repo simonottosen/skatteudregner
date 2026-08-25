@@ -10,6 +10,40 @@
  * Monthly contributions stop at the retirement age. The deterministic path also
  * tracks where each year's growth comes from — contributions, home appreciation
  * (+ mortgage paydown), and investment returns — for the growth-sources view.
+ *
+ * ## Nominal vs. real
+ *
+ * **The projection is nominal throughout.** Every krone this module emits is in
+ * the kroner of the year it falls in, and `toTodayKroner` in `summary.ts` is the
+ * single place that deflates them for display. Nothing here is pre-deflated, and
+ * the two things that look like exceptions are not:
+ *
+ * - `taxation.ts` deflates internally, taxes in today's kroner, and re-inflates,
+ *   which is how it keeps bracket creep out of a 40-year projection. It hands
+ *   back a nominal tax like everything else.
+ * - The FI test compares nominal investments against nominal spending in the
+ *   *same* year (`annualSpending × (1+inflation)^y × 1/SWR`), so the inflation
+ *   factor cancels. `safeWithdrawalRate` therefore keeps its conventional real
+ *   meaning even though both sides are nominal.
+ *
+ * Amounts that grow with inflation: spending, the cash buffer, pension
+ * contributions. The contribution grows at its own `contributionGrowth` instead,
+ * since a household's saving rate tracks its pay, not the CPI.
+ *
+ * Amounts that are nominally level, on purpose: the mortgage service. A
+ * fixed-rate realkredit annuity is a flat number of kroner for its whole term,
+ * so it shrinks in real terms year over year — which is exactly what the loan
+ * does in real life. Not deflating it is the *point*, not an oversight.
+ *
+ * `mortgage.budgeted` is the odd one out: it is the payment the budget deducted
+ * *today*, held flat for the whole horizon while the contribution it is added
+ * back to grows. That is deliberate. The contribution is the budget's surplus
+ * *after* the mortgage, so handing the payment back reconstructs the pre-mortgage
+ * surplus; the figure being reconstructed is a today's-kroner one, and inflating
+ * it would credit the household with kroner its budget never showed. The
+ * consequence to be aware of: over a long horizon the handed-back payment is a
+ * shrinking share of a growing contribution, so the reconciliation matters less
+ * and less the further out the projection runs.
  */
 
 import type {
