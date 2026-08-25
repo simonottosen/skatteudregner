@@ -43,7 +43,7 @@ import type {
   ScenarioChanges,
 } from "@/lib/planning/types"
 import { applyScenario } from "@/lib/planning/scenario"
-import { summarize, type PlanningSummary } from "@/lib/planning/summary"
+import { summarizeResult, type PlanningSummary } from "@/lib/planning/summary"
 import { formatCompactDKK, formatDKK } from "@/lib/format"
 import { PlanningChart, type WealthView } from "./planning-chart"
 import { MoneyInput } from "./money-input"
@@ -288,10 +288,24 @@ export function PlanningOverview() {
 
   const activeScenario =
     state.scenarios.find((s) => s.id === activeScenarioId) ?? null
-  const baseSummary = useMemo(() => summarize(state), [state])
-  const scenarioSummary = useMemo(
-    () => (activeScenario ? summarize(applyScenario(state, activeScenario.changes)) : null),
+  // The scenario's own state, simulated once and then used for both the
+  // comparison figures and the dashed curve on the chart — `summarizeResult`
+  // takes the run we already have rather than starting a second one.
+  const scenarioState = useMemo(
+    () => (activeScenario ? applyScenario(state, activeScenario.changes) : null),
     [state, activeScenario]
+  )
+  const scenarioResult = useMemo(
+    () => (scenarioState ? simulatePlanning(scenarioState) : null),
+    [scenarioState]
+  )
+  const baseSummary = useMemo(() => summarizeResult(result, state), [result, state])
+  const scenarioSummary = useMemo(
+    () =>
+      scenarioResult && scenarioState
+        ? summarizeResult(scenarioResult, scenarioState)
+        : null,
+    [scenarioResult, scenarioState]
   )
 
   // Optionally deflate to today's kroner for display.
@@ -301,6 +315,19 @@ export function PlanningOverview() {
         ? toTodayKroner(result, state.assumptions.inflation, state.currentAge)
         : result,
     [result, real, state.assumptions.inflation, state.currentAge]
+  )
+  // Deflated with the *scenario's* inflation — a scenario may change it, and
+  // both curves must land in the same today's kroner to be comparable.
+  const displayScenarioResult: PlanningResult | null = useMemo(
+    () =>
+      scenarioResult && scenarioState && real
+        ? toTodayKroner(
+            scenarioResult,
+            scenarioState.assumptions.inflation,
+            scenarioState.currentAge
+          )
+        : scenarioResult,
+    [scenarioResult, scenarioState, real]
   )
 
   const retirementPoint =
@@ -519,8 +546,13 @@ export function PlanningOverview() {
           })()}
           <PlanningChart
             result={displayResult}
+            scenarioResult={displayScenarioResult}
+            scenarioName={activeScenario?.name}
+            events={state.events}
+            scenarioEvents={activeScenario?.changes.addEvents}
             view={view}
             retirementAge={state.retirementAge}
+            scenarioRetirementAge={scenarioState?.retirementAge}
             real={real}
             currentAge={state.currentAge}
             currentYear={currentYear}
