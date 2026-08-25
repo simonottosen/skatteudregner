@@ -132,18 +132,17 @@ describe("propertyHoldingTax progression", () => {
     expect(edge).toBe(46_920)
   })
 
-  it("adds the high rate above 11.500.000 (2025)", () => {
+  it("switches to the high rate above 11.500.000 (2025)", () => {
     const r = getRates(2025)
     const edge = at(2025, 11_500_000)
     const above = at(2025, 12_000_000)
-    // Above the threshold both rates apply to the excess.
+    // Ejendomsskatteloven § 22, stk. 2: the excess is taxed at 14 ‰ *instead
+    // of* 5,1 ‰, so the two rates must not stack.
     expect(above - edge).toBeCloseTo(
-      500_000 *
-        ASSESSMENT_FACTOR *
-        (r.ejendomsvaerdiSkatLowRate + r.ejendomsvaerdiSkatHighRate),
+      500_000 * ASSESSMENT_FACTOR * r.ejendomsvaerdiSkatHighRate,
       0
     )
-    expect(above).toBe(54_560)
+    expect(above).toBe(52_520)
     // The marginal rate must actually step up at the threshold, not before.
     expect(above - edge).toBeGreaterThan(edge - at(2025, 11_000_000))
   })
@@ -154,7 +153,7 @@ describe("propertyHoldingTax progression", () => {
     expect(at(2026, 11_258_750)).toBe(45_936)
     // Same valuation, different year → different tax, because 11.5M is above
     // the 2026 threshold but exactly at the 2025 one.
-    expect(at(2026, 11_500_000)).toBe(49_622)
+    expect(at(2026, 11_500_000)).toBe(48_638)
     expect(at(2025, 11_500_000)).toBe(46_920)
   })
 

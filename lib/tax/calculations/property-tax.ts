@@ -31,10 +31,13 @@ function calculateEjendomsvaerdiSkat(
     ? rates.ejendomsvaerdiSkatHighRate - rates.ejendomsvaerdiSkatPre1998Rate
     : rates.ejendomsvaerdiSkatHighRate
 
-  let tax = lowRate * basis * share
-  if (basis > rates.ejendomsvaerdiSkatThreshold) {
-    tax +=
-      highRate * (basis - rates.ejendomsvaerdiSkatThreshold) * share
+  // Ejendomsskatteloven § 22, stk. 2: the low rate covers only the part of the
+  // basis that does not exceed the progression limit, and the high rate applies
+  // to the rest *instead of* — not on top of — the low one.
+  const progressionLimit = rates.ejendomsvaerdiSkatThreshold
+  let tax = lowRate * Math.min(basis, progressionLimit) * share
+  if (basis > progressionLimit) {
+    tax += highRate * (basis - progressionLimit) * share
   }
 
   // Pre-1998 purchase extra reduction
