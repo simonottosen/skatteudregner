@@ -4,10 +4,12 @@ import { Accordion, AccordionItem } from "@carbon/react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { formatDKK, formatPercent } from "@/lib/format"
+import { provenanceSummary, type TaxProvenance } from "@/lib/tax/provenance"
 import type { TaxResult } from "@/lib/tax/types"
 
 interface TaxResultsProps {
   result: TaxResult
+  provenance: TaxProvenance
 }
 
 function ResultLine({
@@ -33,8 +35,9 @@ function ResultLine({
   )
 }
 
-export function TaxResults({ result }: TaxResultsProps) {
+export function TaxResults({ result, provenance }: TaxResultsProps) {
   const grossIncome = result.amBasis + result.insuranceBasis + result.nonAmIncome
+  const source = provenanceSummary(provenance)
 
   return (
     <div className="space-y-4">
@@ -42,6 +45,9 @@ export function TaxResults({ result }: TaxResultsProps) {
       <Card className="border-t-4 border-[var(--cds-border-interactive)]">
         <CardHeader className="pb-3">
           <CardTitle className="text-lg">Resultat</CardTitle>
+          {source && (
+            <p className="text-muted-foreground text-xs">{source}</p>
+          )}
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-2 gap-4">

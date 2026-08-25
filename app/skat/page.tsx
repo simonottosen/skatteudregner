@@ -16,6 +16,8 @@ export default function SkatPage() {
     setPropertyField,
     toggleProperty,
     importData,
+    provenance,
+    dismissImportNotice,
     hasPerson2,
     activeIndex,
     setActiveIndex,
@@ -96,11 +98,13 @@ export default function SkatPage() {
             setPropertyField={setPropertyField}
             toggleProperty={toggleProperty}
             onImport={importData}
+            provenance={provenance}
+            dismissImportNotice={dismissImportNotice}
           />
         </div>
 
         <div className="w-full lg:w-96 lg:shrink-0">
-          <TaxResults result={result} />
+          <TaxResults result={result} provenance={provenance} />
         </div>
       </div>
 
