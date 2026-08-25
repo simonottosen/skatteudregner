@@ -18,8 +18,9 @@ import {
   mortgageMonthlyTotal,
   type MortgageState,
 } from "@/lib/budget/mortgage"
+import { normalizeSavings, type SavingsConfig } from "@/lib/budget/savings-split"
 
-export type { BudgetCategory, CategoryKind }
+export type { BudgetCategory, CategoryKind, SavingsConfig }
 
 export interface BudgetItem {
   id: string
@@ -63,6 +64,12 @@ export interface BudgetState {
   assumptions: BudgetAssumptions
   /** Realkredit mortgage — kept separate from the categorised expenses. */
   mortgage: MortgageState
+  /**
+   * How the couple's savings is attributed between joint and personal goals.
+   * Absent means "follow the expense split", i.e. exactly what every budget did
+   * before the block existed — so no migration is needed beyond leaving it out.
+   */
+  savings?: SavingsConfig
 }
 
 export const DEFAULT_ASSUMPTIONS: BudgetAssumptions = {
@@ -192,9 +199,10 @@ function normalizeMortgage(value: unknown): MortgageState {
  * Accepts the legacy array shape, the v2 object shape, and v3–v6.
  *
  * A single stateless pass, not a chain of per-version steps — so the v6 kind
- * tagging happens inside {@link normalizeCategories}. It adds no items and
- * removes none, and nothing it does touches an amount, so an existing budget
- * round-trips with unchanged totals.
+ * tagging happens inside {@link normalizeCategories} and the optional savings
+ * block is simply read where it is. It adds no items and removes none, and
+ * nothing it does touches an amount, so an existing budget round-trips with
+ * unchanged totals.
  */
 export function normalizeBudget(raw: unknown): BudgetState {
   const base = defaultBudgetState()
@@ -212,6 +220,7 @@ export function normalizeBudget(raw: unknown): BudgetState {
       categories: normalizeCategories(o.categories),
       assumptions: normalizeAssumptions(o.assumptions),
       mortgage: normalizeMortgage(o.mortgage),
+      savings: normalizeSavings(o.savings),
     }
   }
   return base

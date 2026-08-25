@@ -459,6 +459,80 @@ describe("the v5 → v6 migration", () => {
   })
 })
 
+describe("the optional savings block", () => {
+  /** A couple as persisted before the block existed. */
+  const withoutBlock = {
+    version: 6,
+    mode: "shared",
+    person1: { name: "A", incomeSource: "manual", manualIncome: 28000, items: [] },
+    person2: { name: "B", incomeSource: "manual", manualIncome: 22000, items: [] },
+    sharedItems: [
+      { id: "a", label: "Husleje", amount: 12000, categoryId: "bolig" },
+      { id: "b", label: "Opsparing", amount: 3000, categoryId: "opsparing" },
+    ],
+    categories: [
+      { id: "bolig", name: "Bolig" },
+      { id: "opsparing", name: "Opsparing" },
+      { id: "oevrigt", name: "Øvrigt" },
+    ],
+  }
+
+  it("stays absent for a budget that never carried one", () => {
+    // Persisting a default block would rewrite every stored budget on load.
+    const s = normalizeBudget(withoutBlock)
+    expect(s.savings).toBeUndefined()
+    expect(JSON.parse(JSON.stringify(s))).not.toHaveProperty("savings")
+  })
+
+  it("round-trips such a budget with identical figures", () => {
+    const once = normalizeBudget(withoutBlock)
+    const twice = normalizeBudget(JSON.parse(JSON.stringify(once)))
+    expect(twice).toEqual(once)
+    expect(computeBudgetSummary(twice, 0, 0)).toEqual(
+      computeBudgetSummary(once, 0, 0)
+    )
+  })
+
+  it("leaves budgetExpenses and remaining alone whatever the split says", () => {
+    // hooks/use-planning derives monthlyContribution from `remaining` and
+    // annualSpending from `budgetExpenses`, and lib/mcp/tools ships both over
+    // the wire. Redefining either would break the remote server with no compile
+    // error, so the split may only divide figures, never restate them.
+    const base = computeBudgetSummary(normalizeBudget(withoutBlock), 0, 0)
+    expect(base.budgetExpenses).toBe(15000)
+    expect(base.remaining).toBe(35000)
+
+    for (const savings of [
+      { split: "with-expenses" },
+      { split: "shared" },
+      {
+        split: "individual",
+        sharedPortion: 4000,
+        allocation: { p1: 2000, p2: 1000 },
+        manual: true,
+      },
+    ]) {
+      const s = normalizeBudget({ ...withoutBlock, savings })
+      expect(computeBudgetSummary(s, 0, 0)).toEqual(base)
+    }
+  })
+
+  it("round-trips a stated split unchanged", () => {
+    const stated = {
+      ...withoutBlock,
+      savings: {
+        split: "individual",
+        sharedPortion: 4000,
+        allocation: { p1: 2000, p2: 1000 },
+        manual: true,
+      },
+    }
+    const once = normalizeBudget(stated)
+    expect(once.savings).toEqual(stated.savings)
+    expect(normalizeBudget(JSON.parse(JSON.stringify(once)))).toEqual(once)
+  })
+})
+
 describe("computeResultSummary", () => {
   it("sums gross/tax/net and derives effective rate + monthly", () => {
     const r = computeResultSummary([

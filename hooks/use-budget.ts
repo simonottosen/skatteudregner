@@ -6,6 +6,11 @@ import { useTax } from "@/components/tax-provider"
 import { UNCATEGORIZED_ID, suggestCategoryKind } from "@/lib/budget/categories"
 import type { MortgageState } from "@/lib/budget/mortgage"
 import {
+  attributeSavings,
+  withSavingsPatch,
+  type SavingsConfig,
+} from "@/lib/budget/savings-split"
+import {
   computeBudgetSummary,
   defaultBudgetState,
   newBudgetId as newId,
@@ -33,6 +38,7 @@ export type {
   PersonConfig,
   BudgetAssumptions,
   BudgetState,
+  SavingsConfig,
 }
 
 const STORAGE_KEY = "skatteberegner:budget-items"
@@ -184,10 +190,21 @@ export function useBudgetController() {
   const setMortgage = (patch: Partial<MortgageState>) =>
     setState((p) => ({ ...p, mortgage: { ...p.mortgage, ...patch } }))
 
+  // The block is absent until the first edit, so a household that never touches
+  // it keeps persisting exactly the blob it did before.
+  const setSavings = (patch: Partial<SavingsConfig>) =>
+    setState((p) => ({ ...p, savings: withSavingsPatch(p.savings, patch) }))
+
   // --- derived values -----------------------------------------------------
   const derived = useMemo(
     () => computeBudgetSummary(state, monthlyNetIncome, person2MonthlyNetIncome),
     [state, monthlyNetIncome, person2MonthlyNetIncome]
+  )
+  // Divides the household figure `derived` already produced; it never changes
+  // it, so nothing downstream of the summary can shift because of a split.
+  const savingsAttribution = useMemo(
+    () => attributeSavings(state, derived),
+    [state, derived]
   )
 
   return {
@@ -195,10 +212,12 @@ export function useBudgetController() {
     monthlyNetIncome,
     person2MonthlyNetIncome,
     ...derived,
+    savingsAttribution,
     setMode,
     setPersonField,
     setAssumptions,
     setMortgage,
+    setSavings,
     addItem,
     updateItem,
     removeItem,
