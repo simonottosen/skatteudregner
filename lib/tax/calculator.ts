@@ -70,6 +70,14 @@ export function calculateTax(input: TaxInput): TaxResult {
   const propertyResult = calculatePropertyTax(
     input,
     rates,
+    // Ejendomsskatteloven § 26's beskatningsgrundlag, sourced from steps 2, 3
+    // and 7 rather than rebuilt from the raw fields, so the pensioner nedslag
+    // is graded on the same income the rest of the return is taxed on.
+    {
+      personalIncome: piResult.personalIncome,
+      positiveCapitalIncome: capitalResult.positiveCapitalIncome,
+      positiveStockIncome: stockResult.stockIncome,
+    },
     municipality,
     summerMunicipality,
   )

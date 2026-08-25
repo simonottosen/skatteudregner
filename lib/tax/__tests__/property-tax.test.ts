@@ -36,6 +36,9 @@ const taxIn = (year: TaxYear, input: Partial<TaxInput>) =>
   calculatePropertyTax(
     makeInput({ year, ...input }),
     getRates(year),
+    // §§ 22-24 do not consult income. The §§ 25-26 cases that do go through
+    // `calculateTax`, which assembles the real § 26 base.
+    { personalIncome: 0, positiveCapitalIncome: 0, positiveStockIncome: 0 },
     getMunicipality("København", year)!,
     getMunicipality("Odsherred", year),
   )
@@ -238,12 +241,22 @@ describe("Pre-1998 nedslag (ejendomsskatteloven §§ 23-24)", () => {
 
 /**
  * § 25 gives 6.000 kr. per helårsbolig and 2.000 kr. per fritidsbolig once the
- * owner or a cohabiting spouse has reached folkepensionsalderen. § 26 then
- * reduces "nedslaget efter § 25" by 5 % of the income above the grundbeløb.
+ * owner *or a cohabiting spouse* has reached folkepensionsalderen. § 26 then
+ * reduces "nedslaget efter § 25" by 5 % of the taxpayer's personlige indkomst
+ * plus positiv kapitalindkomst plus positiv aktieindkomst above a grundbeløb —
+ * for a cohabiting couple, the spouses' combined amounts.
+ *
+ * The income cases run through `calculateTax` rather than `calculatePropertyTax`,
+ * because the § 26 base is assembled in the calculator out of the personal-,
+ * capital- and stock-income steps. Handing the property step a base built by the
+ * test would exercise the arithmetic and leave that wiring — the part that was
+ * wrong — unchecked.
  */
 describe("Pensionistnedslag (ejendomsskatteloven §§ 25-26)", () => {
   const pensioner = { birthDate: "1940-01-01" }
   const threshold = rates2025.ejendomsvaerdiSkatPensionerIncomeThresholdSingle
+  const marriedThreshold =
+    rates2025.ejendomsvaerdiSkatPensionerIncomeThresholdMarried
 
   // Den juridiske vejledning C.H.4.2.5.1, the folkepensionist table, before any
   // income graduation. Same properties as the §§ 23-24 table above.
@@ -270,28 +283,123 @@ describe("Pensionistnedslag (ejendomsskatteloven §§ 25-26)", () => {
     property: dwelling(3_000_000),
     summerHouse: sommerhus(1_500_000),
   }
-  const withoutPensioner = () => in2025(bothProperties).totalEjendomsvaerdiSkat
+
+  /** Total ejendomsværdiskat as /skat renders it, i.e. through the calculator. */
+  const evsFor = (input: Partial<TaxInput>) =>
+    calculateTax(makeInput({ year: 2025, ...input })).totalEjendomsvaerdiSkat
+
+  /** 8.000 kr. of § 25 nedslag, less whatever § 26 claws back. */
+  const withoutPensioner = evsFor(bothProperties)
+  const nedslag = (input: Partial<TaxInput>) =>
+    withoutPensioner - evsFor({ ...bothProperties, ...pensioner, ...input })
+  const nedslagForCouple = (input: Partial<TaxInput>) =>
+    nedslag({ married: true, transferIncome: marriedThreshold, ...input })
 
   it("spends the § 26 income graduation once across two properties", () => {
-    const withPensioner = in2025({
-      ...bothProperties,
-      ...pensioner,
-      transferIncome: threshold + 40_000,
-    }).totalEjendomsvaerdiSkat
-
     // 6.000 + 2.000 kr. of nedslag, less 5 % of the 40.000 kr. above the
     // grundbeløb — one clawback for the person, not one per property.
-    expect(withoutPensioner() - withPensioner).toBe(8_000 - 0.05 * 40_000)
+    expect(nedslag({ transferIncome: threshold + 40_000 })).toBe(
+      8_000 - 0.05 * 40_000,
+    )
   })
 
   it("never lets the § 26 graduation become a surcharge", () => {
     // 5 % of 1.000.000 kr. far exceeds the 8.000 kr. it reduces.
+    expect(nedslag({ transferIncome: threshold + 1_000_000 })).toBe(0)
+  })
+
+  it("grants the nedslag on a cohabiting spouse's age alone", () => {
+    // § 25, stk. 1: "den skattepligtige *eller* dennes samlevende ægtefælle".
+    // Born 1975, so folkepensionsalderen is 70 and the owner is nowhere near it.
+    const younger = { birthDate: "1975-01-01", married: true }
+    expect(evsFor({ ...bothProperties, ...younger })).toBe(withoutPensioner)
     expect(
-      in2025({
+      withoutPensioner -
+        evsFor({
+          ...bothProperties,
+          ...younger,
+          spouseOverRetirementAge: true,
+        }),
+    ).toBe(8_000)
+  })
+
+  it("needs an actual ægtefælle for the spouse's age to count", () => {
+    // A stale flag left behind by unticking "Gift" must not buy a nedslag.
+    expect(
+      evsFor({
         ...bothProperties,
-        ...pensioner,
-        transferIncome: threshold + 1_000_000,
-      }).totalEjendomsvaerdiSkat,
-    ).toBe(withoutPensioner())
+        birthDate: "1975-01-01",
+        married: false,
+        spouseOverRetirementAge: true,
+      }),
+    ).toBe(withoutPensioner)
+  })
+
+  it("grades a couple on the spouses' combined personlige indkomst", () => {
+    // The pensioner alone sits exactly at the couple's grundbeløb, so every
+    // krone the spouse earns is above it: 5 % of 60.000 kr. = 3.000 kr.
+    expect(nedslagForCouple({})).toBe(8_000)
+    expect(nedslagForCouple({ spousePersonalIncome: 60_000 })).toBe(
+      8_000 - 3_000,
+    )
+  })
+
+  it("counts positiv kapitalindkomst in the § 26 base", () => {
+    expect(nedslagForCouple({ interestIncome: 40_000 })).toBe(8_000 - 2_000)
+    // § 26 adds "positiv kapitalindkomst", so a negative net is not a deduction
+    // from the personlige indkomst already in the base. Measured above the
+    // grundbeløb, where the floor on the graduation cannot hide the difference.
+    expect(
+      nedslagForCouple({
+        transferIncome: marriedThreshold + 40_000,
+        mortgageInterest: 40_000,
+      }),
+    ).toBe(8_000 - 2_000)
+  })
+
+  it("counts the couple's combined positiv aktieindkomst", () => {
+    // Gains are aktieindkomst without being udbytte, so nothing is exempt.
+    expect(nedslagForCouple({ stockSaleGains: 40_000 })).toBe(8_000 - 2_000)
+    expect(nedslagForCouple({ spouseStockIncome: 40_000 })).toBe(8_000 - 2_000)
+  })
+
+  it("leaves the § 26 udbytte-slice out of the base", () => {
+    // § 26, stk. 1 counts "positiv aktieindkomst bortset fra udbytteindkomst op
+    // til 5.000 kr.", 10.000 kr. for a couple. Both cases leave 40.000 kr. above
+    // the grundbeløb, so the wider couple's slice is what makes them agree.
+    expect(nedslag({ transferIncome: threshold, danishDividends: 45_000 })).toBe(
+      8_000 - 0.05 * 40_000,
+    )
+    expect(nedslagForCouple({ danishDividends: 50_000 })).toBe(
+      8_000 - 0.05 * 40_000,
+    )
+    // The slice is a ceiling on the udbytte that escapes, not a flat deduction
+    // from the aktieindkomst: 4.000 kr. of udbytte exempts 4.000 kr., not 10.000.
+    expect(
+      nedslagForCouple({ danishDividends: 4_000, stockSaleGains: 40_000 }),
+    ).toBe(8_000 - 0.05 * 40_000)
+  })
+
+  it("grades on personlig indkomst, not on a subset of the income fields", () => {
+    // otherNonAmIncome is personlig indkomst; personalIncomeDeductions comes off
+    // it. The old base saw neither.
+    expect(nedslag({ otherNonAmIncome: threshold + 40_000 })).toBe(
+      8_000 - 2_000,
+    )
+    expect(
+      nedslag({
+        transferIncome: threshold + 40_000,
+        personalIncomeDeductions: 40_000,
+      }),
+    ).toBe(8_000)
+  })
+
+  it("measures wage income after AM-bidrag", () => {
+    // A-indkomst enters personlig indkomst net of the 8 %, so a gross wage just
+    // above the grundbeløb is below it once AM-bidrag is gone.
+    const gross = Math.round(threshold * 1.05)
+    expect(gross).toBeGreaterThan(threshold)
+    expect(gross * (1 - rates2025.amBidragRate)).toBeLessThan(threshold)
+    expect(nedslag({ workIncome: gross })).toBe(8_000)
   })
 })

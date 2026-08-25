@@ -11,8 +11,33 @@ export interface PropertyTaxResult {
   totalPropertyTax: number
 }
 
+/**
+ * The taxpayer's own share of the § 26 beskatningsgrundlag, handed over from the
+ * steps that already computed it. Re-deriving personal, capital and stock income
+ * from the raw input fields here would create a second definition of each, free
+ * to drift from the one the rest of the engine taxes — which is exactly how this
+ * base came to be a sum of five salary fields.
+ */
+export interface PensionerIncomeBasis {
+  /** Personlig indkomst, net of AM-bidrag and personal-income deductions. */
+  personalIncome: number
+  /** Positiv nettokapitalindkomst; zero when the net is negative. */
+  positiveCapitalIncome: number
+  /** Positiv aktieindkomst. */
+  positiveStockIncome: number
+}
+
 /** Ejendomsskatteloven § 24, stk. 1. The rate carries no indexation clause. */
 const PRE_1998_EXTRA_RATE = 0.0021
+
+/**
+ * Ejendomsskatteloven § 26, stk. 1 keeps udbytteindkomst up to 5.000 kr. out of
+ * the base, 10.000 kr. for a couple. Unlike the grundbeløb in the same stykke
+ * these two amounts carry no "(2010-niveau)" tag, so stk. 2's regulation by
+ * personskattelovens § 20 does not reach them.
+ */
+const PENSIONER_DIVIDEND_EXEMPTION = 5000
+const PENSIONER_DIVIDEND_EXEMPTION_MARRIED = 10000
 
 function hasBasis(
   property: PropertyInput | undefined,
@@ -64,6 +89,46 @@ function calculateEjendomsvaerdiSkat(
 }
 
 /**
+ * The § 26, stk. 1 beskatningsgrundlag: personlig indkomst plus positiv
+ * kapitalindkomst plus positiv aktieindkomst, less the exempt slice of
+ * udbytteindkomst. A taxpayer who is married and cohabiting at the end of the
+ * year is graded on the spouses' *combined* amounts, which is why the spouse's
+ * figures join the sum.
+ *
+ * TaxInput models no spouse kapitalindkomst and no spouse udbytteindkomst, so
+ * those two parts of a couple's total are the taxpayer's alone. The gaps pull in
+ * opposite directions — a missing spouse capital income understates the base,
+ * a missing spouse dividend understates the exempt slice — and neither can be
+ * closed without new input fields.
+ */
+function graduationBase(
+  input: TaxInput,
+  income: PensionerIncomeBasis,
+): number {
+  const spousePersonalIncome = input.married
+    ? (input.spousePersonalIncome ?? 0)
+    : 0
+  const spouseStockIncome = input.married ? (input.spouseStockIncome ?? 0) : 0
+  const exemptDividends = Math.min(
+    input.danishDividends + input.foreignDividends,
+    input.married
+      ? PENSIONER_DIVIDEND_EXEMPTION_MARRIED
+      : PENSIONER_DIVIDEND_EXEMPTION,
+  )
+  const stockIncome = Math.max(
+    0,
+    income.positiveStockIncome + spouseStockIncome - exemptDividends,
+  )
+
+  return (
+    income.personalIncome +
+    spousePersonalIncome +
+    income.positiveCapitalIncome +
+    stockIncome
+  )
+}
+
+/**
  * The share of the § 25 pensioner nedslag that survives § 26's income
  * graduation.
  *
@@ -74,11 +139,18 @@ function calculateEjendomsvaerdiSkat(
  * as a factor spends the graduation exactly once while leaving each property
  * with its own statutory amount.
  */
-function pensionerNedslagFactor(input: TaxInput, rates: TaxRates): number {
+function pensionerNedslagFactor(
+  input: TaxInput,
+  rates: TaxRates,
+  income: PensionerIncomeBasis,
+): number {
   const age = calculateAge(input.birthDate, input.year)
-  if (age < calculateRetirementAge(input.birthDate) && !input.singleParent) {
-    return 0
-  }
+  const ownerQualifies = age >= calculateRetirementAge(input.birthDate)
+  // § 25, stk. 1 asks whether "den skattepligtige eller dennes samlevende
+  // ægtefælle" has reached folkepensionsalderen, so a younger owner qualifies on
+  // the spouse's age alone.
+  const spouseQualifies = input.married && !!input.spouseOverRetirementAge
+  if (!ownerQualifies && !spouseQualifies && !input.singleParent) return 0
 
   const fullNedslag =
     (hasBasis(input.property) ? rates.ejendomsvaerdiSkatPensionerReduction : 0) +
@@ -87,18 +159,13 @@ function pensionerNedslagFactor(input: TaxInput, rates: TaxRates): number {
       : 0)
   if (fullNedslag === 0) return 0
 
-  const totalIncome =
-    input.workIncome +
-    input.honorarIncome +
-    input.otherAmIncome +
-    input.transferIncome +
-    input.suIncome
   const threshold = input.married
     ? rates.ejendomsvaerdiSkatPensionerIncomeThresholdMarried
     : rates.ejendomsvaerdiSkatPensionerIncomeThresholdSingle
   const graduation = Math.max(
     0,
-    (totalIncome - threshold) * rates.ejendomsvaerdiSkatPensionerIncomeRate,
+    (graduationBase(input, income) - threshold) *
+      rates.ejendomsvaerdiSkatPensionerIncomeRate,
   )
 
   return Math.max(0, fullNedslag - graduation) / fullNedslag
@@ -107,11 +174,12 @@ function pensionerNedslagFactor(input: TaxInput, rates: TaxRates): number {
 export function calculatePropertyTax(
   input: TaxInput,
   rates: TaxRates,
+  income: PensionerIncomeBasis,
   primaryMunicipality: MunicipalityData,
   summerMunicipality?: MunicipalityData,
 ): PropertyTaxResult {
   // Ejendomsværdiskat
-  const nedslagFactor = pensionerNedslagFactor(input, rates)
+  const nedslagFactor = pensionerNedslagFactor(input, rates, income)
 
   const ejendomsvaerdiSkatPrimary = Math.round(
     calculateEjendomsvaerdiSkat(
