@@ -11,6 +11,9 @@
 import { modelledMortgageMonthly, simulatePlanning } from "./simulate"
 import type { PlanningPoint, PlanningResult, PlanningState } from "./types"
 import { formatDKK } from "@/lib/format"
+import type { SavingsAttribution } from "@/lib/budget/savings-split"
+import { savingsSplitView, type SavingsFigure } from "@/lib/budget/savings-view"
+import type { BudgetMode } from "@/lib/budget/state"
 
 /** Inflation deflator for a given age relative to the simulation start. */
 function deflator(inflation: number, age: number, currentAge: number): number {
@@ -165,5 +168,81 @@ export function mortgageBudgetNotice(
       `${formatDKK(monthly)}/md. bliver derfor trukket fra din månedlige ` +
       "opsparing. Slå realkreditlånet til på budgetsiden, hvis din opsparing " +
       "allerede er opgjort efter ydelsen.",
+  }
+}
+
+/**
+ * Everything the panel prints, so no Danish is left in the `.tsx` for a test to
+ * miss. Shaped like {@link mortgageBudgetNotice}'s return rather than passing
+ * the budget page's view through: the planning page has no use for the person
+ * labels, and the warning needs a heading to sit under.
+ */
+export interface PlanningSavingsSplit {
+  title: string
+  figures: SavingsFigure[]
+  notes: string[]
+  warning?: { title: string; subtitle: string }
+}
+
+/**
+ * The joint/personal breakdown of the monthly saving, for /planlaegning.
+ *
+ * It divides — it does not project. Giving each person their own FI date would
+ * mean a second and third simulation, and `MC_RUNS = 400` already reruns on
+ * every keystroke, plus ~48 more for the FI solver — a perceptible cost for an
+ * answer that differs only in cross-person tax interactions this model does not
+ * have. The figures need no {@link DualAmount} either: at the simulation's start
+ * age the deflator is 1, so nominal and today's kroner are the same number.
+ *
+ * Wraps {@link savingsSplitView} rather than restating its rows, so the two
+ * pages cannot drift apart on what "fælles" or "ikke fordelt" means.
+ *
+ * Returns `null` unless the couple actively picked the "hver sit" split. The
+ * other splits carry no personal amount — only the household figure the page
+ * already prints above it, or the untouched default — and a panel with no new
+ * fact on it is just furniture.
+ */
+export function planningSavingsSplit(input: {
+  attribution: SavingsAttribution
+  mode: BudgetMode
+  p1Name: string
+  p2Name: string
+  mortgageMonthly: number
+  /** What the plan actually contributes; see the reconciliation note below. */
+  monthlyContribution: number
+}): PlanningSavingsSplit | null {
+  if (input.mode === "single" || input.attribution.split !== "individual")
+    return null
+  const view = savingsSplitView(input)
+  if (!view) return null
+
+  const notes = [
+    ...view.notes,
+    "Fremskrivningen regner på husstandens samlede opsparing. Fordelingen " +
+      "viser, hvem beløbet tilhører — den giver ikke hver af jer sin egen " +
+      "fremskrivning.",
+  ]
+
+  // The plan contributes the budget's *unallocated* leftover, while the split
+  // divides everything the household saves — the two differ by whatever sits in
+  // a savings category, and by any amount typed into the field by hand. Saying
+  // so beats printing a breakdown that visibly fails to add up to the figure in
+  // the input directly above it.
+  const planned = Math.round(input.monthlyContribution)
+  const attributed = Math.round(input.attribution.total)
+  if (planned !== attributed)
+    notes.push(
+      `Planen regner med ${formatDKK(planned)}/md. i opsparing, mens ` +
+        "fordelingen her viser budgettets samlede opsparing på " +
+        `${formatDKK(attributed)}/md. Beløbene summer derfor ikke til planens tal.`
+    )
+
+  return {
+    title: "Opsparing — fælles og hver for sig",
+    figures: view.figures,
+    notes,
+    warning: view.warning
+      ? { title: "Mere fordelt end sparet op", subtitle: view.warning }
+      : undefined,
   }
 }

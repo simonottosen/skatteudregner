@@ -22,6 +22,7 @@ import {
 } from "@/lib/planning/types"
 import { mortgageFromBudget } from "@/lib/planning/from-budget"
 import { newId, normalizePlanning } from "@/lib/planning/normalize"
+import { planningSavingsSplit } from "@/lib/planning/summary"
 import { folkepensionAge } from "@/lib/planning/pension"
 import { getMunicipality } from "@/lib/tax/municipalities"
 
@@ -140,6 +141,28 @@ export function usePlanning() {
     input.churchMember,
     budget.state.mode,
   ])
+
+  // Divides the projection's input; it never triggers a second simulation. See
+  // `planningSavingsSplit` for why the split is displayed rather than projected.
+  const savingsSplit = useMemo(
+    () =>
+      planningSavingsSplit({
+        attribution: savingsAttribution,
+        mode: budget.state.mode,
+        p1Name: budget.state.person1.name,
+        p2Name: budget.state.person2.name,
+        mortgageMonthly,
+        monthlyContribution: state.monthlyContribution,
+      }),
+    [
+      savingsAttribution,
+      budget.state.mode,
+      budget.state.person1.name,
+      budget.state.person2.name,
+      mortgageMonthly,
+      state.monthlyContribution,
+    ]
+  )
 
   // Sync to Supabase when signed in (debounced + flush on leave).
   useRemoteSync<PlanningState>("planning", state, (remote) => {
@@ -328,15 +351,8 @@ export function usePlanning() {
      * built on a saving of zero and no hint that the premise is impossible.
      */
     budgetRemaining,
-    /**
-     * How the budget page splits the household's monthly saving between joint
-     * and personal goals. The projection stays a single household simulation
-     * and is divided by these shares afterwards — simulating each person
-     * separately would double a 400-run Monte Carlo that already reruns on
-     * every keystroke, for an answer that differs only in cross-person tax
-     * interactions this model does not have.
-     */
-    savingsAttribution,
+    /** The joint/personal savings breakdown; null when there is none to show. */
+    savingsSplit,
     patch,
     setAssumption,
     setPension,
