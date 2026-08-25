@@ -70,17 +70,23 @@ async function parsePayslip(file: File, unreadable: string): Promise<ParseOutcom
   }
 
   const { data, filledLabels, warnings } = payslipToTaxInput(parsed.data)
-  // The parser's own warnings matter here too — a partially recognised payslip
-  // still imports, and the user should know which figures were shaky.
-  const allWarnings = [...parsed.warnings, ...warnings]
   if (filledLabels.length === 0) {
-    return { ok: false, message: allWarnings[0] ?? unreadable }
+    // Nothing was filled, so payslipToTaxInput refused the document and its
+    // first warning says why. A parser warning about one shaky field would
+    // otherwise bury that reason.
+    return { ok: false, message: warnings[0] ?? parsed.warnings[0] ?? unreadable }
   }
 
+  // The parser's own warnings matter here too — a partially recognised payslip
+  // still imports, and the user should know which figures were shaky.
   return {
     ok: true,
     data,
-    summary: [`Udfyldt: ${filledLabels.join(", ")}.`, ...allWarnings].join(" "),
+    summary: [
+      `Udfyldt: ${filledLabels.join(", ")}.`,
+      ...parsed.warnings,
+      ...warnings,
+    ].join(" "),
   }
 }
 
