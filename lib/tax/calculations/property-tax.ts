@@ -148,9 +148,12 @@ function pensionerNedslagFactor(
   const ownerQualifies = age >= calculateRetirementAge(input.birthDate)
   // § 25, stk. 1 asks whether "den skattepligtige eller dennes samlevende
   // ægtefælle" has reached folkepensionsalderen, so a younger owner qualifies on
-  // the spouse's age alone.
+  // the spouse's age alone. Age is the whole test: the only other group § 25
+  // reaches is the længstlevende ægtefælle of stk. 3, which TaxInput does not
+  // model. Enlig forsørger earns relief under ligningslovens § 9 J and in grøn
+  // check, neither of which reaches ejendomsværdiskatten.
   const spouseQualifies = input.married && !!input.spouseOverRetirementAge
-  if (!ownerQualifies && !spouseQualifies && !input.singleParent) return 0
+  if (!ownerQualifies && !spouseQualifies) return 0
 
   const fullNedslag =
     (hasBasis(input.property) ? rates.ejendomsvaerdiSkatPensionerReduction : 0) +
