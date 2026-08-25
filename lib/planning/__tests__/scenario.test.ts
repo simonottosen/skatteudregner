@@ -2,8 +2,12 @@ import { describe, it, expect } from "vitest"
 import { DEFAULT_PLANNING_STATE, type PlanningState } from "../types"
 import { applyScenario } from "../scenario"
 import { normalizePlanning, normalizeScenarioChanges } from "../normalize"
-import { summarize, summarizeResult } from "../summary"
-import { simulatePlanning } from "../simulate"
+import { mortgageBudgetNotice, summarize, summarizeResult } from "../summary"
+import { modelledMortgageMonthly, simulatePlanning } from "../simulate"
+import { formatDKK } from "@/lib/format"
+// The budget's own quote, so the notice's figure is pinned to what the user
+// will actually see on /budget rather than to a restatement of the planning code.
+import { DEFAULT_MORTGAGE, mortgageMonthlyTotal } from "@/lib/budget/mortgage"
 
 function makeState(overrides: Partial<PlanningState> = {}): PlanningState {
   return {
@@ -244,5 +248,91 @@ describe("summarizeResult", () => {
     expect(scenarioAges).toEqual(baseAges)
     expect(baseAges[0]).toBe(base.currentAge)
     expect(baseAges.at(-1)).toBe(base.endAge)
+  })
+})
+
+describe("mortgageBudgetNotice", () => {
+  /**
+   * The plan cannot tell whether a contribution was quoted before or after the
+   * household's realkredit payment, and the two readings differ by a five-figure
+   * sum a year. Rather than pick one silently, the projection charges what its
+   * own inputs describe and this says so. These pin the trigger: a notice that
+   * fires on a consistent plan is noise, and one that stays quiet on an
+   * inconsistent plan is the original bug with extra steps.
+   */
+  const inconsistent = makeState({
+    homeValue: 3_000_000,
+    mortgageBalance: 2_000_000,
+    mortgageRate: 0.04,
+    mortgageTermYears: 20,
+    mortgageBudgetedMonthly: 0,
+  })
+
+  it("fires on a loan the budget never deducted for", () => {
+    const n = mortgageBudgetNotice(inconsistent)
+    expect(n).not.toBeNull()
+    expect(n!.title).toContain("budget")
+  })
+
+  it("quotes the payment the projection actually charges", () => {
+    // The number in the copy has to be the number in the cash flow, or the
+    // notice sends the user to check a figure that appears nowhere.
+    const monthly = modelledMortgageMonthly(inconsistent)
+    expect(monthly).toBeGreaterThan(0)
+    expect(mortgageBudgetNotice(inconsistent)!.subtitle).toContain(
+      formatDKK(monthly)
+    )
+  })
+
+  it("quotes the same monthly figure the budget would", () => {
+    // The notice tells the user to go and switch the module on, so its number
+    // has to be the one they will see there — same units, same components.
+    // Derived from the budget's own quote, not from the planning code, so a
+    // per-year figure dressed up as "/md." cannot pass.
+    const monthly = modelledMortgageMonthly({
+      ...inconsistent,
+      mortgageBidragssats: 0.006,
+    })
+    expect(monthly).toBeCloseTo(
+      mortgageMonthlyTotal({
+        ...DEFAULT_MORTGAGE,
+        enabled: true,
+        homeValue: 2_500_000,
+        ltv: 0.8, // the same 2 mio. loan
+        interestRate: 0.04,
+        remainingYears: 20,
+        bidragssats: 0.006,
+      }),
+      6
+    )
+    // …and bidrag is a real part of it, not a rounding difference.
+    expect(monthly - modelledMortgageMonthly(inconsistent)).toBeCloseTo(
+      (2_000_000 * 0.006) / 12,
+      6
+    )
+  })
+
+  it("stays quiet when the budget does deduct a payment", () => {
+    expect(
+      mortgageBudgetNotice({ ...inconsistent, mortgageBudgetedMonthly: 12_119 })
+    ).toBeNull()
+  })
+
+  it("stays quiet when there is no loan", () => {
+    expect(mortgageBudgetNotice({ ...inconsistent, mortgageBalance: 0 })).toBeNull()
+  })
+
+  it("stays quiet when the loan costs nothing to hold", () => {
+    // Interest-free, fee-free and afdragsfri for its whole term: the projection
+    // charges zero, so there is nothing for the budget to have deducted.
+    // `mortgageBalance` on its own is not evidence of a payment.
+    expect(
+      mortgageBudgetNotice({
+        ...inconsistent,
+        mortgageRate: 0,
+        mortgageBidragssats: 0,
+        mortgageInterestOnlyYears: inconsistent.mortgageTermYears,
+      })
+    ).toBeNull()
   })
 })

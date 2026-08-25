@@ -312,6 +312,14 @@ export function normalizePlanning(raw: unknown): PlanningState {
     ),
     mortgageBalance: clampNum(o.mortgageBalance, 0, 0),
     mortgageRate: clampNum(o.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2),
+    // Same bound as the budget's own bidragssats (`lib/budget/state.ts`), so a
+    // rate that survives there survives the trip into a plan unchanged.
+    mortgageBidragssats: clampNum(
+      o.mortgageBidragssats,
+      DEFAULT_PLANNING_STATE.mortgageBidragssats,
+      0,
+      0.05
+    ),
     mortgageTermYears,
     // Afdragsfrihed sits inside the loan term, so a longer period than the loan
     // itself describes a loan that is never repaid.
@@ -320,6 +328,14 @@ export function normalizePlanning(raw: unknown): PlanningState {
       DEFAULT_PLANNING_STATE.mortgageInterestOnlyYears,
       0,
       mortgageTermYears
+    ),
+    // A plan saved before this field existed has no opinion about it, and the
+    // safe reading of silence is "nothing was deducted": crediting a payment the
+    // budget may never have made is the failure this field was added to stop.
+    mortgageBudgetedMonthly: clampNum(
+      o.mortgageBudgetedMonthly,
+      DEFAULT_PLANNING_STATE.mortgageBudgetedMonthly,
+      0
     ),
     monthlyContribution: clampNum(o.monthlyContribution, 0, 0),
     annualSpending: clampNum(o.annualSpending, 0, 0),

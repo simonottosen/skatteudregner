@@ -43,7 +43,11 @@ import type {
   ScenarioChanges,
 } from "@/lib/planning/types"
 import { applyScenario } from "@/lib/planning/scenario"
-import { summarizeResult, type PlanningSummary } from "@/lib/planning/summary"
+import {
+  mortgageBudgetNotice,
+  summarizeResult,
+  type PlanningSummary,
+} from "@/lib/planning/summary"
 import { formatCompactDKK, formatDKK } from "@/lib/format"
 import { PlanningChart, type WealthView } from "./planning-chart"
 import { MoneyInput } from "./money-input"
@@ -285,6 +289,7 @@ export function PlanningOverview() {
   const [editingScenario, setEditingScenario] = useState<PlanningScenario | null>(null)
 
   const result = useMemo(() => simulatePlanning(state), [state])
+  const mortgageNotice = mortgageBudgetNotice(state)
 
   const activeScenario =
     state.scenarios.find((s) => s.id === activeScenarioId) ?? null
@@ -714,6 +719,16 @@ export function PlanningOverview() {
               subtitle={`Dine udgifter overstiger din indkomst med ${formatDKK(
                 Math.abs(Math.round(planning.budgetRemaining))
               )}/md. Månedlig opsparing er derfor sat til 0, så fremskrivningen viser hverken opsparing eller det underskud, der reelt tærer på formuen. Ret budgettet, eller indtast selv et beløb herunder.`}
+            />
+          )}
+          {mortgageNotice && (
+            <InlineNotification
+              className="max-w-full"
+              kind="warning"
+              lowContrast
+              hideCloseButton
+              title={mortgageNotice.title}
+              subtitle={mortgageNotice.subtitle}
             />
           )}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
