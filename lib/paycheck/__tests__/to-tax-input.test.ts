@@ -3,6 +3,7 @@ import { parseLoenseddelFromText } from "@/lib/pdf/parse-loenseddel"
 import { createDefaultInput } from "@/lib/tax/defaults"
 import { calculateTax } from "@/lib/tax/calculator"
 import { payslipToTaxInput } from "../to-tax-input"
+import { TAX_RATES } from "@/lib/tax/rates"
 import { ASSUMED_FIELDS, assumedFields, withImport, EMPTY_PROVENANCE } from "@/lib/tax/provenance"
 import { comparePaycheckToCalculation } from "../compare"
 import type { PaycheckData } from "../types"
@@ -177,14 +178,20 @@ describe("payslipToTaxInput", () => {
     expect(warnings.some((w) => w.includes("fremskrevet"))).toBe(true)
   })
 
-  it("keeps the current tax year when the payslip predates the supported rates", () => {
-    const { data, warnings } = payslipToTaxInput(
+  it("imports nothing from a payslip that predates the supported rates", () => {
+    // Importing the amounts without the year would tax them under whichever
+    // year is selected, which approximates nothing.
+    const { data, filledLabels, warnings } = payslipToTaxInput(
       makePaycheck({ year: 2019, payPeriod: { from: "2019-06-01", to: "2019-06-30" } })
     )
-    expect(data.year).toBeUndefined()
-    expect(warnings.some((w) => w.includes("2019"))).toBe(true)
-    // The money still imports — only the year is refused.
-    expect(data.workIncome).toBe(600_000)
+    expect(data).toEqual({})
+    // The upload UI treats an empty label list as a failure and shows warnings[0].
+    expect(filledLabels).toEqual([])
+    expect(warnings[0]).toContain("2019")
+    // The years come from TAX_RATES, so adding one cannot leave the copy stale.
+    for (const year of Object.keys(TAX_RATES)) {
+      expect(warnings[0]).toContain(year)
+    }
   })
 
   it("imports nothing from a payslip with an unreadable pay period", () => {

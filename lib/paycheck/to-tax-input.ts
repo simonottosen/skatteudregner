@@ -37,6 +37,22 @@ function isSupportedYear(year: number): year is TaxYear {
   return year in TAX_RATES
 }
 
+/**
+ * The year list is derived from `TAX_RATES` — a hardcoded one would go stale the
+ * day a year is added, and nothing would catch it. `Intl.ListFormat` keeps the
+ * grammar right whether that leaves one year or five.
+ */
+function unsupportedYearMessage(year: number): string {
+  const supported = new Intl.ListFormat("da-DK", {
+    style: "long",
+    type: "conjunction",
+  }).format(Object.keys(TAX_RATES))
+  return (
+    `Lønsedlen er fra ${year}, men beregneren dækker kun ${supported}. ` +
+    "Beløbene ville blive beregnet efter et forkert års satser, så lønsedlen er ikke importeret."
+  )
+}
+
 /** Scale a year-to-date total up to a full year. */
 export function annualize(ytd: number, monthsElapsed: number): number {
   return Math.round(ytd * (12 / monthsElapsed))
@@ -85,14 +101,20 @@ export function payslipToTaxInput(paycheck: PaycheckData): PayslipImportResult {
     }
   }
 
-  if (isSupportedYear(paycheck.year)) {
-    data.year = paycheck.year
-    filledLabels.push("Indkomstår")
-  } else {
-    warnings.push(
-      `Lønsedlen er fra ${paycheck.year}, som beregneren ikke dækker. Indkomståret er uændret.`
-    )
+  // The amounts are refused along with the year. The reducer merges only defined
+  // keys, so importing them without the year would tax them under whichever year
+  // is selected — and personfradrag, topskattegrænse and the AM-rate all move
+  // between years, so that figure approximates nothing.
+  if (!isSupportedYear(paycheck.year)) {
+    return {
+      data,
+      filledLabels,
+      warnings: [unsupportedYearMessage(paycheck.year)],
+    }
   }
+
+  data.year = paycheck.year
+  filledLabels.push("Indkomstår")
 
   // Every field falls back independently: a payslip can carry a year-to-date
   // total for one figure and only the current period for another.
