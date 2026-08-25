@@ -302,7 +302,7 @@ function SavingsSplitPanel({ view }: { view: PlanningSavingsSplit }) {
               ? "text-error"
               : "text-success"
           return (
-            <div key={f.label}>
+            <div key={f.id}>
               <p className="text-muted-foreground text-xs">{f.label}</p>
               <p className={`text-xl font-bold ${tone}`}>{formatDKK(f.amount)}</p>
             </div>

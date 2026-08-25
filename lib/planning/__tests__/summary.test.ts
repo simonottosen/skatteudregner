@@ -68,10 +68,10 @@ const HVER_SIT: SavingsConfig = {
 describe("planningSavingsSplit", () => {
   it("names both people and their stated amounts", () => {
     expect(splitFor({ savings: HVER_SIT })?.figures).toEqual([
-      { label: "Fælles opsparing", amount: 6000 },
-      { label: "Anna", amount: 12000 },
-      { label: "Bo", amount: 8000 },
-      { label: "Opsparing i alt / md.", amount: 26000, highlight: true },
+      { id: "shared", label: "Fælles opsparing", amount: 6000 },
+      { id: "p1", label: "Anna", amount: 12000 },
+      { id: "p2", label: "Bo", amount: 8000 },
+      { id: "total", label: "Opsparing i alt / md.", amount: 26000, highlight: true },
     ])
   })
 
@@ -85,10 +85,10 @@ describe("planningSavingsSplit", () => {
       savings: { split: "individual", sharedPortion: 6000 },
     })
     expect(view?.figures).toEqual([
-      { label: "Fælles opsparing", amount: 6000 },
-      { label: "Anna", amount: 10000 },
-      { label: "Bo", amount: 10000 },
-      { label: "Opsparing i alt / md.", amount: 26000, highlight: true },
+      { id: "shared", label: "Fælles opsparing", amount: 6000 },
+      { id: "p1", label: "Anna", amount: 10000 },
+      { id: "p2", label: "Bo", amount: 10000 },
+      { id: "total", label: "Opsparing i alt / md.", amount: 26000, highlight: true },
     ])
   })
 
@@ -96,7 +96,11 @@ describe("planningSavingsSplit", () => {
     const view = splitFor({
       savings: { ...HVER_SIT, allocation: { p1: 1000, p2: 1000 } },
     })
-    expect(view?.figures).toContainEqual({ label: "Ikke fordelt", amount: 18000 })
+    expect(view?.figures).toContainEqual({
+      id: "slack",
+      label: "Ikke fordelt",
+      amount: 18000,
+    })
   })
 
   it("warns rather than quietly capping an over-commitment", () => {
@@ -104,6 +108,7 @@ describe("planningSavingsSplit", () => {
       savings: { ...HVER_SIT, sharedPortion: 20000 },
     })
     expect(view?.figures).toContainEqual({
+      id: "over",
       label: "Fordelt for meget",
       amount: -14000,
     })
@@ -155,6 +160,7 @@ describe("planningSavingsSplit", () => {
     expect(note).toContain("26.000 kr.")
     // The rows still describe the household's own savings, not the plan's.
     expect(view?.figures).toContainEqual({
+      id: "total",
       label: "Opsparing i alt / md.",
       amount: 26000,
       highlight: true,

@@ -45,9 +45,9 @@ describe("savingsBreakdownView", () => {
   it("shows consumption, the allocation and the real saving", () => {
     const view = savingsBreakdownView(summary({ savings: 3000 }))
     expect(view?.figures).toEqual([
-      { label: "Forbrug", amount: 5000 },
-      { label: "Afsat til opsparing", amount: 3000 },
-      { label: "Reel opsparing / md.", amount: 25000, highlight: true },
+      { id: "consumption", label: "Forbrug", amount: 5000 },
+      { id: "allocated", label: "Afsat til opsparing", amount: 3000 },
+      { id: "real", label: "Reel opsparing / md.", amount: 25000, highlight: true },
     ])
   })
 
@@ -106,6 +106,7 @@ function splitView(
   opts: {
     mode?: "single" | "shared" | "separate"
     savings?: SavingsConfig
+    p1Name?: string
     p2Name?: string
   } = {}
 ) {
@@ -114,7 +115,7 @@ function splitView(
   const state = normalizeBudget({
     mode,
     person1: {
-      name: "Anna",
+      name: opts.p1Name ?? "Anna",
       incomeSource: "manual",
       manualIncome: 28000,
       items: separate
@@ -179,16 +180,16 @@ describe("savingsSplitView", () => {
     // A second row restating the same 26.000 under "i alt" would only invite
     // the reader to add the two together.
     expect(splitView()?.figures).toEqual([
-      { label: "Fælles opsparing", amount: 26000, highlight: true },
+      { id: "shared", label: "Fælles opsparing", amount: 26000, highlight: true },
     ])
   })
 
   it("names each person when the budget is split per person", () => {
     const view = splitView({ mode: "separate" })
     expect(view?.figures).toEqual([
-      { label: "Anna", amount: 16000 },
-      { label: "Bo", amount: 10000 },
-      { label: "Opsparing i alt / md.", amount: 26000, highlight: true },
+      { id: "p1", label: "Anna", amount: 16000 },
+      { id: "p2", label: "Bo", amount: 10000 },
+      { id: "total", label: "Opsparing i alt / md.", amount: 26000, highlight: true },
     ])
   })
 
@@ -196,15 +197,56 @@ describe("savingsSplitView", () => {
     expect(splitView({ mode: "separate", p2Name: "  " })?.p2Label).toBe("Person 2")
   })
 
+  it("keeps the row ids apart when both partners answer to the same name", () => {
+    // Names are free text with no uniqueness rule, so two Annas is a budget a
+    // couple can actually type in.
+    const view = splitView({ mode: "separate", p2Name: "Anna" })
+    expect(view?.figures.map((f) => f.label)).toEqual([
+      "Anna",
+      "Anna",
+      "Opsparing i alt / md.",
+    ])
+    expect(view?.figures.map((f) => f.id)).toEqual(["p1", "p2", "total"])
+  })
+
+  it("keeps the row ids apart when a name is spelt like a fixed row", () => {
+    // Both personal rows are named after a row the split adds itself, so every
+    // label on the card appears twice.
+    const view = splitView({
+      p1Name: "Fælles opsparing",
+      p2Name: "Ikke fordelt",
+      savings: {
+        split: "individual",
+        sharedPortion: 5000,
+        allocation: { p1: 1000, p2: 1000 },
+        manual: true,
+      },
+    })
+    expect(view?.figures.map((f) => f.label)).toEqual([
+      "Fælles opsparing",
+      "Fælles opsparing",
+      "Ikke fordelt",
+      "Ikke fordelt",
+      "Opsparing i alt / md.",
+    ])
+    expect(view?.figures.map((f) => f.id)).toEqual([
+      "shared",
+      "p1",
+      "p2",
+      "slack",
+      "total",
+    ])
+  })
+
   it("splits the remainder evenly until two amounts are stated", () => {
     const view = splitView({
       savings: { split: "individual", sharedPortion: 5000 },
     })
     expect(view?.figures).toEqual([
-      { label: "Fælles opsparing", amount: 5000 },
-      { label: "Anna", amount: 10500 },
-      { label: "Bo", amount: 10500 },
-      { label: "Opsparing i alt / md.", amount: 26000, highlight: true },
+      { id: "shared", label: "Fælles opsparing", amount: 5000 },
+      { id: "p1", label: "Anna", amount: 10500 },
+      { id: "p2", label: "Bo", amount: 10500 },
+      { id: "total", label: "Opsparing i alt / md.", amount: 26000, highlight: true },
     ])
     expect(view?.warning).toBeUndefined()
   })
@@ -219,11 +261,11 @@ describe("savingsSplitView", () => {
       },
     })
     expect(view?.figures).toEqual([
-      { label: "Fælles opsparing", amount: 5000 },
-      { label: "Anna", amount: 1000 },
-      { label: "Bo", amount: 1000 },
-      { label: "Ikke fordelt", amount: 19000 },
-      { label: "Opsparing i alt / md.", amount: 26000, highlight: true },
+      { id: "shared", label: "Fælles opsparing", amount: 5000 },
+      { id: "p1", label: "Anna", amount: 1000 },
+      { id: "p2", label: "Bo", amount: 1000 },
+      { id: "slack", label: "Ikke fordelt", amount: 19000 },
+      { id: "total", label: "Opsparing i alt / md.", amount: 26000, highlight: true },
     ])
   })
 
@@ -237,6 +279,7 @@ describe("savingsSplitView", () => {
       },
     })
     expect(view?.figures).toContainEqual({
+      id: "over",
       label: "Fordelt for meget",
       amount: -2000,
     })
@@ -248,11 +291,11 @@ describe("savingsSplitView", () => {
     // name and no warning at all.
     const view = splitViewFor(5000, { split: "individual", sharedPortion: 10000 })
     expect(view?.figures).toEqual([
-      { label: "Fælles opsparing", amount: 10000 },
-      { label: "Anna", amount: 0 },
-      { label: "Bo", amount: 0 },
-      { label: "Fordelt for meget", amount: -5000 },
-      { label: "Opsparing i alt / md.", amount: 5000, highlight: true },
+      { id: "shared", label: "Fælles opsparing", amount: 10000 },
+      { id: "p1", label: "Anna", amount: 0 },
+      { id: "p2", label: "Bo", amount: 0 },
+      { id: "over", label: "Fordelt for meget", amount: -5000 },
+      { id: "total", label: "Opsparing i alt / md.", amount: 5000, highlight: true },
     ])
     expect(view?.warning).toContain("5.000 kr.")
   })
@@ -279,6 +322,7 @@ describe("savingsSplitView", () => {
     const view = splitViewFor(-5000, { split: "individual", sharedPortion: 0 })
     expect(view?.warning).toBeUndefined()
     expect(view?.figures).toContainEqual({
+      id: "deficit",
       label: "Underskud i budgettet",
       amount: -5000,
     })
@@ -287,10 +331,12 @@ describe("savingsSplitView", () => {
   it("keeps the two apart when a deficit household also states amounts", () => {
     const view = splitViewFor(-5000, { split: "individual", sharedPortion: 10000 })
     expect(view?.figures).toContainEqual({
+      id: "over",
       label: "Fordelt for meget",
       amount: -10000,
     })
     expect(view?.figures).toContainEqual({
+      id: "deficit",
       label: "Underskud i budgettet",
       amount: -5000,
     })

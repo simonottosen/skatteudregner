@@ -30,7 +30,31 @@ export const SAVINGS_SPLIT_LABELS: Record<SavingsSplit, string> = {
   individual: "Fælles beløb + hver sit",
 }
 
+/**
+ * Which row this is, independent of what it says.
+ *
+ * Labels are not identities: both partners can share a display name, and a name
+ * can equal a fixed row label such as "Fælles opsparing". Keying the rendered
+ * list on the label would collide, letting React reuse the wrong row as the
+ * amounts change.
+ */
+export type SavingsFigureId =
+  // savingsBreakdownView
+  | "consumption"
+  | "sinking"
+  | "allocated"
+  | "real"
+  // savingsSplitView
+  | "shared"
+  | "p1"
+  | "p2"
+  | "slack"
+  | "over"
+  | "deficit"
+  | "total"
+
 export interface SavingsFigure {
+  id: SavingsFigureId
   label: string
   amount: number
   /** The headline of the block. */
@@ -55,15 +79,25 @@ export function savingsBreakdownView(
 
   const figures: SavingsFigure[] = [
     {
+      id: "consumption",
       label: s.mortgageMonthly > 0 ? "Forbrug (inkl. lån)" : "Forbrug",
       amount: s.consumptionExpenses + s.mortgageMonthly,
     },
   ]
   if (s.sinkingFunds > 0)
-    figures.push({ label: "Hensat til kendte udgifter", amount: s.sinkingFunds })
+    figures.push({
+      id: "sinking",
+      label: "Hensat til kendte udgifter",
+      amount: s.sinkingFunds,
+    })
   if (s.allocatedSavings > 0)
-    figures.push({ label: "Afsat til opsparing", amount: s.allocatedSavings })
+    figures.push({
+      id: "allocated",
+      label: "Afsat til opsparing",
+      amount: s.allocatedSavings,
+    })
   figures.push({
+    id: "real",
     label: "Reel opsparing / md.",
     amount: s.totalSavings,
     highlight: true,
@@ -128,32 +162,45 @@ export function savingsSplitView(input: {
   // visible even at zero; otherwise only when the budget produced one.
   const components: SavingsFigure[] = []
   if (a.shared !== 0 || a.split !== DEFAULT_SAVINGS_SPLIT)
-    components.push({ label: "Fælles opsparing", amount: a.shared })
+    components.push({ id: "shared", label: "Fælles opsparing", amount: a.shared })
   // Likewise the two personal rows: on an explicit "hver sit" split, "0 kr."
   // each is the answer to the question the couple asked, and dropping the rows
   // would leave a joint amount larger than the total with nothing beside it.
   if (a.p1 !== 0 || a.p2 !== 0 || a.split === "individual") {
-    components.push({ label: p1Label, amount: a.p1 })
-    components.push({ label: p2Label, amount: a.p2 })
+    components.push({ id: "p1", label: p1Label, amount: a.p1 })
+    components.push({ id: "p2", label: p2Label, amount: a.p2 })
   }
   // One row per reason the attribution does not add up to the total, because
   // "you have shared out too much" and "you are spending more than you earn"
   // need different answers from the reader.
   const residual = savingsResidual(a)
   if (residual.slack >= KRONE)
-    components.push({ label: "Ikke fordelt", amount: residual.slack })
+    components.push({ id: "slack", label: "Ikke fordelt", amount: residual.slack })
   if (residual.overCommitted <= -KRONE)
-    components.push({ label: "Fordelt for meget", amount: residual.overCommitted })
+    components.push({
+      id: "over",
+      label: "Fordelt for meget",
+      amount: residual.overCommitted,
+    })
   if (residual.deficit <= -KRONE)
-    components.push({ label: "Underskud i budgettet", amount: residual.deficit })
+    components.push({
+      id: "deficit",
+      label: "Underskud i budgettet",
+      amount: residual.deficit,
+    })
 
   // A single component *is* the total, so restating it under a second label
   // would only invite the reader to add the two together.
-  const figures =
+  const figures: SavingsFigure[] =
     components.length > 1
       ? [
           ...components,
-          { label: "Opsparing i alt / md.", amount: a.total, highlight: true },
+          {
+            id: "total",
+            label: "Opsparing i alt / md.",
+            amount: a.total,
+            highlight: true,
+          },
         ]
       : components.map((f) => ({ ...f, highlight: true }))
 
