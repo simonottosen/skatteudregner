@@ -163,4 +163,12 @@ describe("propertyHoldingTax progression", () => {
     expect(at(2025, 11_500_000, 40)).toBe(46_920)
     expect(at(2025, 11_500_000, 70)).toBeLessThan(at(2025, 11_500_000, 40))
   })
+
+  it("hands a retired household the whole § 25 nedslag, ungraded", () => {
+    // The projection's income for the year is assembled in simulate.ts and does
+    // not reach propertyHoldingTax, so the § 26 base it can honestly supply is
+    // zero and the 6.000 kr. survives in full however rich the household is.
+    // Pinned so #32 cannot change it by accident.
+    expect(at(2025, 11_500_000, 40) - at(2025, 11_500_000, 70)).toBe(6_000)
+  })
 })

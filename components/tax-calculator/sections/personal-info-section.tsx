@@ -77,18 +77,30 @@ export function PersonalInfoSection({
       </div>
 
       {input.married && (
-        <div className="grid grid-cols-2 gap-4">
-          <NumberInput
-            label="Ægtefælles personlige indkomst"
-            value={input.spousePersonalIncome ?? 0}
-            onChange={(v) => setField("spousePersonalIncome", v)}
+        <>
+          <div className="grid grid-cols-2 gap-4">
+            <NumberInput
+              label="Ægtefælles personlige indkomst"
+              value={input.spousePersonalIncome ?? 0}
+              onChange={(v) => setField("spousePersonalIncome", v)}
+            />
+            <NumberInput
+              label="Ægtefælles aktieindkomst"
+              value={input.spouseStockIncome ?? 0}
+              onChange={(v) => setField("spouseStockIncome", v)}
+            />
+          </div>
+          {/* Ejendomsskatteloven § 25, stk. 1 grants the pensionistnedslag on
+              either spouse's age, so a younger owner needs a way to say so. */}
+          <Toggle
+            id="spouseOverRetirementAge"
+            size="sm"
+            hideLabel
+            labelText="Ægtefælle har nået folkepensionsalderen"
+            toggled={input.spouseOverRetirementAge ?? false}
+            onToggle={(checked) => setField("spouseOverRetirementAge", checked)}
           />
-          <NumberInput
-            label="Ægtefælles aktieindkomst"
-            value={input.spouseStockIncome ?? 0}
-            onChange={(v) => setField("spouseStockIncome", v)}
-          />
-        </div>
+        </>
       )}
 
       <div className="grid grid-cols-2 gap-4">

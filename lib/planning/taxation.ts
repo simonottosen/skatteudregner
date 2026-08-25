@@ -139,9 +139,15 @@ export function propertyHoldingTax(
     ownershipShare: 1,
     personalTaxDiscount: 0,
   }
+  // § 26 grades the pensioner nedslag down by 5 % of income above a grundbeløb,
+  // but the year's income — pension payouts, drawdowns, lager gains — is
+  // assembled in simulate.ts and never reaches this call, so there is nothing
+  // honest to pass but zero. Every retired household therefore keeps the full
+  // § 25 nedslag, which is what this function has always done. Tracked in #32.
   const realTax = calculatePropertyTax(
     input,
     getRates(ctx.profile.year),
+    { personalIncome: 0, positiveCapitalIncome: 0, positiveStockIncome: 0 },
     muni
   ).totalPropertyTax
   return realTax * f
