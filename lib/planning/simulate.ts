@@ -10,6 +10,40 @@
  * Monthly contributions stop at the retirement age. The deterministic path also
  * tracks where each year's growth comes from — contributions, home appreciation
  * (+ mortgage paydown), and investment returns — for the growth-sources view.
+ *
+ * ## Nominal vs. real
+ *
+ * **The projection is nominal throughout.** Every krone this module emits is in
+ * the kroner of the year it falls in, and `toTodayKroner` in `summary.ts` is the
+ * single place that deflates them for display. Nothing here is pre-deflated, and
+ * the two things that look like exceptions are not:
+ *
+ * - `taxation.ts` deflates internally, taxes in today's kroner, and re-inflates,
+ *   which is how it keeps bracket creep out of a 40-year projection. It hands
+ *   back a nominal tax like everything else.
+ * - The FI test compares nominal investments against nominal spending in the
+ *   *same* year (`annualSpending × (1+inflation)^y × 1/SWR`), so the inflation
+ *   factor cancels. `safeWithdrawalRate` therefore keeps its conventional real
+ *   meaning even though both sides are nominal.
+ *
+ * Amounts that grow with inflation: spending, the cash buffer, pension
+ * contributions. The contribution grows at its own `contributionGrowth` instead,
+ * since a household's saving rate tracks its pay, not the CPI.
+ *
+ * Amounts that are nominally level, on purpose: the mortgage service. A
+ * fixed-rate realkredit annuity is a flat number of kroner for its whole term,
+ * so it shrinks in real terms year over year — which is exactly what the loan
+ * does in real life. Not deflating it is the *point*, not an oversight.
+ *
+ * `mortgage.budgeted` is the odd one out: it is the payment the budget deducted
+ * *today*, held flat for the whole horizon while the contribution it is added
+ * back to grows. That is deliberate. The contribution is the budget's surplus
+ * *after* the mortgage, so handing the payment back reconstructs the pre-mortgage
+ * surplus; the figure being reconstructed is a today's-kroner one, and inflating
+ * it would credit the household with kroner its budget never showed. The
+ * consequence to be aware of: over a long horizon the handed-back payment is a
+ * shrinking share of a growing contribution, so the reconciliation matters less
+ * and less the further out the projection runs.
  */
 
 import type {
@@ -51,7 +85,20 @@ interface SimState {
   /** Cost basis of the investments (for taxing realised gains). */
   investmentBasis: number
   homeValue: number
+  /**
+   * The scheduled loan: the plan's own realkredit, plus whatever a property
+   * event replaces it with. Kept apart from {@link borrowedForSpending} because
+   * only this balance is amortised, and only this balance is what the schedule
+   * in {@link MortgageCost.byYear} charges for.
+   */
   mortgage: number
+  /**
+   * Equity borrowed to fund an outflow the household could not otherwise cover.
+   * A second, separate balance: it accrues interest (charged as an outflow of
+   * its own, so the household really pays it) but is never amortised, since
+   * nothing in the cash flow pays it down except an explicit surplus.
+   */
+  borrowedForSpending: number
   /** Months left on the current mortgage (drives the amortization annuity). */
   mortgageMonthsLeft: number
   /** Housing return for the current home (a property event can change it). */
@@ -66,9 +113,13 @@ interface SimState {
   debtMonthsLeft: number
 }
 
+/** What the household owns of its home: the value less every claim on it. */
+const homeEquityOf = (s: SimState) =>
+  s.homeValue - s.mortgage - s.borrowedForSpending
+
 interface PathResult {
   investments: number[]
-  /** Per-year home equity (home value − mortgage). */
+  /** Per-year home equity (home value − scheduled loan − borrowed equity). */
   homeEquity: number[]
   /** Per-year liquid cash buffer. */
   cash: number[]
@@ -81,7 +132,7 @@ interface PathResult {
   housingGains: number[]
   /** Per-year investment return earned. */
   investmentGains: number[]
-  /** Per-year outstanding mortgage balance. */
+  /** Per-year mortgage debt: the scheduled loan plus any borrowed equity. */
   mortgage: number[]
   /** Per-year tax on realised investment gains. */
   investmentTax: number[]
@@ -129,10 +180,13 @@ function fundShortfall(
     shortfall -= sold - tax // net proceeds of this sale
   }
   // Borrow the rest against home equity (a loan — not taxed). The 1-krone floor
-  // avoids a spurious micro-loan from tax-rounding residue.
+  // avoids a spurious micro-loan from tax-rounding residue. It lands on its own
+  // balance, not on the scheduled loan: the schedule is derived from the plan's
+  // inputs and would never charge for this, so adding it there would have the
+  // household amortise — for free — a debt nobody is billed for.
   if (shortfall > 1) {
-    borrowed = Math.min(shortfall, Math.max(0, s.homeValue - s.mortgage))
-    s.mortgage += borrowed
+    borrowed = Math.min(shortfall, Math.max(0, homeEquityOf(s)))
+    s.borrowedForSpending += borrowed
     shortfall -= borrowed
   }
   return { tax, sold, borrowed, unfunded: Math.max(0, shortfall) }
@@ -190,10 +244,11 @@ interface MortgageCost {
    * property events, which swap the loan for a fresh 30-year one.
    *
    * Deliberately a schedule derived from the plan's inputs rather than a
-   * reading of the running balance: equity borrowed during retirement also
-   * lands on the mortgage, and feeding that back in compounds — a bigger
-   * balance charges a bigger service, which borrows more, which charges more
-   * again.
+   * reading of the running balance. Feeding equity borrowed in retirement back
+   * into the service compounds principal as well as interest — a bigger balance
+   * charges a bigger service, which borrows more, which charges more again — and
+   * that is why the borrowing lives on {@link SimState.borrowedForSpending},
+   * where it accrues interest alone and never asks this schedule for anything.
    */
   byYear: number[]
   /**
@@ -300,7 +355,10 @@ function applyEvent(
       break
     case "property": {
       const ev = event as PropertyEvent
-      const realisedEquity = s.homeValue - s.mortgage
+      // Selling settles every claim on the house, borrowed equity included, so
+      // the borrowing does not follow the household into the new home.
+      const realisedEquity = homeEquityOf(s)
+      s.borrowedForSpending = 0
       s.investments += realisedEquity
       s.investmentBasis += realisedEquity // tax-free home proceeds → basis
       const newMortgage = mortgageAfterMove(ev)
@@ -419,14 +477,25 @@ function onePersonPensionByYear(
   return out
 }
 
-/**
- * Household net retirement income per year, after personal income tax on the
- * taxable pension (applied per person), plus tax-free aldersopsparing.
- */
-function pensionNetIncomeByYear(state: PlanningState): {
+/** A household's yearly pension income, before and after tax. */
+interface PensionIncome {
+  /** After personal income tax, plus the tax-free aldersopsparing lump. */
   net: number[]
+  /** The personal income tax itself. */
   tax: number[]
-} {
+  /**
+   * Gross taxable pension income, both partners summed — i.e. the household's
+   * personlig indkomst, which ejendomsskattelovens § 26 grades the pensioner
+   * nedslag against.
+   */
+  taxable: number[]
+}
+
+/**
+ * Household retirement income per year, with personal income tax on the taxable
+ * pension applied per person and the tax-free aldersopsparing added back.
+ */
+function pensionNetIncomeByYear(state: PlanningState): PensionIncome {
   const years = Math.max(0, Math.round(state.endAge - state.currentAge))
   const married = !state.pension.single
   const inflation = state.assumptions.inflation
@@ -438,6 +507,7 @@ function pensionNetIncomeByYear(state: PlanningState): {
 
   const net = new Array<number>(years + 1).fill(0)
   const tax = new Array<number>(years + 1).fill(0)
+  const taxableByYear = new Array<number>(years + 1).fill(0)
   for (let y = 0; y <= years; y++) {
     const ctx: TaxContext = { t: y, inflation, profile: state.tax, married }
     for (let i = 0; i < incomes.length; i++) {
@@ -446,10 +516,11 @@ function pensionNetIncomeByYear(state: PlanningState): {
       const spouseTaxable = married ? incomes[1 - i][y].taxable : undefined
       const t = pensionIncomeTax(taxable, ctx, spouseTaxable)
       tax[y] += t
+      taxableByYear[y] += taxable
       net[y] += taxable - t + taxFree
     }
   }
-  return { net, tax }
+  return { net, tax, taxable: taxableByYear }
 }
 
 /**
@@ -458,15 +529,15 @@ function pensionNetIncomeByYear(state: PlanningState): {
  * random draw for a Monte Carlo run. Returns per-year totals (length = years+1,
  * including the starting year).
  *
- * `incomeByYear` is the gross retirement income; from the retirement age the
- * portfolio takes in (retirement income − annual spending) instead of a
- * contribution, i.e. it draws down when pensions don't cover spending.
+ * From the retirement age the portfolio takes in (retirement income − annual
+ * spending) instead of a contribution, i.e. it draws down when pensions don't
+ * cover spending.
  */
 function runPath(
   state: PlanningState,
   investmentReturnFor: (yearIndex: number) => number,
-  /** Net (after-tax) household pension income per year. */
-  netPensionByYear: number[],
+  /** The household's pension income per year, net and gross. */
+  pension: PensionIncome,
   /** What the mortgage costs, modelled and as the budget already saw it. */
   mortgage: MortgageCost,
   /** Per-year home-price shock (0 for the deterministic path). */
@@ -479,6 +550,7 @@ function runPath(
     investmentBasis: state.startInvestments,
     homeValue: state.homeValue,
     mortgage: state.mortgageBalance,
+    borrowedForSpending: 0,
     mortgageMonthsLeft: mortgageTermMonths(state),
     housingReturn: state.assumptions.housingReturn,
     monthly: state.monthlyContribution,
@@ -494,10 +566,10 @@ function runPath(
 
   const liquid0 = s.investments + s.cash
   const investments: number[] = [Math.max(0, s.investments)]
-  const homeEquitySeries: number[] = [s.homeValue - s.mortgage]
+  const homeEquitySeries: number[] = [homeEquityOf(s)]
   const cashSeries: number[] = [s.cash]
   const otherDebtSeries: number[] = [s.debt]
-  const netWorth: number[] = [liquid0 + (s.homeValue - s.mortgage) - s.debt]
+  const netWorth: number[] = [liquid0 + homeEquityOf(s) - s.debt]
   const contributions: number[] = [0]
   const housingGains: number[] = [0]
   const investmentGains: number[] = [0]
@@ -513,8 +585,6 @@ function runPath(
   const landFraction =
     state.homeValue > 0 ? Math.min(1, state.landValue / state.homeValue) : 0
 
-  // Mortgage borrowed to fund retirement spending (repaid first from surpluses).
-  let borrowedForSpending = 0
   // First age the household can't fund its spending (investments + home gone).
   let ruinAge: number | null = null
 
@@ -548,7 +618,7 @@ function runPath(
     }
 
     // 2) Home appreciation (+ a Monte Carlo shock) + mortgage paydown.
-    const equityBefore = s.homeValue - s.mortgage
+    const equityBefore = homeEquityOf(s)
     s.homeValue *= 1 + s.housingReturn + housingShockFor(y)
     if (s.homeValue < 0) s.homeValue = 0
     // Afdragsfrihed is counted from today, not from when the loan was taken out
@@ -573,6 +643,13 @@ function runPath(
     const debtPrincipal = debtBefore - s.debt
     const debtServiceThisYear = retired ? debtPrincipal + debtYear.interest : 0
 
+    // 2d) Interest on equity borrowed in earlier years, on the balance the year
+    // opens with. An outflow like any other — funding it by borrowing again is
+    // how the debt compounds, which is what a real loan does. Only interest:
+    // nothing amortises this balance, so it cannot bill the household for a
+    // repayment it never made.
+    const borrowedInterestThisYear = s.borrowedForSpending * state.mortgageRate
+
     // 3) Cash flow. While working: deposit the contribution (forbrug is paid
     // from salary). In retirement: cover inflation-grown spending from net
     // pension income, then by selling investments (gains taxed), then by
@@ -583,7 +660,6 @@ function runPath(
       investmentTax += funded.tax
       investmentsSoldThisYear += funded.sold
       borrowedThisYear += funded.borrowed
-      borrowedForSpending += funded.borrowed
       if (funded.unfunded > 1 && ruinAge === null) ruinAge = age
     }
     // Ejendomsværdiskat + grundskyld fall due in every year the house is owned,
@@ -594,7 +670,22 @@ function runPath(
         s.homeValue,
         s.homeValue * landFraction,
         age,
-        taxCtx
+        taxCtx,
+        {
+          // Zero before retirement: the plan models a contribution (the budget's
+          // surplus), never a salary, so there is no working-year income to give.
+          // Harmless while retirement starts at or after folkepensionsalderen,
+          // which is the only time the nedslag this grades is granted at all.
+          personalIncome: pension.taxable[y],
+          // The aktieindkomst the year has produced by this point. Under lager
+          // that is the whole of it — the gain is taxed as it accrues, sold or
+          // not. An ASK gain is not aktieindkomst at all (aktiesparekontoloven
+          // taxes it on its own), and a realisation-mode drawdown is realised
+          // below, sized by the very charge being computed here, so folding it
+          // in would make the two mutually recursive.
+          positiveStockIncome:
+            state.investmentTaxMode === "lager" ? Math.max(0, gain) : 0,
+        }
       )
     }
     if (!retired) {
@@ -611,7 +702,11 @@ function runPath(
       // budget that deducted nothing hands back nothing, so the whole modelled
       // payment falls on the saving — see `mortgageBudgetedMonthly`.
       const net =
-        contribution + mortgage.budgeted - mortgage.byYear[y] - propertyTaxThisYear
+        contribution +
+        mortgage.budgeted -
+        mortgage.byYear[y] -
+        propertyTaxThisYear -
+        borrowedInterestThisYear
       contribThisYear = Math.max(0, net)
       s.investments += contribThisYear
       s.investmentBasis += contribThisYear
@@ -632,18 +727,17 @@ function runPath(
         inflatedSpending +
         mortgage.byYear[y] +
         debtServiceThisYear +
-        propertyTaxThisYear
-      const surplus = netPensionByYear[y] - need
+        propertyTaxThisYear +
+        borrowedInterestThisYear
+      const surplus = pension.net[y] - need
       if (surplus >= 0) {
         // A surplus first repays any equity borrowed earlier for spending
-        // (restoring home equity), then tops up investments.
-        let extra = surplus
-        if (borrowedForSpending > 0) {
-          const repay = Math.min(borrowedForSpending, extra)
-          s.mortgage -= repay
-          borrowedForSpending -= repay
-          extra -= repay
-        }
+        // (restoring home equity), then tops up investments. Only the borrowed
+        // balance: the scheduled loan is paid down by its own schedule, which
+        // the household is already charged for above.
+        const repay = Math.min(s.borrowedForSpending, surplus)
+        s.borrowedForSpending -= repay
+        const extra = surplus - repay
         if (extra > 0) {
           s.investments += extra
           s.investmentBasis += extra
@@ -654,8 +748,9 @@ function runPath(
     }
     if (s.investments < 0) s.investments = 0
 
-    // Equity change captures appreciation + afdrag − any retirement borrowing.
-    const housingGain = s.homeValue - s.mortgage - equityBefore
+    // Equity change captures appreciation + afdrag − any retirement borrowing
+    // and the interest it accrued.
+    const housingGain = homeEquityOf(s) - equityBefore
 
     // 4) Life events at this age.
     const beforeMonthly = s.monthly
@@ -664,7 +759,7 @@ function runPath(
     }
     if (s.monthly !== beforeMonthly) contribution = s.monthly * 12
 
-    const homeEquity = s.homeValue - s.mortgage
+    const homeEquity = homeEquityOf(s)
     investments.push(s.investments)
     homeEquitySeries.push(homeEquity)
     cashSeries.push(s.cash)
@@ -673,7 +768,9 @@ function runPath(
     contributions.push(contribThisYear)
     housingGains.push(housingGain)
     investmentGains.push(gain)
-    mortgageSeries.push(s.mortgage)
+    // Both balances: a household that borrowed against its house to eat is not
+    // debt-free just because the scheduled loan matured.
+    mortgageSeries.push(s.mortgage + s.borrowedForSpending)
     investmentTaxSeries.push(investmentTax)
     spendingSeries.push(spendingThisYear)
     investmentsSoldSeries.push(investmentsSoldThisYear)
@@ -727,16 +824,14 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
   } = state.assumptions
   const meanReturn = investmentReturn - investmentFee
 
-  // Net (after-tax) retirement income + pension income tax per year
-  // (deterministic — shared by all paths).
-  const { net: netPensionByYear, tax: pensionTaxByYear } =
-    pensionNetIncomeByYear(state)
+  // Retirement income per year (deterministic — shared by all paths).
+  const pension = pensionNetIncomeByYear(state)
 
   // Also deterministic: the loan schedule doesn't care about return draws.
   const mortgage = mortgageCost(state, years)
 
   // Deterministic path (median + growth sources).
-  const deterministic = runPath(state, () => meanReturn, netPensionByYear, mortgage)
+  const deterministic = runPath(state, () => meanReturn, pension, mortgage)
 
   // Monte Carlo paths for the bands (only investment return is randomised).
   const mcNetWorthByYear: number[][] = Array.from({ length: years + 1 }, () => [])
@@ -750,7 +845,7 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
     const path = runPath(
       state,
       () => meanReturn + volatility * nextNormal(rng),
-      netPensionByYear,
+      pension,
       mortgage,
       () => housingVolatility * nextNormal(rng)
     )
@@ -819,9 +914,9 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
       contributionYoY: deterministic.contributions[y],
       housingGainYoY: deterministic.housingGains[y],
       investmentGainYoY: deterministic.investmentGains[y],
-      retirementIncome: netPensionByYear[y],
+      retirementIncome: pension.net[y],
       taxPaid:
-        pensionTaxByYear[y] +
+        pension.tax[y] +
         deterministic.investmentTax[y] +
         deterministic.propertyTax[y],
       spending: deterministic.spending[y],

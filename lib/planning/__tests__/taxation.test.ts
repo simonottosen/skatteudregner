@@ -5,6 +5,7 @@ import {
   pensionIncomeTax,
   propertyHoldingTax,
   stockGainTax,
+  type PensionerIncomeYear,
   type TaxContext,
 } from "../taxation"
 import { DEFAULT_TAX_PROFILE } from "../types"
@@ -95,14 +96,29 @@ describe("pensionIncomeTax", () => {
 })
 
 describe("propertyHoldingTax progression", () => {
+  const NO_INCOME: PensionerIncomeYear = {
+    personalIncome: 0,
+    positiveStockIncome: 0,
+  }
   /** No inflation, so nominal == real and the figures below are exact. */
-  const at = (year: 2025 | 2026, homeValue: number, age = 40) =>
-    propertyHoldingTax(homeValue, 0, age, {
-      t: 0,
-      inflation: 0,
-      profile: { ...DEFAULT_TAX_PROFILE, year },
-      married: false,
-    })
+  const at = (
+    year: 2025 | 2026,
+    homeValue: number,
+    age = 40,
+    income: PensionerIncomeYear = NO_INCOME
+  ) =>
+    propertyHoldingTax(
+      homeValue,
+      0,
+      age,
+      {
+        t: 0,
+        inflation: 0,
+        profile: { ...DEFAULT_TAX_PROFILE, year },
+        married: false,
+      },
+      income
+    )
 
   /**
    * The ejendomsværdiskat threshold in `rates.ts` is stated on the taxable
@@ -164,11 +180,65 @@ describe("propertyHoldingTax progression", () => {
     expect(at(2025, 11_500_000, 70)).toBeLessThan(at(2025, 11_500_000, 40))
   })
 
-  it("hands a retired household the whole § 25 nedslag, ungraded", () => {
-    // The projection's income for the year is assembled in simulate.ts and does
-    // not reach propertyHoldingTax, so the § 26 base it can honestly supply is
-    // zero and the 6.000 kr. survives in full however rich the household is.
-    // Pinned so #32 cannot change it by accident.
-    expect(at(2025, 11_500_000, 40) - at(2025, 11_500_000, 70)).toBe(6_000)
+  describe("grades the § 25 nedslag on the year's own income", () => {
+    // Ejendomsskatteloven § 26: 5 % of the beskatningsgrundlag above a
+    // grundbeløb comes off the nedslag. The projection used to pass a zero base,
+    // which handed every retired household the whole 6.000 kr. however large its
+    // pension payouts were — understating the tax by up to that much a year for
+    // the rest of the plan, always in the household's favour.
+    const r = getRates(2025)
+    const nedslag = r.ejendomsvaerdiSkatPensionerReduction
+    const threshold = r.ejendomsvaerdiSkatPensionerIncomeThresholdSingle
+    /** Income that grades away exactly `share` of the nedslag. */
+    const gradedBy = (share: number) =>
+      threshold + (nedslag * share) / r.ejendomsvaerdiSkatPensionerIncomeRate
+    const full = at(2025, 11_500_000, 40) // too young for any nedslag
+    const kept = (income: PensionerIncomeYear) =>
+      full - at(2025, 11_500_000, 70, income)
+
+    it("leaves it whole up to the grundbeløb", () => {
+      expect(kept({ ...NO_INCOME, personalIncome: threshold })).toBe(nedslag)
+    })
+
+    it("takes 5 % of every krone above it", () => {
+      expect(kept({ ...NO_INCOME, personalIncome: gradedBy(0.5) })).toBe(
+        nedslag / 2
+      )
+    })
+
+    it("grades it away entirely for a large pension", () => {
+      expect(kept({ ...NO_INCOME, personalIncome: gradedBy(2) })).toBe(0)
+    })
+
+    it("counts aktieindkomst in the base as well as personal income", () => {
+      const split = (threshold + 120_000) / 2
+      expect(
+        kept({ personalIncome: split, positiveStockIncome: split })
+      ).toBe(nedslag - 120_000 * r.ejendomsvaerdiSkatPensionerIncomeRate)
+    })
+
+    it("indexes the grundbeløb with inflation, like every other bracket", () => {
+      // The base is nominal and the rules are held at a fixed year, so an income
+      // that is constant in real terms must keep grading the nedslag the same
+      // amount however far out the year is.
+      const t = 20
+      const f = Math.pow(1.02, t)
+      const nominal = propertyHoldingTax(
+        11_500_000 * f,
+        0,
+        70,
+        {
+          t,
+          inflation: 0.02,
+          profile: { ...DEFAULT_TAX_PROFILE, year: 2025 },
+          married: false,
+        },
+        { ...NO_INCOME, personalIncome: gradedBy(0.5) * f }
+      )
+      expect(nominal / f).toBeCloseTo(at(2025, 11_500_000, 70, {
+        ...NO_INCOME,
+        personalIncome: gradedBy(0.5),
+      }), 0)
+    })
   })
 })
