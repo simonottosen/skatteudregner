@@ -549,8 +549,10 @@ export function PlanningOverview() {
             scenarioResult={displayScenarioResult}
             scenarioName={activeScenario?.name}
             events={state.events}
+            scenarioEvents={activeScenario?.changes.addEvents}
             view={view}
             retirementAge={state.retirementAge}
+            scenarioRetirementAge={scenarioState?.retirementAge}
             real={real}
             currentAge={state.currentAge}
             currentYear={currentYear}

@@ -13,7 +13,17 @@ import {
   ReferenceDot,
   Legend,
 } from "recharts"
-import type { PlanningEvent, PlanningResult } from "@/lib/planning/types"
+import type {
+  NewPlanningEvent,
+  PlanningEvent,
+  PlanningResult,
+} from "@/lib/planning/types"
+import {
+  eventMarks,
+  milestoneMarks,
+  type MilestoneMetric,
+  type WealthView,
+} from "@/lib/planning/chart-marks"
 import { formatCompactNumber, formatDKK } from "@/lib/format"
 
 const GREEN = "#198038"
@@ -22,8 +32,54 @@ const BLUE = "#1192e8"
 const TEAL = "#005d5d"
 const PURPLE = "#8a3ffc"
 const ORANGE = "#ff832b"
+const GREY = "var(--cds-text-secondary, #6f6f6f)"
 
-export type WealthView = "total" | "detailed"
+export type { WealthView }
+
+/**
+ * Per-metric styling for the milestone lines. Scenario counterparts are purple
+ * to match the scenario curve.
+ *
+ * A contrasted pair is separated *vertically* (`scenarioDy`), never by leaning
+ * the two labels to opposite sides of their lines: the sides anchor text toward
+ * the line rather than away from it, so two nearby ages overlap into unreadable
+ * mush. A scenario can also move a milestone in either direction, so no
+ * horizontal arrangement is safe. One text line of offset always is.
+ */
+const MILESTONE_STYLE: Record<
+  MilestoneMetric,
+  {
+    color: string
+    dash: string
+    base: LabelPosition
+    scenario: LabelPosition
+    scenarioDy: number
+  }
+> = {
+  fi: {
+    color: GREEN,
+    dash: "4 4",
+    base: "top",
+    scenario: "insideTop",
+    scenarioDy: 0,
+  },
+  debtFree: {
+    color: BLUE,
+    dash: "2 3",
+    base: "insideTopRight",
+    scenario: "insideTopRight",
+    scenarioDy: 13,
+  },
+  retirement: {
+    color: GREY,
+    dash: "4 4",
+    base: "insideBottomRight",
+    scenario: "insideBottomRight",
+    scenarioDy: -13,
+  },
+}
+
+type LabelPosition = "top" | "insideTop" | "insideTopRight" | "insideBottomRight"
 
 interface ChartRow {
   age: number
@@ -104,6 +160,11 @@ function WealthTooltip({
           {p.name}: {formatDKK(p.value)}
         </p>
       ))}
+      {row.scenarioNetWorth != null && (
+        <p className="text-muted-foreground pl-2 text-[11px]">
+          Forskel: {signed(row.scenarioNetWorth - row.netWorth)}
+        </p>
+      )}
       {hasNet && (
         <p className="text-muted-foreground mt-1 text-[11px]">
           10.–90. percentil: {pctRange(row.band)}
@@ -236,8 +297,10 @@ export function PlanningChart({
   scenarioResult,
   scenarioName,
   events,
+  scenarioEvents,
   view,
   retirementAge,
+  scenarioRetirementAge,
   real,
   currentAge,
   currentYear,
@@ -248,8 +311,12 @@ export function PlanningChart({
   scenarioName?: string
   /** One-off events, marked on the curve so they can be read off the chart. */
   events?: PlanningEvent[]
+  /** Events the scenario adds on top of the base plan, marked on its curve. */
+  scenarioEvents?: NewPlanningEvent[]
   view: WealthView
   retirementAge: number
+  /** The scenario's retirement age, which it may override. */
+  scenarioRetirementAge?: number
   /** When true the values are already in today's kroner. */
   real?: boolean
   /** For mapping chart ages to calendar years. */
@@ -287,15 +354,13 @@ export function PlanningChart({
   const yearFor = (age: number) => currentYear + (age - currentAge)
   const scenarioLabel = scenarioName ? `${scenarioName} (scenarie)` : "Scenarie"
 
-  // Event markers sit on whichever curve the current view actually draws, so
-  // they never float in empty space. Events outside the horizon are dropped.
-  const rowByAge = new Map(data.map((r) => [r.age, r]))
-  const eventMarks = (events ?? []).flatMap((e) => {
-    const row = rowByAge.get(Math.round(e.age))
-    if (!row) return []
-    const y = view === "detailed" ? row.investments : row.netWorth
-    return [{ id: e.id, age: row.age, y, label: e.label }]
-  })
+  const marks = eventMarks(data, view, events ?? [], scenarioEvents ?? [])
+  const milestones = milestoneMarks(
+    result,
+    retirementAge,
+    scenarioResult,
+    scenarioRetirementAge
+  )
 
   return (
     <div className="h-80 w-full">
@@ -420,63 +485,49 @@ export function PlanningChart({
             </>
           )}
 
-          {result.fiAge != null && (
-            <ReferenceLine
-              x={result.fiAge}
-              stroke={GREEN}
-              strokeDasharray="4 4"
-              label={{
-                value: `Økonomisk fri · ${result.fiAge}`,
-                position: "top",
-                fontSize: 11,
-                fill: GREEN,
-              }}
-            />
-          )}
-          {result.debtFreeAge != null && (
-            <ReferenceLine
-              x={result.debtFreeAge}
-              stroke={BLUE}
-              strokeDasharray="2 3"
-              label={{
-                value: `Gældfri · ${result.debtFreeAge}`,
-                position: "insideTopRight",
-                fontSize: 11,
-                fill: BLUE,
-              }}
-            />
-          )}
-          <ReferenceLine
-            x={retirementAge}
-            stroke="var(--cds-text-secondary, #6f6f6f)"
-            strokeDasharray="4 4"
-            label={{
-              value: `Pension · ${retirementAge}`,
-              position: "insideBottomRight",
-              fontSize: 11,
-              fill: "var(--cds-text-secondary, #6f6f6f)",
-            }}
-          />
+          {milestones.map((m) => {
+            const style = MILESTONE_STYLE[m.metric]
+            const scenario = m.origin === "scenario"
+            const color = scenario ? PURPLE : style.color
+            return (
+              <ReferenceLine
+                key={m.key}
+                x={m.age}
+                stroke={color}
+                strokeDasharray={scenario ? "5 4" : style.dash}
+                label={{
+                  value: m.label,
+                  position: scenario ? style.scenario : style.base,
+                  dy: scenario ? style.scenarioDy : 0,
+                  fontSize: 11,
+                  fill: color,
+                }}
+              />
+            )
+          })}
 
-          {eventMarks.map((m) => (
-            <ReferenceDot
-              key={m.id}
-              x={m.age}
-              y={m.y}
-              r={4}
-              fill={ORANGE}
-              stroke="var(--cds-layer, #ffffff)"
-              strokeWidth={1.5}
-              label={{
-                value: m.label,
-                position: "top",
-                // Clears the curve the dot sits on, which is often steep here.
-                offset: 10,
-                fontSize: 10,
-                fill: ORANGE,
-              }}
-            />
-          ))}
+          {marks.map((m) => {
+            const color = m.origin === "scenario" ? PURPLE : ORANGE
+            return (
+              <ReferenceDot
+                key={m.key}
+                x={m.age}
+                y={m.y}
+                r={4}
+                fill={color}
+                stroke="var(--cds-layer, #ffffff)"
+                strokeWidth={1.5}
+                label={{
+                  value: m.label,
+                  position: "top",
+                  // Clears the curve the dot sits on, which is often steep here.
+                  offset: 10,
+                  fontSize: 10,
+                  fill: color,
+                }}
+              />
+            )
+          })}
         </ComposedChart>
       </ResponsiveContainer>
     </div>
