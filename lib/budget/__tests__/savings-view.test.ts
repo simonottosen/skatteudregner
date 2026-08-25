@@ -10,7 +10,9 @@ function summary(opts: { savings?: number; sinking?: number; mortgage?: boolean 
     categories: [
       { id: "mad", name: "Mad og dagligvarer" },
       { id: "opsparing", name: "Opsparing" },
-      { id: "hensat", name: "Bilreparation" },
+      // Tagged outright: what the breakdown does with a sinking fund is a
+      // separate question from how a category comes to be tagged as one.
+      { id: "hensat", name: "Bilreparation", kind: "sinking" },
     ],
     sharedItems: [
       { id: "a", label: "Mad", amount: 5000, categoryId: "mad" },

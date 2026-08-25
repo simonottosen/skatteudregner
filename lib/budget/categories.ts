@@ -72,22 +72,33 @@ export function looksLikeSavings(label: string): boolean {
   return matchesKeywordTiers(label, SAVINGS_KEYWORDS)
 }
 
-// Money reserved for a bill that is known to be coming, just not this month.
-const SINKING_FUND_KEYWORDS = [
-  "hensæt",
-  "hensat",
+// Wording that says the money is being set aside, whatever it is earmarked for.
+const RESERVE_KEYWORDS = ["hensæt", "hensat", "uforudset"]
+
+// Bills a household typically saves up for — but these words name the bill, not
+// the saving, so on their own they describe ordinary consumption just as often.
+const EARMARKED_BILL_KEYWORDS = [
   "reparation",
   "tandlæge",
   "tandlaege",
   "selvrisiko",
-  "uforudset",
   "vedligehold",
 ]
 
-/** Whether a label looks like a sinking fund for a known future expense. */
+/**
+ * Whether a label looks like a sinking fund for a known future expense.
+ *
+ * Naming the bill is not enough: "Tandlæge" is usually this month's bill, and
+ * tagging it `sinking` would move it out of consumption and inflate the
+ * surplus — the same overstatement this whole feature exists to remove. So an
+ * earmarked bill only counts once the label also says the money is put aside.
+ */
 export function looksLikeSinkingFund(label: string): boolean {
   const l = label.toLowerCase()
-  return SINKING_FUND_KEYWORDS.some((kw) => l.includes(kw))
+  if (RESERVE_KEYWORDS.some((kw) => l.includes(kw))) return true
+  return (
+    EARMARKED_BILL_KEYWORDS.some((kw) => l.includes(kw)) && looksLikeSavings(l)
+  )
 }
 
 /**

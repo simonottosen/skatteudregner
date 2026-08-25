@@ -258,7 +258,9 @@ describe("savings is a derived surplus, not an expense", () => {
       categories: [
         { id: "mad", name: "Mad og dagligvarer" },
         { id: "opsparing", name: "Opsparing" },
-        { id: "hensat", name: "Bilreparation og tandlæge" },
+        // Tagged outright, so this stays a test of the arithmetic rather than
+        // of how a category comes to be tagged.
+        { id: "hensat", name: "Bilreparation og tandlæge", kind: "sinking" },
       ],
       sharedItems: [
         { id: "a", label: "Mad", amount: 5000, categoryId: "mad" },
@@ -266,7 +268,6 @@ describe("savings is a derived surplus, not an expense", () => {
         { id: "c", label: "Bilreparation", amount: 1000, categoryId: "hensat" },
       ],
     })
-    expect(s.categories.find((c) => c.id === "hensat")?.kind).toBe("sinking")
 
     const sum = computeBudgetSummary(s, 30000, 0)
     expect(sum.budgetExpenses).toBe(9000)
@@ -411,6 +412,50 @@ describe("the v5 → v6 migration", () => {
     const sum = computeBudgetSummary(normalizeBudget(v5Blob), 0, 0)
     // Only the 2.000 kr. Opsparing line — the 400 kr. bank line stays put.
     expect(sum.allocatedSavings).toBe(2000)
+  })
+
+  /**
+   * The migration infers a missing kind from the category name, so it can move
+   * a category the user never asked it to move. A bill name alone must not be
+   * enough: "Tandlæge" is ordinarily consumption, and re-tagging it as a
+   * hensættelse would quietly cut `consumptionExpenses` and inflate `surplus`.
+   */
+  it("keeps a plainly named bill category in consumption", () => {
+    const withDentist = {
+      ...v5Blob,
+      sharedItems: [
+        ...v5Blob.sharedItems,
+        { id: "e", label: "Tandlæge", amount: 300, categoryId: "tandlaege" },
+      ],
+      categories: [
+        ...v5Blob.categories,
+        { id: "tandlaege", name: "Tandlæge" },
+      ],
+    }
+    const s = normalizeBudget(withDentist)
+    expect(s.categories.find((c) => c.id === "tandlaege")?.kind).toBeUndefined()
+
+    const sum = computeBudgetSummary(s, 0, 0)
+    expect(sum.sinkingFunds).toBe(0)
+    // The whole 300 kr. stays where a v5 budget put it.
+    expect(sum.consumptionExpenses).toBe(19900 + 300 - 2000)
+  })
+
+  it("moves a bill category only once its name says it is saved up", () => {
+    const withFund = {
+      ...v5Blob,
+      sharedItems: [
+        ...v5Blob.sharedItems,
+        { id: "e", label: "Tandlæge", amount: 300, categoryId: "tandlaege" },
+      ],
+      categories: [
+        ...v5Blob.categories,
+        { id: "tandlaege", name: "Opsparing til tandlæge" },
+      ],
+    }
+    const sum = computeBudgetSummary(normalizeBudget(withFund), 0, 0)
+    expect(sum.sinkingFunds).toBe(300)
+    expect(sum.consumptionExpenses).toBe(19900 - 2000)
   })
 })
 

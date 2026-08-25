@@ -47,16 +47,42 @@ describe("looksLikeSavings", () => {
 })
 
 describe("looksLikeSinkingFund", () => {
-  it("matches money reserved for a known future bill", () => {
+  it("matches wording that says the money is set aside", () => {
     for (const label of [
-      "Bilreparation",
-      "Tandlæge",
       "Hensættelser",
-      "Selvrisiko",
+      "Hensat til bilreparation",
       "Uforudsete udgifter",
-      "Vedligehold",
     ]) {
       expect(looksLikeSinkingFund(label)).toBe(true)
+    }
+  })
+
+  it("matches a named bill once the label also says it is saved up", () => {
+    for (const label of [
+      "Opsparing til tandlæge",
+      "Bilreparation (opsparing)",
+      "Buffer til vedligehold",
+    ]) {
+      expect(looksLikeSinkingFund(label)).toBe(true)
+    }
+  })
+
+  /**
+   * The naming of a bill is not evidence that the money is reserved rather than
+   * spent. Getting this wrong is not symmetric: a consumption line mis-tagged
+   * `sinking` leaves `consumptionExpenses` and so inflates `surplus`, which is
+   * the same overstatement of free money that the opsparing double count was.
+   * An untagged category behaves exactly as it did before v6, so being wrong in
+   * this direction costs nothing.
+   */
+  it("does not match a bill that is merely named", () => {
+    for (const label of [
+      "Tandlæge",
+      "Bilreparation",
+      "Vedligehold",
+      "Selvrisiko",
+    ]) {
+      expect(looksLikeSinkingFund(label)).toBe(false)
     }
   })
 
@@ -64,14 +90,32 @@ describe("looksLikeSinkingFund", () => {
     expect(looksLikeSinkingFund("Dagligvarer")).toBe(false)
     expect(looksLikeSinkingFund("Opsparing")).toBe(false)
   })
+
+  it("does not let the “spar” false friends promote a bill", () => {
+    // "spar" is excluded here for the same reason as in looksLikeSavings, so a
+    // repair paid to a bank-named workshop stays consumption.
+    expect(looksLikeSinkingFund("Reparation betalt via Spar Nord")).toBe(false)
+  })
 })
 
 describe("suggestCategoryKind", () => {
   it("tags savings and sinking funds, and leaves the rest untagged", () => {
     expect(suggestCategoryKind("Opsparing")).toBe("savings")
-    expect(suggestCategoryKind("Bilreparation")).toBe("sinking")
+    expect(suggestCategoryKind("Hensat til bilreparation")).toBe("sinking")
     expect(suggestCategoryKind("Mad og dagligvarer")).toBeUndefined()
     expect(suggestCategoryKind("Spar Nord")).toBeUndefined()
+  })
+
+  /**
+   * Normalization fills a missing kind from the name alone, so an ambiguous
+   * guess silently reclassifies a category the user already had. Untagged is
+   * the safe answer: it reproduces pre-v6 behaviour exactly, and the user can
+   * still tag it deliberately.
+   */
+  it("leaves an ambiguous bill name untagged rather than guessing", () => {
+    expect(suggestCategoryKind("Tandlæge")).toBeUndefined()
+    expect(suggestCategoryKind("Bilreparation")).toBeUndefined()
+    expect(suggestCategoryKind("Vedligehold")).toBeUndefined()
   })
 
   it("prefers the sinking fund when both read as saving", () => {
