@@ -1098,6 +1098,7 @@ describe("simulatePlanning", () => {
   })
 
   it("repays equity borrowed for spending before topping up investments", () => {
+    const rate = 0.04
     const res = simulatePlanning(
       makeState({
         currentAge: 65,
@@ -1108,6 +1109,7 @@ describe("simulatePlanning", () => {
         annualSpending: 100_000,
         homeValue: 5_000_000,
         mortgageBalance: 0,
+        mortgageRate: rate,
         mortgageTermYears: 1, // already paid off
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
@@ -1131,15 +1133,154 @@ describe("simulatePlanning", () => {
         },
       })
     )
-    // Ages 66–67: no pension income → borrow 100k/yr → equity falls to 4.8M.
+    // Ages 66–67: no pension income, so the household borrows its 100k of
+    // spending — and from 67 the interest on what it borrowed the year before.
+    expect(res.points.find((p) => p.age === 66)!.borrowed).toBeCloseTo(100_000, 6)
     const at67 = res.points.find((p) => p.age === 67)!
-    expect(at67.homeEquity).toBeCloseTo(4_800_000, -3)
-    expect(at67.borrowed).toBeCloseTo(100_000, 0)
-    // Age 68: 500k lump − 100k spending = 400k surplus. It first repays the
-    // 200k of borrowed equity (equity back to 5M), then 200k tops up investments.
+    expect(at67.borrowed).toBeCloseTo(100_000 * (1 + rate), 6)
+    const owed = 100_000 * (2 + rate)
+    expect(at67.homeEquity).toBeCloseTo(5_000_000 - owed, 6)
+    // Age 68: the 500k lump covers the year's spending and the interest on the
+    // balance, and the remainder repays the borrowing in full — restoring the
+    // equity — before a krone of it is invested.
     const at68 = res.points.find((p) => p.age === 68)!
-    expect(at68.homeEquity).toBeCloseTo(5_000_000, -3)
-    expect(at68.investments).toBeCloseTo(200_000, 0)
+    expect(at68.homeEquity).toBeCloseTo(5_000_000, 6)
+    expect(at68.investments).toBeCloseTo(
+      500_000 - 100_000 - owed * rate - owed,
+      6
+    )
+  })
+
+  /**
+   * Equity drawn to fund spending is a second balance, apart from the scheduled
+   * loan: it accrues interest and nothing ever amortises it. Before that split
+   * the borrowing landed on the mortgage, where the year's `amortizeYear` repaid
+   * principal out of it — while the household was charged a schedule derived
+   * from the plan's inputs, which never sees the borrowing. It therefore paid
+   * neither the interest nor the afdrag.
+   */
+  describe("equity borrowed to fund spending", () => {
+    // Issue #28's reproduction: a retired household with no income and no pot,
+    // so every krone of spending is borrowed against the house.
+    const repro = (mortgageRate: number) =>
+      makeState({
+        currentAge: 65,
+        endAge: 70,
+        retirementAge: 65,
+        startInvestments: 0,
+        cashBuffer: 0,
+        monthlyContribution: 0,
+        annualSpending: 100_000,
+        homeValue: 5_000_000,
+        mortgageBalance: 0,
+        mortgageRate,
+        mortgageTermYears: 30,
+        includePropertyTax: false,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0,
+          investmentFee: 0,
+          volatility: 0,
+          housingVolatility: 0,
+          inflation: 0,
+          housingReturn: 0,
+        },
+        pension: { ...DEFAULT_PLANNING_STATE.pension, includeFolkepension: false },
+      })
+
+    it("costs the household its equity krone for krone", () => {
+      // Interest-free borrowing, so the only thing that can move equity is the
+      // spending. It used to fall by 100.000, then 98.134, 96.080, 93.819 and
+      // 91.335 — ending at 4.535.761 instead of 4.500.000, the household 35.761
+      // kr. richer for nothing.
+      const res = simulatePlanning(repro(0))
+      const equity = res.points.map((p) => p.homeEquity)
+      for (let y = 1; y < equity.length; y++) {
+        expect(equity[y - 1] - equity[y]).toBeCloseTo(100_000, 6)
+      }
+      expect(equity.at(-1)).toBeCloseTo(4_500_000, 6)
+    })
+
+    it("charges interest on what it has already borrowed", () => {
+      // The issue's own figures: at 4 % the projection ended at 4.520.632, which
+      // is 20.632 kr. of equity nobody paid for *and* five years of interest
+      // nobody was billed. The balance is now the future value of a 100.000
+      // kr./yr ordinary annuity — geometric growth of the interest alone.
+      const rate = 0.04
+      const res = simulatePlanning(repro(rate))
+      const owed = 100_000 * ((Math.pow(1 + rate, 5) - 1) / rate)
+      expect(owed).toBeCloseTo(541_632.26, 2)
+      expect(res.points.at(-1)!.homeEquity).toBeCloseTo(5_000_000 - owed, 6)
+      // Each year's borrowing is the spending plus interest on the opening
+      // balance — and nothing else. Charging the balance a full annuity service
+      // instead is what made `borrowed` run away from 97.525 to 1.873.929 kr.
+      // when this was tried in #21.
+      const borrowed = res.points.map((p) => p.borrowed)
+      for (let y = 1; y < borrowed.length; y++) {
+        expect(borrowed[y]).toBeCloseTo(100_000 * Math.pow(1 + rate, y - 1), 6)
+      }
+    })
+
+    it("leaves the scheduled loan's own amortisation untouched", () => {
+      // The two balances have to stay apart in both directions: the borrowing
+      // must not be amortised, and the scheduled loan must amortise exactly as
+      // it would have if the household had never borrowed. Rebuilt here from
+      // `amortizeYear` and the definition of a year's service, so the
+      // expectation is an independent figure rather than a restatement.
+      const rate = 0.04
+      const term = 20
+      const res = simulatePlanning(
+        makeState({
+          ...repro(rate),
+          homeValue: 3_000_000,
+          mortgageBalance: 2_000_000,
+          mortgageTermYears: term,
+        })
+      )
+      let scheduled = 2_000_000
+      let borrowed = 0
+      for (let y = 1; y <= 5; y++) {
+        const step = amortizeYear(scheduled, rate, (term - y + 1) * 12)
+        const service = scheduled - step.balance + step.interest
+        borrowed += borrowed * rate + 100_000 + service
+        scheduled = step.balance
+      }
+      expect(scheduled).toBeLessThan(2_000_000) // it really did amortise
+      expect(res.points.at(-1)!.homeEquity).toBeCloseTo(
+        3_000_000 - scheduled - borrowed,
+        6
+      )
+    })
+
+    it("settles the borrowing when the house is sold", () => {
+      // A move pays off every claim on the old home, so what the household
+      // takes with it is the net equity — not a loan that follows it.
+      const res = simulatePlanning(
+        makeState({
+          ...repro(0),
+          endAge: 69,
+          events: [
+            {
+              id: "p1",
+              type: "property",
+              label: "Nyt hus",
+              age: 67,
+              newValue: 2_000_000,
+              mortgageLtv: 0,
+            },
+          ],
+        })
+      )
+      // Borrowed 100k at 66 and 67 → 4.8M of equity realised on the move, of
+      // which 2M buys the new home outright and 2.8M lands in the portfolio.
+      const at67 = res.points.find((p) => p.age === 67)!
+      expect(at67.homeEquity).toBeCloseTo(2_000_000, 6)
+      expect(at67.investments).toBeCloseTo(2_800_000, 6)
+      // …and the debt is gone: the next year's spending comes out of the pot.
+      const at68 = res.points.find((p) => p.age === 68)!
+      expect(at68.borrowed).toBe(0)
+      expect(at68.homeEquity).toBeCloseTo(2_000_000, 6)
+    })
   })
 
   it("grows pension pots net of PAL-skat (15,3 %)", () => {

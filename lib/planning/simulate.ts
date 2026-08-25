@@ -51,7 +51,20 @@ interface SimState {
   /** Cost basis of the investments (for taxing realised gains). */
   investmentBasis: number
   homeValue: number
+  /**
+   * The scheduled loan: the plan's own realkredit, plus whatever a property
+   * event replaces it with. Kept apart from {@link borrowedForSpending} because
+   * only this balance is amortised, and only this balance is what the schedule
+   * in {@link MortgageCost.byYear} charges for.
+   */
   mortgage: number
+  /**
+   * Equity borrowed to fund an outflow the household could not otherwise cover.
+   * A second, separate balance: it accrues interest (charged as an outflow of
+   * its own, so the household really pays it) but is never amortised, since
+   * nothing in the cash flow pays it down except an explicit surplus.
+   */
+  borrowedForSpending: number
   /** Months left on the current mortgage (drives the amortization annuity). */
   mortgageMonthsLeft: number
   /** Housing return for the current home (a property event can change it). */
@@ -66,9 +79,13 @@ interface SimState {
   debtMonthsLeft: number
 }
 
+/** What the household owns of its home: the value less every claim on it. */
+const homeEquityOf = (s: SimState) =>
+  s.homeValue - s.mortgage - s.borrowedForSpending
+
 interface PathResult {
   investments: number[]
-  /** Per-year home equity (home value − mortgage). */
+  /** Per-year home equity (home value − scheduled loan − borrowed equity). */
   homeEquity: number[]
   /** Per-year liquid cash buffer. */
   cash: number[]
@@ -81,7 +98,7 @@ interface PathResult {
   housingGains: number[]
   /** Per-year investment return earned. */
   investmentGains: number[]
-  /** Per-year outstanding mortgage balance. */
+  /** Per-year mortgage debt: the scheduled loan plus any borrowed equity. */
   mortgage: number[]
   /** Per-year tax on realised investment gains. */
   investmentTax: number[]
@@ -129,10 +146,13 @@ function fundShortfall(
     shortfall -= sold - tax // net proceeds of this sale
   }
   // Borrow the rest against home equity (a loan — not taxed). The 1-krone floor
-  // avoids a spurious micro-loan from tax-rounding residue.
+  // avoids a spurious micro-loan from tax-rounding residue. It lands on its own
+  // balance, not on the scheduled loan: the schedule is derived from the plan's
+  // inputs and would never charge for this, so adding it there would have the
+  // household amortise — for free — a debt nobody is billed for.
   if (shortfall > 1) {
-    borrowed = Math.min(shortfall, Math.max(0, s.homeValue - s.mortgage))
-    s.mortgage += borrowed
+    borrowed = Math.min(shortfall, Math.max(0, homeEquityOf(s)))
+    s.borrowedForSpending += borrowed
     shortfall -= borrowed
   }
   return { tax, sold, borrowed, unfunded: Math.max(0, shortfall) }
@@ -190,10 +210,11 @@ interface MortgageCost {
    * property events, which swap the loan for a fresh 30-year one.
    *
    * Deliberately a schedule derived from the plan's inputs rather than a
-   * reading of the running balance: equity borrowed during retirement also
-   * lands on the mortgage, and feeding that back in compounds — a bigger
-   * balance charges a bigger service, which borrows more, which charges more
-   * again.
+   * reading of the running balance. Feeding equity borrowed in retirement back
+   * into the service compounds principal as well as interest — a bigger balance
+   * charges a bigger service, which borrows more, which charges more again — and
+   * that is why the borrowing lives on {@link SimState.borrowedForSpending},
+   * where it accrues interest alone and never asks this schedule for anything.
    */
   byYear: number[]
   /**
@@ -300,7 +321,10 @@ function applyEvent(
       break
     case "property": {
       const ev = event as PropertyEvent
-      const realisedEquity = s.homeValue - s.mortgage
+      // Selling settles every claim on the house, borrowed equity included, so
+      // the borrowing does not follow the household into the new home.
+      const realisedEquity = homeEquityOf(s)
+      s.borrowedForSpending = 0
       s.investments += realisedEquity
       s.investmentBasis += realisedEquity // tax-free home proceeds → basis
       const newMortgage = mortgageAfterMove(ev)
@@ -479,6 +503,7 @@ function runPath(
     investmentBasis: state.startInvestments,
     homeValue: state.homeValue,
     mortgage: state.mortgageBalance,
+    borrowedForSpending: 0,
     mortgageMonthsLeft: mortgageTermMonths(state),
     housingReturn: state.assumptions.housingReturn,
     monthly: state.monthlyContribution,
@@ -494,10 +519,10 @@ function runPath(
 
   const liquid0 = s.investments + s.cash
   const investments: number[] = [Math.max(0, s.investments)]
-  const homeEquitySeries: number[] = [s.homeValue - s.mortgage]
+  const homeEquitySeries: number[] = [homeEquityOf(s)]
   const cashSeries: number[] = [s.cash]
   const otherDebtSeries: number[] = [s.debt]
-  const netWorth: number[] = [liquid0 + (s.homeValue - s.mortgage) - s.debt]
+  const netWorth: number[] = [liquid0 + homeEquityOf(s) - s.debt]
   const contributions: number[] = [0]
   const housingGains: number[] = [0]
   const investmentGains: number[] = [0]
@@ -513,8 +538,6 @@ function runPath(
   const landFraction =
     state.homeValue > 0 ? Math.min(1, state.landValue / state.homeValue) : 0
 
-  // Mortgage borrowed to fund retirement spending (repaid first from surpluses).
-  let borrowedForSpending = 0
   // First age the household can't fund its spending (investments + home gone).
   let ruinAge: number | null = null
 
@@ -548,7 +571,7 @@ function runPath(
     }
 
     // 2) Home appreciation (+ a Monte Carlo shock) + mortgage paydown.
-    const equityBefore = s.homeValue - s.mortgage
+    const equityBefore = homeEquityOf(s)
     s.homeValue *= 1 + s.housingReturn + housingShockFor(y)
     if (s.homeValue < 0) s.homeValue = 0
     // Afdragsfrihed is counted from today, not from when the loan was taken out
@@ -573,6 +596,13 @@ function runPath(
     const debtPrincipal = debtBefore - s.debt
     const debtServiceThisYear = retired ? debtPrincipal + debtYear.interest : 0
 
+    // 2d) Interest on equity borrowed in earlier years, on the balance the year
+    // opens with. An outflow like any other — funding it by borrowing again is
+    // how the debt compounds, which is what a real loan does. Only interest:
+    // nothing amortises this balance, so it cannot bill the household for a
+    // repayment it never made.
+    const borrowedInterestThisYear = s.borrowedForSpending * state.mortgageRate
+
     // 3) Cash flow. While working: deposit the contribution (forbrug is paid
     // from salary). In retirement: cover inflation-grown spending from net
     // pension income, then by selling investments (gains taxed), then by
@@ -583,7 +613,6 @@ function runPath(
       investmentTax += funded.tax
       investmentsSoldThisYear += funded.sold
       borrowedThisYear += funded.borrowed
-      borrowedForSpending += funded.borrowed
       if (funded.unfunded > 1 && ruinAge === null) ruinAge = age
     }
     // Ejendomsværdiskat + grundskyld fall due in every year the house is owned,
@@ -611,7 +640,11 @@ function runPath(
       // budget that deducted nothing hands back nothing, so the whole modelled
       // payment falls on the saving — see `mortgageBudgetedMonthly`.
       const net =
-        contribution + mortgage.budgeted - mortgage.byYear[y] - propertyTaxThisYear
+        contribution +
+        mortgage.budgeted -
+        mortgage.byYear[y] -
+        propertyTaxThisYear -
+        borrowedInterestThisYear
       contribThisYear = Math.max(0, net)
       s.investments += contribThisYear
       s.investmentBasis += contribThisYear
@@ -632,18 +665,17 @@ function runPath(
         inflatedSpending +
         mortgage.byYear[y] +
         debtServiceThisYear +
-        propertyTaxThisYear
+        propertyTaxThisYear +
+        borrowedInterestThisYear
       const surplus = netPensionByYear[y] - need
       if (surplus >= 0) {
         // A surplus first repays any equity borrowed earlier for spending
-        // (restoring home equity), then tops up investments.
-        let extra = surplus
-        if (borrowedForSpending > 0) {
-          const repay = Math.min(borrowedForSpending, extra)
-          s.mortgage -= repay
-          borrowedForSpending -= repay
-          extra -= repay
-        }
+        // (restoring home equity), then tops up investments. Only the borrowed
+        // balance: the scheduled loan is paid down by its own schedule, which
+        // the household is already charged for above.
+        const repay = Math.min(s.borrowedForSpending, surplus)
+        s.borrowedForSpending -= repay
+        const extra = surplus - repay
         if (extra > 0) {
           s.investments += extra
           s.investmentBasis += extra
@@ -654,8 +686,9 @@ function runPath(
     }
     if (s.investments < 0) s.investments = 0
 
-    // Equity change captures appreciation + afdrag − any retirement borrowing.
-    const housingGain = s.homeValue - s.mortgage - equityBefore
+    // Equity change captures appreciation + afdrag − any retirement borrowing
+    // and the interest it accrued.
+    const housingGain = homeEquityOf(s) - equityBefore
 
     // 4) Life events at this age.
     const beforeMonthly = s.monthly
@@ -664,7 +697,7 @@ function runPath(
     }
     if (s.monthly !== beforeMonthly) contribution = s.monthly * 12
 
-    const homeEquity = s.homeValue - s.mortgage
+    const homeEquity = homeEquityOf(s)
     investments.push(s.investments)
     homeEquitySeries.push(homeEquity)
     cashSeries.push(s.cash)
@@ -673,7 +706,9 @@ function runPath(
     contributions.push(contribThisYear)
     housingGains.push(housingGain)
     investmentGains.push(gain)
-    mortgageSeries.push(s.mortgage)
+    // Both balances: a household that borrowed against its house to eat is not
+    // debt-free just because the scheduled loan matured.
+    mortgageSeries.push(s.mortgage + s.borrowedForSpending)
     investmentTaxSeries.push(investmentTax)
     spendingSeries.push(spendingThisYear)
     investmentsSoldSeries.push(investmentsSoldThisYear)
