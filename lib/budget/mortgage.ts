@@ -10,6 +10,11 @@
  * Rate defaults reflect typical 2026 Danish figures (see lib note below).
  */
 
+import {
+  matchesKeywordTiers,
+  type KeywordTiers,
+} from "@/lib/budget/keyword-match"
+
 /** Typical 2026 30-year fixed-rate realkredit coupon. */
 export const DEFAULT_INTEREST_RATE = 0.041
 /** Blended bidragssats for a standard 80 % LTV fixed amortizing loan (2026). */
@@ -110,27 +115,24 @@ export function mortgageMonthlyTotal(m: MortgageState): number {
   return m.enabled ? computeMortgage(m).monthlyTotal : 0
 }
 
-// Strong home-loan keywords (always count).
-const HOME_LOAN_KEYWORDS = [
-  "realkredit",
-  "boliglån",
-  "boliglaan",
-  "prioritet",
-  "huslån",
-  "huslaan",
-  "ejerudgift",
-  "husleje",
-  "termin",
-]
-// Generic debt words that only count when not about a vehicle.
-const GENERIC_LOAN_KEYWORDS = ["afdrag", "afbetaling", "lån", "laan"]
-// Words that mark a line as something other than the home loan.
-const NON_HOME_KEYWORDS = ["bil", "leasing", "billån", "billaan", "studie"]
+const MORTGAGE_KEYWORDS: KeywordTiers = {
+  strong: [
+    "realkredit",
+    "boliglån",
+    "boliglaan",
+    "prioritet",
+    "huslån",
+    "huslaan",
+    "ejerudgift",
+    "husleje",
+    "termin",
+  ],
+  // A vehicle or student loan is debt, but it is not the home loan.
+  exclude: ["bil", "leasing", "billån", "billaan", "studie"],
+  weak: ["afdrag", "afbetaling", "lån", "laan"],
+}
 
 /** Whether a budget item label looks like a mortgage/home-loan payment. */
 export function looksLikeMortgage(label: string): boolean {
-  const l = label.toLowerCase()
-  if (HOME_LOAN_KEYWORDS.some((kw) => l.includes(kw))) return true
-  if (NON_HOME_KEYWORDS.some((kw) => l.includes(kw))) return false
-  return GENERIC_LOAN_KEYWORDS.some((kw) => l.includes(kw))
+  return matchesKeywordTiers(label, MORTGAGE_KEYWORDS)
 }

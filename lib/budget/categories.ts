@@ -3,9 +3,44 @@
  * and the start-budget generator so generated items land in the right group.
  */
 
+import {
+  matchesKeywordTiers,
+  type KeywordTiers,
+} from "@/lib/budget/keyword-match"
+
+/**
+ * What a category's money actually does.
+ *
+ * - `expense` — consumed this month.
+ * - `savings` — put aside. Savings is the leftover after expenses, so counting
+ *   it as an expense too subtracts it on both sides of the equation; this tag
+ *   is what lets the summary undo that double count.
+ * - `sinking` — set aside for a known future expense (bilreparation, tandlæge).
+ *   Neither consumption nor long-term savings, so it gets its own bucket
+ *   instead of distorting one of the other two.
+ *
+ * Optional on {@link BudgetCategory}: an untagged category behaves exactly as
+ * it did before v6.
+ */
+export type CategoryKind = "expense" | "savings" | "sinking"
+
+export const CATEGORY_KINDS: readonly CategoryKind[] = [
+  "expense",
+  "savings",
+  "sinking",
+]
+
+export function isCategoryKind(value: unknown): value is CategoryKind {
+  return (
+    typeof value === "string" &&
+    (CATEGORY_KINDS as readonly string[]).includes(value)
+  )
+}
+
 export interface BudgetCategory {
   id: string
   name: string
+  kind?: CategoryKind
 }
 
 /** Catch-all category; always present and cannot be deleted. */
@@ -20,9 +55,53 @@ export const DEFAULT_CATEGORIES: BudgetCategory[] = [
   { id: "boern", name: "Børn" },
   { id: "personligt", name: "Personligt" },
   { id: "fritid", name: "Fritid og ferie" },
-  { id: "opsparing", name: "Opsparing" },
+  { id: "opsparing", name: "Opsparing", kind: "savings" },
   { id: UNCATEGORIZED_ID, name: "Øvrigt" },
 ]
+
+const SAVINGS_KEYWORDS: KeywordTiers = {
+  strong: ["opsparing", "opspar", "buffer"],
+  // Spar Nord and sparekasser are banks — an income or transfer line, not
+  // savings — and spareribs is dinner.
+  exclude: ["nord", "kasse", "ribs"],
+  weak: ["spar", "investering"],
+}
+
+/** Whether a label looks like money the household puts aside. */
+export function looksLikeSavings(label: string): boolean {
+  return matchesKeywordTiers(label, SAVINGS_KEYWORDS)
+}
+
+// Money reserved for a bill that is known to be coming, just not this month.
+const SINKING_FUND_KEYWORDS = [
+  "hensæt",
+  "hensat",
+  "reparation",
+  "tandlæge",
+  "tandlaege",
+  "selvrisiko",
+  "uforudset",
+  "vedligehold",
+]
+
+/** Whether a label looks like a sinking fund for a known future expense. */
+export function looksLikeSinkingFund(label: string): boolean {
+  const l = label.toLowerCase()
+  return SINKING_FUND_KEYWORDS.some((kw) => l.includes(kw))
+}
+
+/**
+ * The kind a category name suggests, or `undefined` when nothing is
+ * recognisable. Sinking funds win over savings: "Bilreparation (opsparing)" is
+ * earmarked for a specific bill, not long-term saving.
+ *
+ * A suggestion only — callers must let an explicit choice override it.
+ */
+export function suggestCategoryKind(name: string): CategoryKind | undefined {
+  if (looksLikeSinkingFund(name)) return "sinking"
+  if (looksLikeSavings(name)) return "savings"
+  return undefined
+}
 
 /**
  * Best-effort categorisation of a free-text expense label, used when migrating
@@ -54,8 +133,9 @@ export function guessCategory(label: string): string {
     return "personligt"
   if (has("ferie", "fritid", "fornøjelse", "hobby", "sport", "rejse"))
     return "fritid"
-  if (has("opsparing", "buffer", "spar"))
-    return "opsparing"
+  // Shares the deny list with the kind tagging, so a "Spar Nord" line is not
+  // bucketed as savings here while being left untagged there.
+  if (looksLikeSavings(s)) return "opsparing"
 
   return UNCATEGORIZED_ID
 }

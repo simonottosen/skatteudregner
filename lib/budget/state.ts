@@ -8,7 +8,10 @@ import {
   DEFAULT_CATEGORIES,
   UNCATEGORIZED_ID,
   guessCategory,
+  isCategoryKind,
+  suggestCategoryKind,
   type BudgetCategory,
+  type CategoryKind,
 } from "@/lib/budget/categories"
 import {
   DEFAULT_MORTGAGE,
@@ -16,7 +19,7 @@ import {
   type MortgageState,
 } from "@/lib/budget/mortgage"
 
-export type { BudgetCategory }
+export type { BudgetCategory, CategoryKind }
 
 export interface BudgetItem {
   id: string
@@ -48,7 +51,7 @@ export interface BudgetAssumptions {
 }
 
 export interface BudgetState {
-  version: 5
+  version: 6
   mode: BudgetMode
   person1: PersonConfig
   person2: PersonConfig
@@ -85,7 +88,7 @@ function defaultPerson(name: string, incomeSource: IncomeSource): PersonConfig {
 
 export function defaultBudgetState(): BudgetState {
   return {
-    version: 5,
+    version: 6,
     mode: "single",
     person1: defaultPerson("Person 1", "skat"),
     person2: defaultPerson("Person 2", "manual"),
@@ -124,6 +127,15 @@ function normalizePerson(value: unknown, fallback: PersonConfig): PersonConfig {
   }
 }
 
+/**
+ * The v6 tagging step. An explicit kind always wins, so a user who re-tags a
+ * category never has it silently flipped back by the heuristic — the guess only
+ * fills the blanks, and leaving it blank keeps the pre-v6 behaviour.
+ */
+function normalizeKind(raw: unknown, name: string): CategoryKind | undefined {
+  return isCategoryKind(raw) ? raw : suggestCategoryKind(name)
+}
+
 function normalizeCategories(value: unknown): BudgetCategory[] {
   let cats: BudgetCategory[] = Array.isArray(value)
     ? value
@@ -134,7 +146,7 @@ function normalizeCategories(value: unknown): BudgetCategory[] {
             typeof (c as BudgetCategory).id === "string" &&
             typeof (c as BudgetCategory).name === "string"
         )
-        .map((c) => ({ id: c.id, name: c.name }))
+        .map((c) => ({ id: c.id, name: c.name, kind: normalizeKind(c.kind, c.name) }))
     : []
   if (cats.length === 0) cats = DEFAULT_CATEGORIES.map((c) => ({ ...c }))
   // The catch-all must always exist.
@@ -176,7 +188,14 @@ function normalizeMortgage(value: unknown): MortgageState {
   }
 }
 
-/** Accepts the legacy array shape, the v2 object shape, and v3–v5. */
+/**
+ * Accepts the legacy array shape, the v2 object shape, and v3–v6.
+ *
+ * A single stateless pass, not a chain of per-version steps — so the v6 kind
+ * tagging happens inside {@link normalizeCategories}. It adds no items and
+ * removes none, and nothing it does touches an amount, so an existing budget
+ * round-trips with unchanged totals.
+ */
 export function normalizeBudget(raw: unknown): BudgetState {
   const base = defaultBudgetState()
   if (Array.isArray(raw)) {
@@ -185,7 +204,7 @@ export function normalizeBudget(raw: unknown): BudgetState {
   if (raw && typeof raw === "object") {
     const o = raw as Partial<BudgetState>
     return {
-      version: 5,
+      version: 6,
       mode: o.mode === "shared" || o.mode === "separate" ? o.mode : "single",
       person1: normalizePerson(o.person1, base.person1),
       person2: normalizePerson(o.person2, base.person2),
@@ -205,6 +224,13 @@ const sumItems = (items: BudgetItem[]) => items.reduce((s, i) => s + (i.amount |
 const incomeOf = (person: PersonConfig, skatNet: number) =>
   person.incomeSource === "skat" ? skatNet : person.manualIncome
 
+/** The expense lines the active mode actually budgets with. */
+function activeItems(state: BudgetState): BudgetItem[] {
+  return state.mode === "separate"
+    ? [...state.person1.items, ...state.person2.items]
+    : state.sharedItems
+}
+
 export interface BudgetSummary {
   mode: BudgetMode
   p1Income: number
@@ -215,12 +241,40 @@ export interface BudgetSummary {
   mortgageMonthly: number
   /** Household monthly income (both people unless single). */
   budgetIncome: number
-  /** Household monthly expenses (per the mode), excluding the mortgage. */
+  /**
+   * Household monthly expenses (per the mode), excluding the mortgage. Counts
+   * every line, savings included — `lib/mcp/tools.ts` and `hooks/use-planning`
+   * read this over the wire, so its meaning is frozen. The new split lives in
+   * the four fields below.
+   */
   budgetExpenses: number
-  /** Income − expenses − mortgage (monthly); negative when overspending. */
+  /**
+   * Income − expenses − mortgage (monthly); negative when overspending. Frozen
+   * for the same reason as `budgetExpenses`: this is the *unallocated* leftover,
+   * i.e. what is left after the household's own savings line is subtracted.
+   */
   remaining: number
   /** remaining / income; negative when overspending. */
   savingsRate: number
+  /** Of `budgetExpenses`, what sits in `kind: "savings"` categories. */
+  allocatedSavings: number
+  /**
+   * Of `budgetExpenses`, what sits in `kind: "sinking"` categories — reserved
+   * for a known future bill, so neither consumption nor long-term savings.
+   */
+  sinkingFunds: number
+  /** `budgetExpenses` minus the two above: what is genuinely consumed. */
+  consumptionExpenses: number
+  /** Income − consumption − mortgage: everything not spent on living. */
+  surplus: number
+  /**
+   * What the household actually saves: the savings it allocated plus whatever
+   * is left over. Equals `surplus − sinkingFunds`. This is the figure the old
+   * `remaining` understated by exactly `allocatedSavings`.
+   */
+  totalSavings: number
+  /** totalSavings / income; negative when overspending. */
+  totalSavingsRate: number
 }
 
 /**
@@ -248,6 +302,21 @@ export function computeBudgetSummary(
   const remaining = budgetIncome - budgetExpenses - mortgageMonthly
   const savingsRate = budgetIncome > 0 ? remaining / budgetIncome : 0
 
+  // Split the same expense total three ways rather than recomputing it, so the
+  // buckets always add back up to `budgetExpenses` exactly.
+  const items = activeItems(state)
+  const kindById = new Map(state.categories.map((c) => [c.id, c.kind]))
+  const sumOfKind = (kind: CategoryKind) =>
+    sumItems(items.filter((i) => kindById.get(i.categoryId) === kind))
+  const allocatedSavings = sumOfKind("savings")
+  const sinkingFunds = sumOfKind("sinking")
+  const consumptionExpenses = budgetExpenses - allocatedSavings - sinkingFunds
+
+  // Savings is the leftover after expenses, so subtracting it as an expense
+  // counts it on both sides. Leaving it out of the subtraction here is the fix.
+  const surplus = budgetIncome - consumptionExpenses - mortgageMonthly
+  const totalSavings = allocatedSavings + remaining
+
   return {
     mode: state.mode,
     p1Income,
@@ -260,6 +329,12 @@ export function computeBudgetSummary(
     budgetExpenses,
     remaining,
     savingsRate,
+    allocatedSavings,
+    sinkingFunds,
+    consumptionExpenses,
+    surplus,
+    totalSavings,
+    totalSavingsRate: budgetIncome > 0 ? totalSavings / budgetIncome : 0,
   }
 }
 
@@ -278,10 +353,7 @@ export function planningContribution(remaining: number): number {
 export function expensesByCategory(
   state: BudgetState
 ): { categoryId: string; name: string; total: number }[] {
-  const items =
-    state.mode === "separate"
-      ? [...state.person1.items, ...state.person2.items]
-      : state.sharedItems
+  const items = activeItems(state)
   const byId = new Map<string, number>()
   for (const i of items) byId.set(i.categoryId, (byId.get(i.categoryId) ?? 0) + (i.amount || 0))
   return state.categories
