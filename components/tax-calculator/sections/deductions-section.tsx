@@ -1,12 +1,12 @@
 "use client"
 
 import { NumberInput } from "../number-input"
-import type { TaxInput } from "@/lib/tax/types"
+import type { SetTaxField, TaxInput } from "@/lib/tax/types"
 import { getRates } from "@/lib/tax/rates"
 
 interface DeductionsSectionProps {
   input: TaxInput
-  setField: <K extends keyof TaxInput>(field: K, value: TaxInput[K]) => void
+  setField: SetTaxField
 }
 
 export function DeductionsSection({ input, setField }: DeductionsSectionProps) {

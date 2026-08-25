@@ -1,20 +1,23 @@
 "use client"
 
-import { useState } from "react"
 import { Accordion, AccordionItem, InlineNotification } from "@carbon/react"
 import { PdfUpload } from "./pdf-upload"
-import { PAYSLIP_ASSUMED_FIELDS } from "@/lib/paycheck/to-tax-input"
+import {
+  assumptionNotice,
+  type DocumentKind,
+  type TaxProvenance,
+} from "@/lib/tax/provenance"
 import { PersonalInfoSection } from "./sections/personal-info-section"
 import { IncomeSection } from "./sections/income-section"
 import { DeductionsSection } from "./sections/deductions-section"
 import { CapitalIncomeSection } from "./sections/capital-income-section"
 import { StockIncomeSection } from "./sections/stock-income-section"
 import { PropertySection } from "./sections/property-section"
-import type { TaxInput, PropertyInput } from "@/lib/tax/types"
+import type { PropertyInput, SetTaxField, TaxInput } from "@/lib/tax/types"
 
 interface TaxFormProps {
   input: TaxInput
-  setField: <K extends keyof TaxInput>(field: K, value: TaxInput[K]) => void
+  setField: SetTaxField
   setPropertyField: (
     property: "property" | "summerHouse",
     field: string,
@@ -24,7 +27,17 @@ interface TaxFormProps {
     property: "property" | "summerHouse",
     enabled: boolean,
   ) => void
-  onImport: (data: Omit<Partial<TaxInput>, "property" | "summerHouse"> & { property?: Partial<PropertyInput> }) => void
+  onImport: (
+    data: Omit<Partial<TaxInput>, "property" | "summerHouse"> & { property?: Partial<PropertyInput> },
+    kind: DocumentKind,
+  ) => void
+  /**
+   * Which of `input`'s values came from a document. Owned per person rather than
+   * by this component: one `TaxForm` instance serves both persons, so local
+   * state would follow the form and describe person 1 while showing person 2.
+   */
+  provenance: TaxProvenance
+  dismissImportNotice: () => void
 }
 
 export function TaxForm({
@@ -33,30 +46,24 @@ export function TaxForm({
   setPropertyField,
   toggleProperty,
   onImport,
+  provenance,
+  dismissImportNotice,
 }: TaxFormProps) {
-  // Tracks the last import's document kind: a forskudsopgørelse fills the three
-  // fields below, a payslip cannot, so the notice must clear when one follows
-  // the other.
-  const [payslipImported, setPayslipImported] = useState(false)
+  const notice = assumptionNotice(provenance)
 
   return (
     <>
-      <PdfUpload
-        onImport={(data, kind) => {
-          setPayslipImported(kind === "loenseddel")
-          onImport(data)
-        }}
-      />
+      <PdfUpload onImport={onImport} />
       <Accordion>
         <AccordionItem title="Personlige oplysninger" open>
-          {payslipImported && (
+          {notice && (
             <InlineNotification
               className="mb-4 max-w-full"
               kind="info"
               lowContrast
-              title="Tjek disse tre felter"
-              subtitle={`${PAYSLIP_ASSUMED_FIELDS.join(", ")} står ikke på en lønseddel. Værdierne herunder er standardværdier — ikke noget vi har læst fra din PDF — og de påvirker skatten mærkbart.`}
-              onCloseButtonClick={() => setPayslipImported(false)}
+              title={notice.title}
+              subtitle={notice.subtitle}
+              onCloseButtonClick={dismissImportNotice}
             />
           )}
           <PersonalInfoSection input={input} setField={setField} />

@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest"
 import { parseLoenseddelFromText } from "@/lib/pdf/parse-loenseddel"
 import { createDefaultInput } from "@/lib/tax/defaults"
 import { calculateTax } from "@/lib/tax/calculator"
-import { payslipToTaxInput, PAYSLIP_ASSUMED_FIELDS } from "../to-tax-input"
+import { payslipToTaxInput } from "../to-tax-input"
+import { ASSUMED_FIELDS, assumedFields, withImport, EMPTY_PROVENANCE } from "@/lib/tax/provenance"
 import { comparePaycheckToCalculation } from "../compare"
 import type { PaycheckData } from "../types"
 
@@ -106,8 +107,17 @@ describe("payslipToTaxInput", () => {
     expect(after.municipality).toBe("Aarhus")
     expect(after.churchMember).toBe(true)
     expect(after.birthDate).toBe("1991-07-02")
-    // The notice the form shows names exactly these three.
-    expect(PAYSLIP_ASSUMED_FIELDS).toHaveLength(3)
+  })
+
+  it("leaves every field the form assumes for the notice to flag", () => {
+    // The notice is derived from what the import filled, so this pins the other
+    // half of the contract: a payslip supplies none of the assumed fields.
+    const provenance = withImport(
+      EMPTY_PROVENANCE,
+      payslipToTaxInput(makePaycheck()).data,
+      "loenseddel"
+    )
+    expect(assumedFields(provenance)).toEqual([...ASSUMED_FIELDS])
   })
 
   it("leaves a December payslip's totals unscaled", () => {
@@ -126,7 +136,9 @@ describe("payslipToTaxInput", () => {
     expect(warnings.some((w) => w.includes("1 måned til et helt år"))).toBe(true)
   })
 
-  it("falls back to gross salary × 12 when the payslip has no year-to-date block", () => {
+  it("falls back to the current period × 12 when the payslip has no year-to-date block", () => {
+    // Dropping these would not be neutral: a missing pension contribution
+    // overstates the tax owed, so every field falls back, not just income.
     const { data, filledLabels, warnings } = payslipToTaxInput(
       makePaycheck({
         grossSalary: 45_000,
@@ -140,9 +152,29 @@ describe("payslipToTaxInput", () => {
         },
       })
     )
-    expect(data.workIncome).toBe(540_000)
+    expect(data.workIncome).toBe(540_000) // 45.000 × 12
+    expect(data.employeePension).toBe(30_000) // 2.500 × 12
+    expect(data.employerPension).toBe(60_000) // 5.000 × 12
+    expect(data.atpEmployee).toBe(1_188) // 99 × 12
     expect(filledLabels).toContain("Arbejdsindkomst (A-indkomst)")
     expect(warnings.some((w) => w.includes("gange 12"))).toBe(true)
+    // Nothing came from a year-to-date total, so nothing was projected.
+    expect(warnings.some((w) => w.includes("fremskrevet"))).toBe(false)
+  })
+
+  it("falls back per field, keeping the year-to-date figures it does have", () => {
+    // A payslip can carry an år-til-dato total for income but report pension
+    // only for the current period — the two must not share a fallback decision.
+    const base = makePaycheck()
+    const { data, warnings } = payslipToTaxInput({
+      ...base,
+      ytd: { ...base.ytd, employeePension: 0 },
+    })
+    expect(data.workIncome).toBe(600_000) // 300.000 × 12/6, from year-to-date
+    expect(data.employeePension).toBe(30_000) // 2.500 × 12, from this period
+    // Both caveats apply, because both paths were taken.
+    expect(warnings.some((w) => w.includes("gange 12"))).toBe(true)
+    expect(warnings.some((w) => w.includes("fremskrevet"))).toBe(true)
   })
 
   it("keeps the current tax year when the payslip predates the supported rates", () => {

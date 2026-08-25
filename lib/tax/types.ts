@@ -87,6 +87,19 @@ export interface TaxInput {
   summerHouse?: SummerHouseInput
 }
 
+/**
+ * The scalar `TaxInput` fields. The two property sub-objects are excluded
+ * because they are merged field-by-field through their own setters rather than
+ * assigned whole.
+ */
+export type TaxInputField = Exclude<keyof TaxInput, "property" | "summerHouse">
+
+/** Setter for one scalar field, shared by the form and every section. */
+export type SetTaxField = <K extends TaxInputField>(
+  field: K,
+  value: TaxInput[K],
+) => void
+
 export interface PropertyInput {
   propertyValue: number
   assessmentBasis: number

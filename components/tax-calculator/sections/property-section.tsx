@@ -4,11 +4,11 @@ import { useRef } from "react"
 import { Toggle } from "@carbon/react"
 import { NumberInput } from "../number-input"
 import { MunicipalitySelect } from "../municipality-select"
-import type { TaxInput } from "@/lib/tax/types"
+import type { SetTaxField, TaxInput } from "@/lib/tax/types"
 
 interface PropertySectionProps {
   input: TaxInput
-  setField: <K extends keyof TaxInput>(field: K, value: TaxInput[K]) => void
+  setField: SetTaxField
   setPropertyField: (
     property: "property" | "summerHouse",
     field: string,

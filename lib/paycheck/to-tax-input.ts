@@ -20,16 +20,6 @@ import { TAX_RATES } from "@/lib/tax/rates"
 import type { TaxInput, TaxYear } from "@/lib/tax/types"
 import type { PaycheckData } from "./types"
 
-/**
- * The three fields the calculator needs that no payslip carries. Named as the
- * form labels them, because the UI shows these to say "still assumptions".
- */
-export const PAYSLIP_ASSUMED_FIELDS = [
-  "Kommune",
-  "Medlem af folkekirken",
-  "Fødselsdato",
-] as const
-
 /** The subset of `TaxInput` a payslip can populate. */
 export type PayslipTaxInput = Pick<
   Partial<TaxInput>,
@@ -50,6 +40,33 @@ function isSupportedYear(year: number): year is TaxYear {
 /** Scale a year-to-date total up to a full year. */
 export function annualize(ytd: number, monthsElapsed: number): number {
   return Math.round(ytd * (12 / monthsElapsed))
+}
+
+interface AnnualFigure {
+  value: number
+  /** True when this came from the current period rather than year-to-date. */
+  estimated: boolean
+}
+
+/**
+ * Annualise one figure, preferring the year-to-date total: scaled over the
+ * months elapsed it averages out variable months and counts bonuses already
+ * paid.
+ *
+ * A payslip with no år-til-dato block still reports the current period, and
+ * `parse-loenseddel.ts` fills those fields from the description lines
+ * independently of the `(147)/(148)/(46)` codes — so falling back to them beats
+ * dropping the figure. Dropping is not a neutral omission: a missing pension
+ * contribution silently overstates the tax the user owes.
+ */
+function annualizeFigure(
+  ytd: number,
+  current: number,
+  monthsElapsed: number
+): AnnualFigure | null {
+  if (ytd > 0) return { value: annualize(ytd, monthsElapsed), estimated: false }
+  if (current > 0) return { value: Math.round(current * 12), estimated: true }
+  return null
 }
 
 export function payslipToTaxInput(paycheck: PaycheckData): PayslipImportResult {
@@ -77,44 +94,67 @@ export function payslipToTaxInput(paycheck: PaycheckData): PayslipImportResult {
     )
   }
 
-  // Year-to-date over months elapsed averages out variable months and counts
-  // bonuses already paid, so it projects better than this month's figures × 12.
-  let annualized = false
-  if (paycheck.ytd.amIncome > 0) {
-    data.workIncome = annualize(paycheck.ytd.amIncome, months)
-    filledLabels.push("Arbejdsindkomst (A-indkomst)")
-    annualized = true
-  } else if (paycheck.grossSalary > 0) {
-    // No år-til-dato block on this payslip. The salary line alone misses
-    // variable pay the year-to-date total would have included, so warn.
-    data.workIncome = Math.round(paycheck.grossSalary * 12)
-    filledLabels.push("Arbejdsindkomst (A-indkomst)")
-    warnings.push(
-      "Lønsedlen har ingen år-til-dato-felter, så lønindkomsten er anslået som denne måneds løn gange 12. Bonus og tillæg er ikke talt med — tjek beløbet."
-    )
-  } else {
+  // Every field falls back independently: a payslip can carry a year-to-date
+  // total for one figure and only the current period for another.
+  let projected = false
+  let estimated = false
+
+  const fields: {
+    /** The money fields only — `year` is not a figure to annualise. */
+    key: Exclude<keyof PayslipTaxInput, "year">
+    label: string
+    ytd: number
+    current: number
+  }[] = [
+    {
+      key: "workIncome",
+      label: "Arbejdsindkomst (A-indkomst)",
+      ytd: paycheck.ytd.amIncome,
+      current: paycheck.grossSalary,
+    },
+    {
+      key: "employeePension",
+      label: "Eget pensionsbidrag",
+      ytd: paycheck.ytd.employeePension,
+      current: paycheck.employeePension,
+    },
+    {
+      key: "employerPension",
+      label: "Arbejdsgivers pensionsbidrag",
+      ytd: paycheck.ytd.employerPension,
+      current: paycheck.employerPension,
+    },
+    {
+      key: "atpEmployee",
+      label: "ATP-bidrag (arbejdsgiver)",
+      ytd: paycheck.ytd.atp,
+      current: paycheck.atp,
+    },
+  ]
+
+  for (const field of fields) {
+    const figure = annualizeFigure(field.ytd, field.current, months)
+    if (!figure) continue
+    data[field.key] = figure.value
+    filledLabels.push(field.label)
+    if (figure.estimated) estimated = true
+    else if (months < 12) projected = true
+  }
+
+  if (data.workIncome == null) {
     warnings.push(
       "Ingen lønindkomst kunne læses af lønsedlen. Udfyld den manuelt."
     )
   }
 
-  if (paycheck.ytd.employeePension > 0) {
-    data.employeePension = annualize(paycheck.ytd.employeePension, months)
-    filledLabels.push("Eget pensionsbidrag")
-    annualized = true
+  if (estimated) {
+    // The current period alone misses variable pay a year-to-date total would
+    // have included.
+    warnings.push(
+      "Lønsedlen mangler år-til-dato-felter, så nogle beløb er anslået som denne måneds tal gange 12. Bonus og tillæg er ikke talt med — tjek beløbene."
+    )
   }
-  if (paycheck.ytd.employerPension > 0) {
-    data.employerPension = annualize(paycheck.ytd.employerPension, months)
-    filledLabels.push("Arbejdsgivers pensionsbidrag")
-    annualized = true
-  }
-  if (paycheck.ytd.atp > 0) {
-    data.atpEmployee = annualize(paycheck.ytd.atp, months)
-    filledLabels.push("ATP-bidrag (arbejdsgiver)")
-    annualized = true
-  }
-
-  if (annualized && months < 12) {
+  if (projected) {
     warnings.push(
       `Beløbene er fremskrevet fra ${months} måned${months === 1 ? "" : "er"} til et helt år.`
     )

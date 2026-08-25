@@ -1,28 +1,68 @@
 "use client"
 
 import { useCallback, useMemo, useReducer } from "react"
-import type { TaxInput, TaxResult, PropertyInput } from "@/lib/tax/types"
+import type {
+  PropertyInput,
+  SetTaxField,
+  TaxInput,
+  TaxInputField,
+  TaxResult,
+} from "@/lib/tax/types"
 import { createDefaultInput } from "@/lib/tax/defaults"
 import { calculateTax } from "@/lib/tax/calculator"
+import {
+  EMPTY_PROVENANCE,
+  dismissNotice,
+  withImport,
+  withUserEdit,
+  type DocumentKind,
+  type TaxProvenance,
+} from "@/lib/tax/provenance"
+
+type ImportedData = Omit<Partial<TaxInput>, "property" | "summerHouse"> & {
+  property?: Partial<PropertyInput>
+}
 
 type TaxAction =
-  | { type: "SET_FIELD"; field: keyof TaxInput; value: TaxInput[keyof TaxInput] }
+  | { type: "SET_FIELD"; field: TaxInputField; value: TaxInput[TaxInputField] }
   | { type: "SET_PROPERTY_FIELD"; property: "property" | "summerHouse"; field: string; value: unknown }
   | { type: "TOGGLE_PROPERTY"; property: "property" | "summerHouse"; enabled: boolean }
-  | { type: "IMPORT"; data: Omit<Partial<TaxInput>, "property" | "summerHouse"> & { property?: Partial<PropertyInput> } }
+  | { type: "IMPORT"; data: ImportedData; kind: DocumentKind }
+  | { type: "DISMISS_IMPORT_NOTICE" }
   | { type: "HYDRATE"; input: TaxInput }
   | { type: "RESET" }
 
-function taxReducer(state: TaxInput, action: TaxAction): TaxInput {
+/**
+ * Input and the record of where it came from move together, so they cannot
+ * drift: every action that changes a value decides its origin in the same step.
+ */
+interface TaxState {
+  input: TaxInput
+  provenance: TaxProvenance
+}
+
+function createInitialState(): TaxState {
+  return { input: createDefaultInput(), provenance: EMPTY_PROVENANCE }
+}
+
+function taxReducer(state: TaxState, action: TaxAction): TaxState {
   switch (action.type) {
     case "SET_FIELD":
-      return { ...state, [action.field]: action.value }
+      return {
+        input: { ...state.input, [action.field]: action.value },
+        // Typing over a value makes it the user's answer — which is also how an
+        // assumption stops being one, so the notice shrinks as they fill it in.
+        provenance: withUserEdit(state.provenance, action.field),
+      }
     case "SET_PROPERTY_FIELD": {
-      const current = state[action.property]
+      const current = state.input[action.property]
       if (!current) return state
       return {
         ...state,
-        [action.property]: { ...current, [action.field]: action.value },
+        input: {
+          ...state.input,
+          [action.property]: { ...current, [action.field]: action.value },
+        },
       }
     }
     case "TOGGLE_PROPERTY": {
@@ -38,19 +78,19 @@ function taxReducer(state: TaxInput, action: TaxAction): TaxInput {
           personalTaxDiscount: 0,
           ...(action.property === "summerHouse" ? { municipality: "København" } : {}),
         }
-        return { ...state, [action.property]: defaultProp }
+        return { ...state, input: { ...state.input, [action.property]: defaultProp } }
       }
-      return { ...state, [action.property]: undefined }
+      return { ...state, input: { ...state.input, [action.property]: undefined } }
     }
     case "IMPORT": {
       const { data } = action
-      const newState = { ...state }
+      const input = { ...state.input }
 
       // Merge top-level fields (skip property — handled separately)
       for (const [key, value] of Object.entries(data)) {
         if (key === "property" || key === "summerHouse") continue
         if (value !== undefined) {
-          ;(newState as Record<string, unknown>)[key] = value
+          ;(input as Record<string, unknown>)[key] = value
         }
       }
 
@@ -66,22 +106,30 @@ function taxReducer(state: TaxInput, action: TaxAction): TaxInput {
           ownershipShare: 1,
           personalTaxDiscount: 0,
         }
-        newState.property = { ...defaultProp, ...state.property, ...data.property }
+        input.property = { ...defaultProp, ...state.input.property, ...data.property }
       }
 
-      return newState
+      return { input, provenance: withImport(state.provenance, data, action.kind) }
     }
+    case "DISMISS_IMPORT_NOTICE":
+      return { ...state, provenance: dismissNotice(state.provenance) }
     case "HYDRATE":
-      return action.input
+      // Restored from storage: this session has no document behind these values
+      // and no record of which the user chose, so claim neither.
+      return { input: action.input, provenance: EMPTY_PROVENANCE }
     case "RESET":
-      return createDefaultInput()
+      return createInitialState()
     default:
       return state
   }
 }
 
 export function useTaxCalculator() {
-  const [input, dispatch] = useReducer(taxReducer, undefined, createDefaultInput)
+  const [{ input, provenance }, dispatch] = useReducer(
+    taxReducer,
+    undefined,
+    createInitialState
+  )
 
   const result: TaxResult = useMemo(() => {
     try {
@@ -91,12 +139,9 @@ export function useTaxCalculator() {
     }
   }, [input])
 
-  const setField = useCallback(
-    <K extends keyof TaxInput>(field: K, value: TaxInput[K]) => {
-      dispatch({ type: "SET_FIELD", field, value })
-    },
-    []
-  )
+  const setField = useCallback<SetTaxField>((field, value) => {
+    dispatch({ type: "SET_FIELD", field, value })
+  }, [])
 
   const setPropertyField = useCallback(
     (property: "property" | "summerHouse", field: string, value: unknown) => {
@@ -113,13 +158,14 @@ export function useTaxCalculator() {
   )
 
   const importData = useCallback(
-    (
-      data: Omit<Partial<TaxInput>, "property" | "summerHouse"> & {
-        property?: Partial<PropertyInput>
-      }
-    ) => {
-      dispatch({ type: "IMPORT", data })
+    (data: ImportedData, kind: DocumentKind) => {
+      dispatch({ type: "IMPORT", data, kind })
     },
+    []
+  )
+
+  const dismissImportNotice = useCallback(
+    () => dispatch({ type: "DISMISS_IMPORT_NOTICE" }),
     []
   )
 
@@ -130,5 +176,16 @@ export function useTaxCalculator() {
 
   const reset = useCallback(() => dispatch({ type: "RESET" }), [])
 
-  return { input, result, setField, setPropertyField, toggleProperty, importData, hydrate, reset }
+  return {
+    input,
+    result,
+    provenance,
+    setField,
+    setPropertyField,
+    toggleProperty,
+    importData,
+    dismissImportNotice,
+    hydrate,
+    reset,
+  }
 }

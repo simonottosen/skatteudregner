@@ -4,11 +4,11 @@ import { useId } from "react"
 import { Select, SelectItem, Toggle, TextInput } from "@carbon/react"
 import { MunicipalitySelect } from "../municipality-select"
 import { NumberInput } from "../number-input"
-import type { TaxInput, TaxYear } from "@/lib/tax/types"
+import type { SetTaxField, TaxInput, TaxYear } from "@/lib/tax/types"
 
 interface PersonalInfoSectionProps {
   input: TaxInput
-  setField: <K extends keyof TaxInput>(field: K, value: TaxInput[K]) => void
+  setField: SetTaxField
 }
 
 export function PersonalInfoSection({

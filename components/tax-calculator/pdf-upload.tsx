@@ -5,13 +5,7 @@ import { UploadIcon, FileTextIcon } from "lucide-react"
 import { ContentSwitcher, Switch, InlineNotification } from "@carbon/react"
 import type { ParseResult } from "@/lib/pdf/parse-forskudsopgoerelse"
 import { payslipToTaxInput } from "@/lib/paycheck/to-tax-input"
-
-/**
- * Which document is being uploaded. A payslip is parsed differently and can only
- * fill part of the form, so the user picks rather than us sniffing the file —
- * guessing wrong would silently produce a year's worth of wrong numbers.
- */
-export type DocumentKind = "forskudsopgoerelse" | "loenseddel"
+import { DOCUMENT_LABELS, type DocumentKind } from "@/lib/tax/provenance"
 
 const KINDS: DocumentKind[] = ["forskudsopgoerelse", "loenseddel"]
 
@@ -29,7 +23,7 @@ const COPY: Record<
   }
 > = {
   forskudsopgoerelse: {
-    tab: "Forskudsopgørelse",
+    tab: DOCUMENT_LABELS.forskudsopgoerelse,
     prompt: "Upload din forskudsopgørelse (PDF) for at udfylde automatisk",
     loading: "Indlæser forskudsopgørelse...",
     notPdf:
@@ -40,7 +34,7 @@ const COPY: Record<
     aria: "Upload forskudsopgørelse PDF",
   },
   loenseddel: {
-    tab: "Lønseddel",
+    tab: DOCUMENT_LABELS.loenseddel,
     prompt: "Upload en lønseddel (PDF) — vi fremskriver året for dig",
     loading: "Indlæser lønseddel...",
     notPdf: "Filen skal være en PDF. Vælg venligst din lønseddel som PDF.",
