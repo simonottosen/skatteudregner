@@ -32,7 +32,6 @@ import {
   simulatePlanning,
   solveRequiredMonthlyContribution,
 } from "@/lib/planning/simulate"
-import { toTodayKroner } from "@/lib/planning/summary"
 import type {
   InvestmentTaxMode,
   NewPlanningEvent,
@@ -46,6 +45,8 @@ import { applyScenario } from "@/lib/planning/scenario"
 import {
   mortgageBudgetNotice,
   summarizeResult,
+  toTodayKroner,
+  type PlanningSavingsSplit,
   type PlanningSummary,
 } from "@/lib/planning/summary"
 import { formatCompactDKK, formatDKK } from "@/lib/format"
@@ -271,6 +272,50 @@ function eventSummary(e: PlanningEvent): string {
     case "property":
       return `${formatDKK(e.newValue)} · ${Math.round(e.mortgageLtv * 100)}% lån`
   }
+}
+
+/**
+ * Presentation only: which rows exist, what they are called and every word of
+ * Danish on them come from `planningSavingsSplit`, where a test can reach them.
+ */
+function SavingsSplitPanel({ view }: { view: PlanningSavingsSplit }) {
+  return (
+    <div className="space-y-3">
+      <h4 className="text-sm font-medium">{view.title}</h4>
+      {view.warning && (
+        <InlineNotification
+          className="max-w-full"
+          kind="warning"
+          lowContrast
+          hideCloseButton
+          title={view.warning.title}
+          subtitle={view.warning.subtitle}
+        />
+      )}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        {view.figures.map((f) => {
+          // Only the total is coloured; a red "Fordelt for meget" row would say
+          // the same thing twice.
+          const tone = !f.highlight
+            ? ""
+            : f.amount < 0
+              ? "text-error"
+              : "text-success"
+          return (
+            <div key={f.label}>
+              <p className="text-muted-foreground text-xs">{f.label}</p>
+              <p className={`text-xl font-bold ${tone}`}>{formatDKK(f.amount)}</p>
+            </div>
+          )
+        })}
+      </div>
+      {view.notes.map((note) => (
+        <p key={note} className="text-muted-foreground text-xs">
+          {note}
+        </p>
+      ))}
+    </div>
+  )
 }
 
 export function PlanningOverview() {
@@ -839,6 +884,12 @@ export function PlanningOverview() {
               }
             />
           </div>
+          {planning.savingsSplit && (
+            <>
+              <Separator />
+              <SavingsSplitPanel view={planning.savingsSplit} />
+            </>
+          )}
           <Separator />
           <div className="flex flex-wrap items-center gap-3">
             <Button
