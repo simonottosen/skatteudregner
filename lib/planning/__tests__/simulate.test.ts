@@ -26,6 +26,21 @@ function pTax(gross: number, married = false, spouse?: number): number {
   return pensionIncomeTax(gross, ctx, spouse)
 }
 
+/**
+ * A year's loan service (principal repaid + interest), from the loan module
+ * rather than restated from the simulation — so the mortgage expectations below
+ * are independent figures and not a copy of the implementation.
+ */
+function serviceOf(
+  balance: number,
+  rate: number,
+  months: number,
+  interestOnly = false
+): number {
+  const y = amortizeYear(balance, rate, months, interestOnly)
+  return balance - y.balance + y.interest
+}
+
 function makeState(overrides: Partial<PlanningState> = {}): PlanningState {
   return {
     ...DEFAULT_PLANNING_STATE,
@@ -379,11 +394,14 @@ describe("simulatePlanning", () => {
 
   it("pushes the debt-free age out of reach when afdragsfrihed covers the term", () => {
     // Interest-only to maturity leaves nothing scheduled to repay the principal.
+    // The household never retires inside the horizon, so the balance moves only
+    // with the loan schedule — a retired one would have to borrow against the
+    // house to keep paying the interest, which is its own case below.
     const res = simulatePlanning(
       makeState({
         currentAge: 40,
         endAge: 90,
-        retirementAge: 65,
+        retirementAge: 95,
         startInvestments: 0,
         monthlyContribution: 0,
         homeValue: 3_000_000,
@@ -406,12 +424,17 @@ describe("simulatePlanning", () => {
   })
 
   /**
-   * The two tests above run with `monthlyContribution: 0`, so `Math.max(0, …)`
-   * swallowed anything charged against the contribution — which is how the
-   * step-up came to be modelled on the balance sheet but not in the cash flow.
-   * These run with a real contribution so the payment has somewhere to land.
+   * `monthlyContribution` is the budget's surplus *after* the realkredit
+   * payment (`lib/budget/state.ts`), so the simulation owes the household the
+   * difference between that payment and the one it models — whenever the
+   * modelled one moves, and in whichever direction.
+   *
+   * These run with a real contribution so the reconciliation has somewhere to
+   * land: with `monthlyContribution: 0` the `Math.max(0, …)` floor swallows it,
+   * which is how the step-up came to be modelled on the balance sheet but not
+   * in the cash flow.
    */
-  describe("the afdragsfri step-up is charged to the household", () => {
+  describe("the modelled payment is reconciled against the budget's", () => {
     // Every source of growth is off, so a krone of net worth can only come from
     // a krone the household actually put in.
     const base = {
@@ -440,26 +463,34 @@ describe("simulatePlanning", () => {
     const contribAt = (r: ReturnType<typeof run>, age: number) =>
       r.points.find((p) => p.age === age)!.contributionYoY
 
-    // Derived from the loan module rather than restated from the simulation, so
-    // this is an independent expectation and not a copy of the implementation.
     const IO_YEARS = 5
-    const ioService = 2_000_000 * 0.04 // balance stands still → interest only
-    const afterCliff = amortizeYear(
-      2_000_000,
-      0.04,
-      (20 - IO_YEARS) * 12 // maturity is fixed: the term lost those five years
-    )
-    const stepUp = 2_000_000 - afterCliff.balance + afterCliff.interest - ioService
+    const service = (balance: number, months: number, interestOnly = false) =>
+      serviceOf(balance, 0.04, months, interestOnly)
+    const payment = service(2_000_000, 20 * 12) // level annuity, ~145.435/yr
+    const ioService = service(2_000_000, 20 * 12, true) // balance stands still
+    // Maturity is fixed: the term lost the afdragsfri years.
+    const stepUp = service(2_000_000, (20 - IO_YEARS) * 12) - ioService
 
-    it("leaves a plan without afdragsfrihed completely untouched", () => {
-      // The reconciliation must be invisible to every existing projection.
+    it("leaves the contribution alone while a plain loan runs its term", () => {
+      // A level annuity never differs from what the budget deducted, so there
+      // is nothing to charge or hand back until the loan matures.
       const r = run(0)
-      for (const p of r.points.slice(1)) {
-        expect(p.contributionYoY).toBeCloseTo(120_000, 6)
+      for (let age = 41; age <= 60; age++) {
+        expect(contribAt(r, age)).toBeCloseTo(120_000, 6)
       }
     })
 
-    it("does not touch contributions while the period runs", () => {
+    it("re-invests the payment freed when the loan matures", () => {
+      // Without this the household kept paying a lender it no longer owed
+      // anything, forever: `contributionYoY` was flat across the debt-free age.
+      const r = run(0)
+      expect(payment).toBeGreaterThan(0)
+      expect(r.debtFreeAge).toBe(60)
+      expect(contribAt(r, 61)).toBeCloseTo(120_000 + payment, 6)
+      expect(contribAt(r, 70)).toBeCloseTo(120_000 + payment, 6)
+    })
+
+    it("does not touch contributions while afdragsfrihed runs", () => {
       // The budget-derived contribution already nets off today's interest-only
       // payment, so nothing changes until the payment does.
       const r = run(IO_YEARS)
@@ -476,13 +507,16 @@ describe("simulatePlanning", () => {
       expect(contribAt(r, 59)).toBeCloseTo(120_000 - stepUp, 6)
     })
 
-    it("stops charging once the loan is repaid", () => {
-      // A repaid loan can leave a sub-krone residue; treating that as "still
-      // servicing" refunded the whole baseline payment every year after.
+    it("hands back only what the budget deducted, not the last payment", () => {
+      // An afdragsfri household budgeted for the interest-only payment, so that
+      // is what maturity frees — the extra it paid after the cliff was already
+      // coming out of the contribution. A repaid loan can also leave a
+      // sub-krone residue; treating that as "still servicing" would hand back a
+      // hundredth of a krone instead of the payment.
       const r = run(IO_YEARS)
       expect(r.debtFreeAge).toBe(60)
-      expect(contribAt(r, 61)).toBeCloseTo(120_000, 6)
-      expect(contribAt(r, 70)).toBeCloseTo(120_000, 6)
+      expect(contribAt(r, 61)).toBeCloseTo(120_000 + ioService, 6)
+      expect(contribAt(r, 70)).toBeCloseTo(120_000 + ioService, 6)
     })
 
     it("no longer hands over equity nobody paid for", () => {
@@ -522,6 +556,92 @@ describe("simulatePlanning", () => {
       const drawdownAtCliff = inv(45) - inv(46)
       expect(drawdownAtCliff - drawdownBefore).toBeCloseTo(stepUp, 6)
     })
+
+    describe("a property event re-prices the payment", () => {
+      // A bigger contribution than above, so the larger payment still fits
+      // inside it and the whole reconciliation stays visible in the deposit.
+      const move = (mortgageLtv: number) =>
+        simulatePlanning(
+          makeState({
+            ...base,
+            monthlyContribution: 30_000, // 360.000/yr
+            events: [
+              {
+                id: "p1",
+                type: "property",
+                label: "Nyt hus",
+                age: 45,
+                newValue: 5_000_000,
+                mortgageLtv,
+              },
+            ],
+          })
+        )
+      // The event's own loan: 30 years, per MORTGAGE_TERM_MONTHS in simulate.ts.
+      const newPayment = service(5_000_000 * 0.8, 30 * 12)
+
+      it("keeps the old payment as the baseline after the loan is swapped", () => {
+        // The budget was measured once, today, and never learns about the new
+        // loan — so the household owes the difference between the two, not
+        // nothing (which would make any move free) and not the whole new
+        // payment (which would charge the old one twice).
+        const r = move(0.8)
+        expect(newPayment).toBeGreaterThan(payment)
+        expect(contribAt(r, 45)).toBeCloseTo(360_000, 6)
+        expect(contribAt(r, 46)).toBeCloseTo(360_000 + payment - newPayment, 6)
+        expect(contribAt(r, 70)).toBeCloseTo(360_000 + payment - newPayment, 6)
+      })
+
+      it("frees the whole payment when the new home is bought outright", () => {
+        const r = move(0)
+        expect(contribAt(r, 46)).toBeCloseTo(360_000 + payment, 6)
+      })
+    })
+  })
+
+  it("services the mortgage out of the drawdown after retiring", () => {
+    // `annualSpending` is the budget's expense total, which excludes the
+    // realkredit payment (`lib/budget/state.ts`) — so unlike the contribution
+    // it has nothing netted out to hand back, and the retired household has to
+    // find the whole payment. Zeroed growth and no pension income, so the
+    // drawdown is exactly the year's outflow.
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 55,
+        endAge: 70,
+        retirementAge: 55,
+        startInvestments: 10_000_000, // deep enough never to run dry
+        monthlyContribution: 0,
+        annualSpending: 100_000,
+        homeValue: 3_000_000,
+        mortgageBalance: 2_000_000,
+        mortgageRate: 0.04,
+        mortgageTermYears: 5,
+        includePropertyTax: false,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0,
+          investmentFee: 0,
+          volatility: 0,
+          inflation: 0,
+          housingReturn: 0,
+        },
+        pension: { ...DEFAULT_PLANNING_STATE.pension, includeFolkepension: false },
+      })
+    )
+    const payment = serviceOf(2_000_000, 0.04, 5 * 12)
+    const sold = (age: number) =>
+      res.points.find((p) => p.age === age)!.investmentsSold
+
+    expect(payment).toBeGreaterThan(0)
+    // While the loan lives, the drawdown covers forbrug *and* the payment.
+    expect(sold(56)).toBeCloseTo(100_000 + payment, 6)
+    expect(sold(60)).toBeCloseTo(100_000 + payment, 6)
+    // It matures at 60, and the drawdown drops back to forbrug alone.
+    expect(res.debtFreeAge).toBe(60)
+    expect(sold(61)).toBeCloseTo(100_000, 6)
+    // The house was never mortgaged to pay for any of it.
+    expect(res.points.at(-1)!.homeEquity).toBeCloseTo(3_000_000, 6)
   })
 
   it("survives a scenario shortening the term below the afdragsfri period", () => {
