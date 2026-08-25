@@ -8,9 +8,9 @@ import {
 } from "../state"
 
 describe("normalizeBudget", () => {
-  it("defaults an empty/invalid blob to a v5 single household", () => {
+  it("defaults an empty/invalid blob to a v6 single household", () => {
     const s = normalizeBudget(null)
-    expect(s.version).toBe(5)
+    expect(s.version).toBe(6)
     expect(s.mode).toBe("single")
     expect(Array.isArray(s.sharedItems)).toBe(true)
   })
@@ -177,6 +177,285 @@ describe("the mortgage comes off the surplus", () => {
     const sum = computeBudgetSummary(s, 30000, 0)
     expect(sum.mortgageMonthly).toBe(0)
     expect(sum.remaining).toBe(25000)
+  })
+})
+
+describe("savings is a derived surplus, not an expense", () => {
+  /** 30.000 in, 15.000 consumed, 3.000 deliberately put aside. */
+  const withSavings = () =>
+    normalizeBudget({
+      version: 5,
+      mode: "single",
+      person1: { name: "P1", incomeSource: "skat", manualIncome: 0, items: [] },
+      sharedItems: [
+        { id: "a", label: "Mad", amount: 5000, categoryId: "mad" },
+        { id: "b", label: "Bolig", amount: 10000, categoryId: "bolig" },
+        { id: "c", label: "Opsparing", amount: 3000, categoryId: "opsparing" },
+      ],
+    })
+
+  it("tags the Opsparing category on load without touching any amount", () => {
+    const s = withSavings()
+    expect(s.categories.find((c) => c.id === "opsparing")?.kind).toBe("savings")
+    expect(s.categories.find((c) => c.id === "mad")?.kind).toBeUndefined()
+    expect(s.sharedItems.map((i) => i.amount)).toEqual([5000, 10000, 3000])
+  })
+
+  it("leaves budgetExpenses and remaining numerically untouched", () => {
+    // hooks/use-planning reads both, and lib/mcp/tools serves them over the
+    // wire. Redefining them would break the remote server with no compile error
+    // and no failing test, so the new meaning lives in the new fields below.
+    const sum = computeBudgetSummary(withSavings(), 30000, 0)
+    expect(sum.budgetExpenses).toBe(18000)
+    expect(sum.remaining).toBe(12000)
+    expect(sum.savingsRate).toBeCloseTo(12000 / 30000, 6)
+  })
+
+  it("splits the same expense total into consumption and savings", () => {
+    const sum = computeBudgetSummary(withSavings(), 30000, 0)
+    expect(sum.allocatedSavings).toBe(3000)
+    expect(sum.consumptionExpenses).toBe(15000)
+    expect(sum.consumptionExpenses + sum.allocatedSavings + sum.sinkingFunds).toBe(
+      sum.budgetExpenses
+    )
+  })
+
+  it("stops counting the savings line on both sides of the equation", () => {
+    const sum = computeBudgetSummary(withSavings(), 30000, 0)
+    // The household really saves 3.000 allocated + 12.000 left over.
+    expect(sum.totalSavings).toBe(15000)
+    expect(sum.totalSavings).toBe(sum.remaining + sum.allocatedSavings)
+    expect(sum.surplus).toBe(15000)
+    expect(sum.totalSavingsRate).toBeCloseTo(0.5, 6)
+  })
+
+  it("nets the mortgage out of the surplus like remaining does", () => {
+    const s = normalizeBudget({
+      ...withSavings(),
+      mortgage: {
+        enabled: true,
+        homeValue: 3_000_000,
+        remainingYears: 30,
+        ltv: 0.8,
+        interestRate: 0.04,
+        bidragssats: 0.006,
+        interestOnly: false,
+      },
+    })
+    const sum = computeBudgetSummary(s, 40000, 0)
+    expect(sum.mortgageMonthly).toBeGreaterThan(0)
+    expect(sum.surplus).toBeCloseTo(40000 - 15000 - sum.mortgageMonthly, 6)
+    expect(sum.totalSavings).toBeCloseTo(sum.remaining + 3000, 6)
+  })
+
+  it("keeps sinking funds out of both consumption and savings", () => {
+    // Bilreparation and tandlæge are money set aside for a bill that is coming,
+    // just not this month — neither is honestly described as consumption or as
+    // long-term saving, so they get their own bucket.
+    const s = normalizeBudget({
+      mode: "single",
+      person1: { name: "P1", incomeSource: "skat", manualIncome: 0, items: [] },
+      categories: [
+        { id: "mad", name: "Mad og dagligvarer" },
+        { id: "opsparing", name: "Opsparing" },
+        // Tagged outright, so this stays a test of the arithmetic rather than
+        // of how a category comes to be tagged.
+        { id: "hensat", name: "Bilreparation og tandlæge", kind: "sinking" },
+      ],
+      sharedItems: [
+        { id: "a", label: "Mad", amount: 5000, categoryId: "mad" },
+        { id: "b", label: "Opsparing", amount: 3000, categoryId: "opsparing" },
+        { id: "c", label: "Bilreparation", amount: 1000, categoryId: "hensat" },
+      ],
+    })
+
+    const sum = computeBudgetSummary(s, 30000, 0)
+    expect(sum.budgetExpenses).toBe(9000)
+    expect(sum.consumptionExpenses).toBe(5000)
+    expect(sum.sinkingFunds).toBe(1000)
+    expect(sum.allocatedSavings).toBe(3000)
+    // Not consumed (25.000 surplus), but not saved either — the 1.000 is the
+    // whole gap between the two figures.
+    expect(sum.surplus).toBe(25000)
+    expect(sum.totalSavings).toBe(24000)
+  })
+
+  it("splits the savings out in separate mode too", () => {
+    const s = normalizeBudget({
+      mode: "separate",
+      person1: {
+        name: "P1",
+        incomeSource: "manual",
+        manualIncome: 20000,
+        items: [
+          { id: "x", label: "Mad", amount: 8000, categoryId: "mad" },
+          { id: "z", label: "Opsparing", amount: 2000, categoryId: "opsparing" },
+        ],
+      },
+      person2: {
+        name: "P2",
+        incomeSource: "manual",
+        manualIncome: 25000,
+        items: [{ id: "y", label: "Mad", amount: 7000, categoryId: "mad" }],
+      },
+    })
+    const sum = computeBudgetSummary(s, 0, 0)
+    expect(sum.budgetExpenses).toBe(17000)
+    expect(sum.allocatedSavings).toBe(2000)
+    expect(sum.consumptionExpenses).toBe(15000)
+    expect(sum.totalSavings).toBe(30000)
+  })
+
+  it("keeps an untagged budget behaving exactly as before", () => {
+    // Nothing recognisable as savings → nothing tagged → the new fields simply
+    // restate the old ones.
+    const s = normalizeBudget({
+      mode: "single",
+      categories: [{ id: "mad", name: "Mad og dagligvarer" }],
+      sharedItems: [{ id: "a", label: "Mad", amount: 5000, categoryId: "mad" }],
+      person1: { name: "P1", incomeSource: "skat", manualIncome: 0, items: [] },
+    })
+    const sum = computeBudgetSummary(s, 30000, 0)
+    expect(sum.allocatedSavings).toBe(0)
+    expect(sum.sinkingFunds).toBe(0)
+    expect(sum.consumptionExpenses).toBe(sum.budgetExpenses)
+    expect(sum.totalSavings).toBe(sum.remaining)
+    expect(sum.surplus).toBe(sum.remaining)
+  })
+
+  it("lets an explicit tag overrule the heuristic", () => {
+    // "Warn, never block": whatever the user picked survives the next load.
+    const s = normalizeBudget({
+      mode: "single",
+      categories: [{ id: "opsparing", name: "Opsparing", kind: "expense" }],
+      sharedItems: [
+        { id: "a", label: "Opsparing", amount: 3000, categoryId: "opsparing" },
+      ],
+      person1: { name: "P1", incomeSource: "skat", manualIncome: 0, items: [] },
+    })
+    expect(s.categories[0].kind).toBe("expense")
+    expect(computeBudgetSummary(s, 30000, 0).allocatedSavings).toBe(0)
+  })
+
+  it("ignores a garbage kind rather than trusting it", () => {
+    const s = normalizeBudget({
+      mode: "single",
+      categories: [{ id: "mad", name: "Mad", kind: "nonsense" }],
+      sharedItems: [],
+      person1: { name: "P1", incomeSource: "skat", manualIncome: 0, items: [] },
+    })
+    expect(s.categories[0].kind).toBeUndefined()
+  })
+})
+
+describe("the v5 → v6 migration", () => {
+  /** A budget as it was persisted before the kind discriminator existed. */
+  const v5Blob = {
+    version: 5,
+    mode: "shared",
+    person1: { name: "A", incomeSource: "manual", manualIncome: 26000, items: [] },
+    person2: { name: "B", incomeSource: "manual", manualIncome: 24000, items: [] },
+    sharedItems: [
+      { id: "a", label: "Husleje", amount: 12000, categoryId: "bolig" },
+      { id: "b", label: "Dagligvarer", amount: 5500, categoryId: "mad" },
+      { id: "c", label: "Spar Nord", amount: 400, categoryId: "oevrigt" },
+      { id: "d", label: "Opsparing og buffer", amount: 2000, categoryId: "opsparing" },
+    ],
+    categories: [
+      { id: "bolig", name: "Bolig" },
+      { id: "mad", name: "Mad og dagligvarer" },
+      { id: "opsparing", name: "Opsparing" },
+      { id: "oevrigt", name: "Øvrigt" },
+    ],
+    mortgage: {
+      enabled: true,
+      homeValue: 2_500_000,
+      remainingYears: 25,
+      ltv: 0.7,
+      interestRate: 0.041,
+      bidragssats: 0.006,
+      interestOnly: false,
+    },
+  }
+
+  it("adds no items and removes none", () => {
+    const s = normalizeBudget(v5Blob)
+    expect(s.version).toBe(6)
+    expect(s.sharedItems).toHaveLength(4)
+    expect(s.sharedItems.map((i) => [i.label, i.amount])).toEqual(
+      v5Blob.sharedItems.map((i) => [i.label, i.amount])
+    )
+    expect(s.categories.map((c) => c.id)).toEqual(
+      v5Blob.categories.map((c) => c.id)
+    )
+  })
+
+  it("leaves every pre-existing total unchanged", () => {
+    const s = normalizeBudget(v5Blob)
+    const sum = computeBudgetSummary(s, 0, 0)
+    expect(sum.budgetIncome).toBe(50000)
+    expect(sum.budgetExpenses).toBe(19900)
+    expect(sum.remaining).toBeCloseTo(50000 - 19900 - sum.mortgageMonthly, 6)
+    expect(sum.savingsRate).toBeCloseTo(sum.remaining / 50000, 6)
+  })
+
+  it("round-trips through storage with identical figures", () => {
+    const once = normalizeBudget(v5Blob)
+    const twice = normalizeBudget(JSON.parse(JSON.stringify(once)))
+    expect(twice).toEqual(once)
+    expect(computeBudgetSummary(twice, 0, 0)).toEqual(
+      computeBudgetSummary(once, 0, 0)
+    )
+  })
+
+  it("does not mistake the household's Spar Nord line for savings", () => {
+    const sum = computeBudgetSummary(normalizeBudget(v5Blob), 0, 0)
+    // Only the 2.000 kr. Opsparing line — the 400 kr. bank line stays put.
+    expect(sum.allocatedSavings).toBe(2000)
+  })
+
+  /**
+   * The migration infers a missing kind from the category name, so it can move
+   * a category the user never asked it to move. A bill name alone must not be
+   * enough: "Tandlæge" is ordinarily consumption, and re-tagging it as a
+   * hensættelse would quietly cut `consumptionExpenses` and inflate `surplus`.
+   */
+  it("keeps a plainly named bill category in consumption", () => {
+    const withDentist = {
+      ...v5Blob,
+      sharedItems: [
+        ...v5Blob.sharedItems,
+        { id: "e", label: "Tandlæge", amount: 300, categoryId: "tandlaege" },
+      ],
+      categories: [
+        ...v5Blob.categories,
+        { id: "tandlaege", name: "Tandlæge" },
+      ],
+    }
+    const s = normalizeBudget(withDentist)
+    expect(s.categories.find((c) => c.id === "tandlaege")?.kind).toBeUndefined()
+
+    const sum = computeBudgetSummary(s, 0, 0)
+    expect(sum.sinkingFunds).toBe(0)
+    // The whole 300 kr. stays where a v5 budget put it.
+    expect(sum.consumptionExpenses).toBe(19900 + 300 - 2000)
+  })
+
+  it("moves a bill category only once its name says it is saved up", () => {
+    const withFund = {
+      ...v5Blob,
+      sharedItems: [
+        ...v5Blob.sharedItems,
+        { id: "e", label: "Tandlæge", amount: 300, categoryId: "tandlaege" },
+      ],
+      categories: [
+        ...v5Blob.categories,
+        { id: "tandlaege", name: "Opsparing til tandlæge" },
+      ],
+    }
+    const sum = computeBudgetSummary(normalizeBudget(withFund), 0, 0)
+    expect(sum.sinkingFunds).toBe(300)
+    expect(sum.consumptionExpenses).toBe(19900 - 2000)
   })
 })
 

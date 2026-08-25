@@ -11,6 +11,8 @@ import {
   RadioButtonGroup,
   RadioButton,
   Checkbox,
+  Select,
+  SelectItem,
 } from "@carbon/react"
 import { Add, TrashCan, MagicWand, Draggable } from "@carbon/icons-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -19,10 +21,16 @@ import { useBudget } from "@/components/budget-provider"
 import {
   type BudgetItem,
   type BudgetCategory,
+  type CategoryKind,
   type ExpenseList,
 } from "@/hooks/use-budget"
-import { UNCATEGORIZED_ID } from "@/lib/budget/categories"
+import { CATEGORY_KINDS, UNCATEGORIZED_ID } from "@/lib/budget/categories"
 import { computeMortgage, looksLikeMortgage } from "@/lib/budget/mortgage"
+import {
+  CATEGORY_KIND_LABELS,
+  savingsBreakdownView,
+  type SavingsBreakdownView,
+} from "@/lib/budget/savings-view"
 import { MoneyInput } from "@/components/planlaegning/money-input"
 import { BudgetWizard } from "./budget-wizard"
 import { formatDKK } from "@/lib/format"
@@ -40,6 +48,7 @@ interface ExpenseHandlers {
   onAddCategory: (name: string) => void
   onRenameCategory: (id: string, name: string) => void
   onRemoveCategory: (id: string) => void
+  onSetCategoryKind: (id: string, kind: CategoryKind) => void
 }
 
 function ItemRow({
@@ -176,6 +185,32 @@ function CategorizedExpenses({
                   }
                 />
               </div>
+              {/* The tag is a suggestion the user can always overrule — it only
+                  moves money between the summary's buckets, never out of the
+                  budget. */}
+              <div className="w-32 shrink-0">
+                <Select
+                  id={`cat-kind-${list}-${cat.id}`}
+                  size="sm"
+                  hideLabel
+                  labelText="Kategoritype"
+                  value={cat.kind ?? "expense"}
+                  onChange={(e) =>
+                    handlers.onSetCategoryKind(
+                      cat.id,
+                      e.target.value as CategoryKind
+                    )
+                  }
+                >
+                  {CATEGORY_KINDS.map((kind) => (
+                    <SelectItem
+                      key={kind}
+                      value={kind}
+                      text={CATEGORY_KIND_LABELS[kind]}
+                    />
+                  ))}
+                </Select>
+              </div>
               <span className="text-sm font-semibold whitespace-nowrap tabular-nums">
                 {formatDKK(subtotal)}
               </span>
@@ -256,6 +291,29 @@ function Figure({
   )
 }
 
+function SavingsBreakdown({ view }: { view: SavingsBreakdownView }) {
+  return (
+    <div className="space-y-3">
+      <Separator />
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        {view.figures.map((f) => (
+          <Figure
+            key={f.label}
+            label={f.label}
+            amount={f.amount}
+            tone={f.highlight ? "remaining" : undefined}
+          />
+        ))}
+      </div>
+      {view.notes.map((note) => (
+        <p key={note} className="text-muted-foreground text-xs">
+          {note}
+        </p>
+      ))}
+    </div>
+  )
+}
+
 export function BudgetPlanner() {
   const router = useRouter()
   const budget = useBudget()
@@ -281,10 +339,12 @@ export function BudgetPlanner() {
     addCategory,
     renameCategory,
     removeCategory,
+    setCategoryKind,
     setAssumptions,
     setMortgage,
     mortgageMonthly,
   } = budget
+  const savingsView = savingsBreakdownView(budget)
   const [wizardOpen, setWizardOpen] = useState(false)
   const mortgage = state.mortgage
   const mortgageBreakdown = computeMortgage(mortgage)
@@ -303,6 +363,7 @@ export function BudgetPlanner() {
     onAddCategory: addCategory,
     onRenameCategory: renameCategory,
     onRemoveCategory: removeCategory,
+    onSetCategoryKind: setCategoryKind,
   }
 
   const twoPeople = state.mode !== "single"
@@ -316,6 +377,8 @@ export function BudgetPlanner() {
   // apart (issue #2). The mortgage sits outside the categorised lines, so it is
   // added back for display.
   const combinedSpent = budgetExpenses + mortgageMonthly
+  const combinedSpentLabel =
+    mortgageMonthly > 0 ? "Udgifter (inkl. lån)" : "Udgifter i alt"
   const spentPct =
     budgetIncome > 0 ? Math.min((combinedSpent / budgetIncome) * 100, 100) : 0
 
@@ -724,7 +787,7 @@ export function BudgetPlanner() {
             })}
           </div>
 
-          {mortgageMonthly > 0 && (
+          {(mortgageMonthly > 0 || savingsView) && (
             <Card className="mt-4 border-t-4 border-[var(--cds-border-interactive)]">
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">Husstanden samlet</CardTitle>
@@ -736,18 +799,21 @@ export function BudgetPlanner() {
                     amount={budgetIncome}
                     tone="income"
                   />
-                  <Figure label="Udgifter (inkl. lån)" amount={combinedSpent} />
+                  <Figure label={combinedSpentLabel} amount={combinedSpent} />
                   <Figure
                     label="Til rådighed"
                     amount={remaining}
                     tone="remaining"
                   />
                 </div>
-                <p className="text-muted-foreground text-xs">
-                  Realkreditlånet ({formatDKK(mortgageMonthly)}/md.) er en fælles
-                  udgift og er ikke fordelt mellem jer. Derfor er summen af de to
-                  beløb ovenfor højere end husstandens reelle rådighedsbeløb.
-                </p>
+                {mortgageMonthly > 0 && (
+                  <p className="text-muted-foreground text-xs">
+                    Realkreditlånet ({formatDKK(mortgageMonthly)}/md.) er en fælles
+                    udgift og er ikke fordelt mellem jer. Derfor er summen af de to
+                    beløb ovenfor højere end husstandens reelle rådighedsbeløb.
+                  </p>
+                )}
+                {savingsView && <SavingsBreakdown view={savingsView} />}
               </CardContent>
             </Card>
           )}
@@ -765,12 +831,7 @@ export function BudgetPlanner() {
                   amount={budgetIncome}
                   tone="income"
                 />
-                <Figure
-                  label={
-                    mortgageMonthly > 0 ? "Udgifter (inkl. lån)" : "Udgifter i alt"
-                  }
-                  amount={combinedSpent}
-                />
+                <Figure label={combinedSpentLabel} amount={combinedSpent} />
                 <Figure
                   label="Til rådighed"
                   amount={remaining}
@@ -792,6 +853,7 @@ export function BudgetPlanner() {
                   /md.
                 </p>
               )}
+              {savingsView && <SavingsBreakdown view={savingsView} />}
             </CardContent>
           </Card>
 

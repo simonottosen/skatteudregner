@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useRemoteSync } from "@/hooks/use-remote-sync"
 import { useTax } from "@/components/tax-provider"
-import { UNCATEGORIZED_ID } from "@/lib/budget/categories"
+import { UNCATEGORIZED_ID, suggestCategoryKind } from "@/lib/budget/categories"
 import type { MortgageState } from "@/lib/budget/mortgage"
 import {
   computeBudgetSummary,
@@ -15,6 +15,7 @@ import {
   type BudgetItem,
   type BudgetMode,
   type BudgetState,
+  type CategoryKind,
   type ExpenseList,
   type IncomeSource,
   type PersonConfig,
@@ -26,6 +27,7 @@ export type {
   BudgetCategory,
   BudgetItem,
   BudgetMode,
+  CategoryKind,
   IncomeSource,
   ExpenseList,
   PersonConfig,
@@ -128,13 +130,27 @@ export function useBudgetController() {
   const addCategory = (name: string) =>
     setState((p) => ({
       ...p,
-      categories: [...p.categories, { id: `cat-${newId()}`, name }],
+      categories: [
+        ...p.categories,
+        { id: `cat-${newId()}`, name, kind: suggestCategoryKind(name) },
+      ],
     }))
 
+  // A category the user has never tagged keeps following its name, so renaming
+  // "Ny kategori" to "Opsparing" picks the tag up right away. An explicit tag is
+  // left alone — the heuristic suggests, it never overrules.
   const renameCategory = (id: string, name: string) =>
     setState((p) => ({
       ...p,
-      categories: p.categories.map((c) => (c.id === id ? { ...c, name } : c)),
+      categories: p.categories.map((c) =>
+        c.id === id ? { ...c, name, kind: c.kind ?? suggestCategoryKind(name) } : c
+      ),
+    }))
+
+  const setCategoryKind = (id: string, kind: CategoryKind) =>
+    setState((p) => ({
+      ...p,
+      categories: p.categories.map((c) => (c.id === id ? { ...c, kind } : c)),
     }))
 
   const removeCategory = (id: string) =>
@@ -191,5 +207,6 @@ export function useBudgetController() {
     addCategory,
     renameCategory,
     removeCategory,
+    setCategoryKind,
   }
 }
