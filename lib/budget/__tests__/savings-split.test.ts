@@ -3,6 +3,7 @@ import { computeBudgetSummary, normalizeBudget } from "../state"
 import {
   attributeSavings,
   normalizeSavings,
+  savingsResidual,
   statedSavingsPatch,
   withSavingsPatch,
   type SavingsAttribution,
@@ -66,6 +67,49 @@ function separateCouple(mortgage = false) {
   })
   return { state, summary: computeBudgetSummary(state, 0, 0) }
 }
+
+/**
+ * The same 50.000-a-month couple on one expense list, with the household saving
+ * dialled to `total` — including below zero, where they are spending more than
+ * they earn.
+ */
+function householdSaving(total: number, savings?: SavingsConfig) {
+  const state = normalizeBudget({
+    mode: "shared",
+    person1: { name: "Anna", incomeSource: "manual", manualIncome: 28000, items: [] },
+    person2: { name: "Bo", incomeSource: "manual", manualIncome: 22000, items: [] },
+    categories: [{ id: "bolig", name: "Bolig" }],
+    sharedItems: [
+      { id: "a", label: "Husleje", amount: 50000 - total, categoryId: "bolig" },
+    ],
+    savings,
+  })
+  return { state, summary: computeBudgetSummary(state, 0, 0) }
+}
+
+/** Every shape the block can take, over households that save and that do not. */
+const SAVINGS_CONFIGS: (SavingsConfig | undefined)[] = [
+  undefined,
+  { split: "with-expenses" },
+  { split: "shared" },
+  { split: "individual", sharedPortion: 0 },
+  { split: "individual", sharedPortion: 4000 },
+  { split: "individual", sharedPortion: 40000 },
+  {
+    split: "individual",
+    sharedPortion: 4000,
+    allocation: { p1: 3000, p2: 1000 },
+    manual: true,
+  },
+  {
+    split: "individual",
+    sharedPortion: 40000,
+    allocation: { p1: 30000, p2: 10000 },
+    manual: true,
+  },
+]
+
+const TOTALS = [23000, 5000, 0, -5000]
 
 describe("normalizeSavings", () => {
   it("leaves an absent block absent", () => {
@@ -263,6 +307,85 @@ describe("attributeSavings", () => {
     expect(a.shared).toBe(20000)
   })
 
+  it("never derives a negative personal saving from an oversized joint amount", () => {
+    // 5.000 saved, 10.000 called joint. Halving the −5.000 difference would put
+    // "−2.500 kr." under each name and label it savings — an amount the couple
+    // cannot even type into the field it came from.
+    const { state, summary } = householdSaving(5000, {
+      split: "individual",
+      sharedPortion: 10000,
+    })
+    const a = attributeSavings(state, summary)
+    expect(a).toMatchObject({ shared: 10000, p1: 0, p2: 0, unallocated: -5000 })
+  })
+
+  it("signs an automatic over-commitment the way a stated one is signed", () => {
+    // Two conventions for the same fact would be worse than either: the page
+    // reads one rule off `unallocated` whichever path produced it.
+    const auto = householdSaving(5000, {
+      split: "individual",
+      sharedPortion: 10000,
+    })
+    const stated = householdSaving(5000, {
+      split: "individual",
+      sharedPortion: 6000,
+      allocation: { p1: 3000, p2: 1000 },
+      manual: true,
+    })
+    expect(attributeSavings(auto.state, auto.summary).unallocated).toBe(-5000)
+    expect(attributeSavings(stated.state, stated.summary).unallocated).toBe(-5000)
+  })
+
+  it("attributes nothing to either person when the household is in deficit", () => {
+    // Dissaving is a real budget, not a broken one — but there is no saving to
+    // hand out, so neither name gets a figure that reads as one.
+    const { state, summary } = householdSaving(-5000, {
+      split: "individual",
+      sharedPortion: 0,
+    })
+    expect(summary.totalSavings).toBe(-5000)
+    expect(attributeSavings(state, summary)).toMatchObject({
+      shared: 0,
+      p1: 0,
+      p2: 0,
+      unallocated: -5000,
+    })
+  })
+
+  it("still hands a deficit to the joint pot on the shared split", () => {
+    // The joint pot is derived, not stated, so it carries the household figure
+    // as it is. Flooring it would be the page claiming a saving of zero.
+    const { state, summary } = householdSaving(-5000, { split: "shared" })
+    expect(attributeSavings(state, summary)).toMatchObject({
+      shared: -5000,
+      p1: 0,
+      p2: 0,
+      unallocated: 0,
+    })
+  })
+
+  it("keeps both personal figures at or above zero, whatever is stated", () => {
+    for (const total of TOTALS) {
+      for (const config of SAVINGS_CONFIGS) {
+        const { state, summary } = householdSaving(total, config)
+        const a = attributeSavings(state, summary)
+        expect(a.p1).toBeGreaterThanOrEqual(0)
+        expect(a.p2).toBeGreaterThanOrEqual(0)
+      }
+    }
+  })
+
+  it("reconciles to the household total when over-committed or in deficit", () => {
+    for (const total of TOTALS) {
+      for (const config of SAVINGS_CONFIGS) {
+        const { state, summary } = householdSaving(total, config)
+        const a = attributeSavings(state, summary)
+        expect(a.total).toBe(total)
+        expect(a.shared + a.p1 + a.p2 + a.unallocated).toBeCloseTo(total, 6)
+      }
+    }
+  })
+
   it("always reconciles to the household total", () => {
     const configs: (SavingsConfig | undefined)[] = [
       undefined,
@@ -306,6 +429,79 @@ describe("attributeSavings", () => {
         manual: true,
       })
       expect(summary).toEqual(plain)
+    }
+  })
+
+  it("leaves the household summary alone when the split cannot be honoured", () => {
+    // The over-committed case is where a fix is most tempted to balance the
+    // books by moving an amount; `budgetExpenses` and `remaining` are read over
+    // the wire by the MCP tools, so a shift there would break them silently.
+    for (const total of TOTALS) {
+      const plain = householdSaving(total).summary
+      for (const config of SAVINGS_CONFIGS)
+        expect(householdSaving(total, config).summary).toEqual(plain)
+    }
+  })
+})
+
+describe("savingsResidual", () => {
+  const base: SavingsAttribution = {
+    split: "individual",
+    manual: false,
+    total: 0,
+    shared: 0,
+    p1: 0,
+    p2: 0,
+    unallocated: 0,
+  }
+
+  it("calls a shortfall against a real saving an over-commitment", () => {
+    expect(
+      savingsResidual({ ...base, total: 5000, shared: 10000, unallocated: -5000 })
+    ).toEqual({ slack: 0, overCommitted: -5000, deficit: 0 })
+  })
+
+  it("calls a shortfall with nothing earmarked a deficit", () => {
+    // Nothing was shared out, so nothing can have been shared out too far.
+    expect(savingsResidual({ ...base, total: -5000, unallocated: -5000 })).toEqual({
+      slack: 0,
+      overCommitted: 0,
+      deficit: -5000,
+    })
+  })
+
+  it("separates the two when a deficit household also states amounts", () => {
+    // 10.000 promised out of nothing, on top of a budget already 5.000 short.
+    expect(
+      savingsResidual({ ...base, total: -5000, shared: 10000, unallocated: -15000 })
+    ).toEqual({ slack: 0, overCommitted: -10000, deficit: -5000 })
+  })
+
+  it("finds nothing to explain in a derived joint pot", () => {
+    // The "shared" split hands the household figure to the joint pot whole,
+    // deficit and all, so there is no residual to account for.
+    expect(
+      savingsResidual({
+        ...base,
+        split: "shared",
+        total: -5000,
+        shared: -5000,
+        unallocated: 0,
+      })
+    ).toEqual({ slack: 0, overCommitted: 0, deficit: 0 })
+  })
+
+  it("adds back up to the residual it came from, with the signs it promises", () => {
+    for (const total of TOTALS) {
+      for (const config of SAVINGS_CONFIGS) {
+        const { state, summary } = householdSaving(total, config)
+        const a = attributeSavings(state, summary)
+        const r = savingsResidual(a)
+        expect(r.slack + r.overCommitted + r.deficit).toBeCloseTo(a.unallocated, 6)
+        expect(r.slack).toBeGreaterThanOrEqual(0)
+        expect(r.overCommitted).toBeLessThanOrEqual(0)
+        expect(r.deficit).toBeLessThanOrEqual(0)
+      }
     }
   })
 })

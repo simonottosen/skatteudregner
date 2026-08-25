@@ -10,6 +10,7 @@ import { formatDKK } from "@/lib/format"
 import type { CategoryKind } from "@/lib/budget/categories"
 import {
   DEFAULT_SAVINGS_SPLIT,
+  savingsResidual,
   type SavingsAttribution,
   type SavingsSplit,
 } from "@/lib/budget/savings-split"
@@ -128,15 +129,23 @@ export function savingsSplitView(input: {
   const components: SavingsFigure[] = []
   if (a.shared !== 0 || a.split !== DEFAULT_SAVINGS_SPLIT)
     components.push({ label: "Fælles opsparing", amount: a.shared })
-  if (a.p1 !== 0 || a.p2 !== 0) {
+  // Likewise the two personal rows: on an explicit "hver sit" split, "0 kr."
+  // each is the answer to the question the couple asked, and dropping the rows
+  // would leave a joint amount larger than the total with nothing beside it.
+  if (a.p1 !== 0 || a.p2 !== 0 || a.split === "individual") {
     components.push({ label: p1Label, amount: a.p1 })
     components.push({ label: p2Label, amount: a.p2 })
   }
-  if (Math.abs(a.unallocated) >= KRONE)
-    components.push({
-      label: a.unallocated > 0 ? "Ikke fordelt" : "Fordelt for meget",
-      amount: a.unallocated,
-    })
+  // One row per reason the attribution does not add up to the total, because
+  // "you have shared out too much" and "you are spending more than you earn"
+  // need different answers from the reader.
+  const residual = savingsResidual(a)
+  if (residual.slack >= KRONE)
+    components.push({ label: "Ikke fordelt", amount: residual.slack })
+  if (residual.overCommitted <= -KRONE)
+    components.push({ label: "Fordelt for meget", amount: residual.overCommitted })
+  if (residual.deficit <= -KRONE)
+    components.push({ label: "Underskud i budgettet", amount: residual.deficit })
 
   // A single component *is* the total, so restating it under a second label
   // would only invite the reader to add the two together.
@@ -175,10 +184,13 @@ export function savingsSplitView(input: {
         "husstandens samlede opsparing."
     )
 
+  // Only the part they actually shared out too much. A month in deficit is not
+  // something "sæt beløbene ned" can fix, and it is already reported as its own
+  // figure — telling them here as well would put the blame in the wrong place.
   const warning =
-    a.unallocated <= -KRONE
-      ? `I har fordelt ${formatDKK(-a.unallocated)} mere om måneden, end ` +
-        "husstanden sparer op. Sæt beløbene ned, eller find plads i budgettet."
+    residual.overCommitted <= -KRONE
+      ? `I har fordelt ${formatDKK(-residual.overCommitted)} mere om måneden, ` +
+        "end husstanden sparer op. Sæt beløbene ned, eller find plads i budgettet."
       : undefined
 
   return { figures, notes, warning, p1Label, p2Label }

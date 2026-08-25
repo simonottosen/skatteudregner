@@ -115,8 +115,49 @@ export interface SavingsAttribution {
    * everything they save, negative when they have promised more than the
    * budget produces. Never silently absorbed into one of the other buckets:
    * hiding it is how a plan comes to claim savings the household has not got.
+   *
+   * A negative value has two possible causes, and they call for different
+   * answers — see {@link savingsResidual}.
    */
   unallocated: number
+}
+
+/**
+ * {@link SavingsAttribution.unallocated} split by cause. The three sum back to
+ * it exactly, so a breakdown that shows them still reconciles with `total`.
+ */
+export interface SavingsResidual {
+  /** Saved but not earmarked for anything yet. Never negative. */
+  slack: number
+  /** Earmarked beyond what the household saves. Never positive. */
+  overCommitted: number
+  /** The household spends more than it earns. Never positive. */
+  deficit: number
+}
+
+/**
+ * Tells the two reasons a residual can be negative apart.
+ *
+ * Over-commitment is measured against `max(0, total)`, not `total`: a household
+ * spending more than it earns has nothing to hand out, and comparing against
+ * the negative figure would accuse a couple that has stated no amounts at all
+ * of having shared out too much. Their problem is the deficit, which the budget
+ * already reports on its own — so it gets its own bucket rather than being
+ * dressed up as an attribution mistake.
+ */
+export function savingsResidual(a: SavingsAttribution): SavingsResidual {
+  const earmarked = a.shared + a.p1 + a.p2
+  // Subtract in this order rather than negating a maximum: `-Math.max(0, …)`
+  // yields -0 for a household that fits, and -0 formats as "-0 kr.".
+  const overCommitted = Math.min(0, Math.max(0, a.total) - earmarked)
+  return {
+    slack: Math.max(0, a.unallocated),
+    overCommitted,
+    // Whatever the shortfall is not explained by over-commitment. Zero for any
+    // household that saves something, because there `unallocated` is exactly
+    // `total − earmarked`.
+    deficit: Math.min(0, a.unallocated) - overCommitted,
+  }
 }
 
 /**
@@ -177,8 +218,14 @@ export function attributeSavings(
       const p2 = amountOr(state.savings?.allocation?.p2)
       return { ...base, shared, p1, p2, unallocated: total - shared - p1 - p2 }
     }
-    const each = (total - shared) / 2
-    return { ...base, shared, p1: each, p2: each, unallocated: 0 }
+    // A joint amount larger than the pot leaves nothing to halve. Halving the
+    // negative difference instead would put a below-zero figure under each
+    // person's name and label it savings, which is both untrue and outside the
+    // range the couple can even type. The shortfall goes to the residual, where
+    // it is reported rather than hidden.
+    const rest = total - shared
+    const each = Math.max(0, rest) / 2
+    return { ...base, shared, p1: each, p2: each, unallocated: Math.min(0, rest) }
   }
 
   // "shared", and "with-expenses" over a shared expense list: one joint pot.
