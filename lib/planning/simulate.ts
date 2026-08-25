@@ -18,6 +18,7 @@ import type {
   PlanningState,
   PropertyEvent,
 } from "./types"
+import { amortizeYear } from "./amortisation"
 import {
   PRIVATE_PAYOUT_OFFSET,
   afterPalReturn,
@@ -151,33 +152,6 @@ function nextNormal(rng: () => number): number {
   while (u === 0) u = rng()
   while (v === 0) v = rng()
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
-}
-
-/**
- * One year of mortgage paydown: the principal portion of an annuity payment at
- * the assumed mortgage rate. Interest is already covered by budget expenses, so
- * only the principal reduction matters for equity. Returns the new balance.
- */
-function amortizeYear(
-  mortgage: number,
-  rate: number,
-  monthsLeft: number
-): number {
-  if (mortgage <= 0) return 0
-  // Past the loan term there are no more scheduled payments — leave any
-  // balance (e.g. equity borrowed during retirement) untouched.
-  if (monthsLeft <= 0) return mortgage
-  const rMonth = rate / 12
-  const annuity =
-    rMonth > 0
-      ? (mortgage * rMonth) / (1 - Math.pow(1 + rMonth, -monthsLeft))
-      : mortgage / monthsLeft
-  let balance = mortgage
-  for (let m = 0; m < 12 && balance > 0; m++) {
-    const interest = balance * rMonth
-    balance = Math.max(0, balance - (annuity - interest))
-  }
-  return balance
 }
 
 /** Apply a single life event to the running state (mutates and returns it). */
@@ -454,7 +428,14 @@ function runPath(
     const equityBefore = s.homeValue - s.mortgage
     s.homeValue *= 1 + s.housingReturn + housingShockFor(y)
     if (s.homeValue < 0) s.homeValue = 0
-    s.mortgage = amortizeYear(s.mortgage, state.mortgageRate, s.mortgageMonthsLeft)
+    // Afdragsfrihed is counted from today, not from when the loan was taken out
+    // — the user enters the years they have left of it.
+    s.mortgage = amortizeYear(
+      s.mortgage,
+      state.mortgageRate,
+      s.mortgageMonthsLeft,
+      y <= state.mortgageInterestOnlyYears
+    ).balance
     s.mortgageMonthsLeft = Math.max(0, s.mortgageMonthsLeft - 12)
 
     // 2b) Cash buffer keeps its real value (grows with price inflation).
@@ -463,11 +444,11 @@ function runPath(
     // 2c) Other (non-mortgage) debt amortizes. While working the payment comes
     // out of salary (like the mortgage); in retirement it's an explicit outflow.
     const debtBefore = s.debt
-    s.debt = amortizeYear(s.debt, state.otherDebtRate, s.debtMonthsLeft)
+    const debtYear = amortizeYear(s.debt, state.otherDebtRate, s.debtMonthsLeft)
+    s.debt = debtYear.balance
     s.debtMonthsLeft = Math.max(0, s.debtMonthsLeft - 12)
     const debtPrincipal = debtBefore - s.debt
-    const debtInterest = debtBefore * state.otherDebtRate
-    const debtServiceThisYear = retired ? debtPrincipal + debtInterest : 0
+    const debtServiceThisYear = retired ? debtPrincipal + debtYear.interest : 0
 
     // 3) Cash flow. While working: deposit the contribution (forbrug is paid
     // from salary). In retirement: cover inflation-grown spending from net

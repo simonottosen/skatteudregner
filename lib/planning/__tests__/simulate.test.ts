@@ -334,6 +334,72 @@ describe("simulatePlanning", () => {
     expect(at60.homeEquity).toBeCloseTo(3_000_000, -4)
   })
 
+  it("builds no equity while afdragsfrihed runs, then catches up", () => {
+    // Home value is flat here, so equity moves only with the mortgage balance.
+    const base = {
+      currentAge: 40,
+      endAge: 90,
+      retirementAge: 65,
+      startInvestments: 0,
+      monthlyContribution: 0,
+      homeValue: 3_000_000,
+      mortgageBalance: 2_000_000,
+      mortgageRate: 0.04,
+      mortgageTermYears: 20,
+      assumptions: {
+        ...DEFAULT_PLANNING_STATE.assumptions,
+        housingReturn: 0,
+        volatility: 0,
+      },
+    }
+    const plain = simulatePlanning(makeState(base))
+    const io = simulatePlanning(
+      makeState({ ...base, mortgageInterestOnlyYears: 5 })
+    )
+    const at = (r: typeof plain, age: number) =>
+      r.points.find((p) => p.age === age)!
+
+    // Nothing repaid for five years — equity sits at the starting 1 M.
+    expect(at(io, 45).homeEquity).toBeCloseTo(1_000_000, 0)
+    expect(at(io, 45).homeEquity).toBeLessThan(at(plain, 45).homeEquity)
+    // Then the skipped principal is squeezed into the years left, so afdrag
+    // (the whole housing gain at 0 % appreciation) steps up above the plain loan.
+    expect(at(io, 45).housingGainYoY).toBeCloseTo(0, 0)
+    expect(at(io, 46).housingGainYoY).toBeGreaterThan(
+      at(plain, 46).housingGainYoY * 1.2
+    )
+    // The loan keeps its maturity, so it is still gone twenty years in.
+    expect(io.debtFreeAge).toBe(60)
+  })
+
+  it("pushes the debt-free age out of reach when afdragsfrihed covers the term", () => {
+    // Interest-only to maturity leaves nothing scheduled to repay the principal.
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 40,
+        endAge: 90,
+        retirementAge: 65,
+        startInvestments: 0,
+        monthlyContribution: 0,
+        homeValue: 3_000_000,
+        mortgageBalance: 2_000_000,
+        mortgageRate: 0.04,
+        mortgageTermYears: 20,
+        mortgageInterestOnlyYears: 20,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          housingReturn: 0,
+          volatility: 0,
+        },
+      })
+    )
+    expect(res.debtFreeAge).toBeNull()
+    expect(res.points.find((p) => p.age === 70)!.homeEquity).toBeCloseTo(
+      1_000_000,
+      0
+    )
+  })
+
   it("reports no debt-free age when there is no mortgage", () => {
     const res = simulatePlanning(
       makeState({ currentAge: 30, endAge: 60, homeValue: 0, mortgageBalance: 0 })

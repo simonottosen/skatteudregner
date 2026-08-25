@@ -312,6 +312,12 @@ export function normalizePlanning(raw: unknown): PlanningState {
       1,
       40
     ),
+    mortgageInterestOnlyYears: clampNum(
+      o.mortgageInterestOnlyYears,
+      DEFAULT_PLANNING_STATE.mortgageInterestOnlyYears,
+      0,
+      40
+    ),
     monthlyContribution: clampNum(o.monthlyContribution, 0, 0),
     annualSpending: clampNum(o.annualSpending, 0, 0),
     assumptions: normalizeAssumptions(o.assumptions),

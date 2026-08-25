@@ -783,6 +783,22 @@ export function PlanningOverview() {
               value={state.mortgageBalance}
               onChange={(v) => planning.patch({ mortgageBalance: v })}
             />
+            <NumberInput
+              id="plan-mortgage-interest-only"
+              label="Afdragsfrihed (år tilbage)"
+              helperText="Lånet har samme udløb — restgælden afdrages bagefter over færre år, så ydelsen stiger."
+              min={0}
+              max={state.mortgageTermYears}
+              value={state.mortgageInterestOnlyYears}
+              onChange={(_e, { value }) =>
+                planning.patch({
+                  mortgageInterestOnlyYears: num(
+                    value,
+                    state.mortgageInterestOnlyYears
+                  ),
+                })
+              }
+            />
             <MoneyInput
               id="plan-other-debt"
               label="Anden gæld (forbrugs-/billån, SU mv.)"
