@@ -270,6 +270,12 @@ export function normalizePlanning(raw: unknown): PlanningState {
   const o = raw as Partial<PlanningState>
   const currentAge = clampNum(o.currentAge, DEFAULT_PLANNING_STATE.currentAge, 0, 100)
   const endAge = clampNum(o.endAge, DEFAULT_PLANNING_STATE.endAge, currentAge + 1, 120)
+  const mortgageTermYears = clampNum(
+    o.mortgageTermYears,
+    DEFAULT_PLANNING_STATE.mortgageTermYears,
+    1,
+    40
+  )
   return {
     version: 1,
     currentAge,
@@ -306,17 +312,14 @@ export function normalizePlanning(raw: unknown): PlanningState {
     ),
     mortgageBalance: clampNum(o.mortgageBalance, 0, 0),
     mortgageRate: clampNum(o.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2),
-    mortgageTermYears: clampNum(
-      o.mortgageTermYears,
-      DEFAULT_PLANNING_STATE.mortgageTermYears,
-      1,
-      40
-    ),
+    mortgageTermYears,
+    // Afdragsfrihed sits inside the loan term, so a longer period than the loan
+    // itself describes a loan that is never repaid.
     mortgageInterestOnlyYears: clampNum(
       o.mortgageInterestOnlyYears,
       DEFAULT_PLANNING_STATE.mortgageInterestOnlyYears,
       0,
-      40
+      mortgageTermYears
     ),
     monthlyContribution: clampNum(o.monthlyContribution, 0, 0),
     annualSpending: clampNum(o.annualSpending, 0, 0),

@@ -46,6 +46,12 @@ interface SimState {
   mortgage: number
   /** Months left on the current mortgage (drives the amortization annuity). */
   mortgageMonthsLeft: number
+  /**
+   * Set once a property event has swapped the loan out. The afdragsfri step-up
+   * is scheduled from the loan the user described, so it stops meaning anything
+   * after that loan is gone.
+   */
+  mortgageReplaced: boolean
   /** Housing return for the current home (a property event can change it). */
   housingReturn: number
   /** Monthly contribution (a recurring event can change it). */
@@ -130,6 +136,40 @@ function fundShortfall(
   return { tax, sold, borrowed, unfunded: Math.max(0, shortfall) }
 }
 
+/**
+ * Per-year increase in mortgage service caused by afdragsfrihed, indexed by
+ * year (element 0 unused).
+ *
+ * `monthlyContribution` and `annualSpending` both come from the budget, which
+ * has already deducted what the household pays the lender *today*. So the
+ * simulation must charge the difference from today's payment, never the payment
+ * itself — hence the subtraction of the first year's service.
+ *
+ * Deliberately a schedule of the loan the user described rather than a reading
+ * of the running balance: equity borrowed during retirement also raises the
+ * service, and feeding that back in would compound into an ever-growing charge
+ * that borrows more every year to pay for the last year's borrowing.
+ */
+function afdragsfriStepUp(state: PlanningState, years: number): number[] {
+  const out = new Array<number>(Math.max(0, years) + 1).fill(0)
+  const ioYears = state.mortgageInterestOnlyYears
+  if (ioYears <= 0 || state.mortgageBalance <= 0) return out
+
+  let balance = state.mortgageBalance
+  let monthsLeft = Math.max(1, Math.round(state.mortgageTermYears * 12))
+  let baseline = 0
+  for (let y = 1; y < out.length && balance > 1; y++) {
+    const before = balance
+    const step = amortizeYear(balance, state.mortgageRate, monthsLeft, y <= ioYears)
+    balance = step.balance
+    const service = before - balance + step.interest
+    if (y === 1) baseline = service
+    out[y] = service - baseline
+    monthsLeft = Math.max(0, monthsLeft - 12)
+  }
+  return out
+}
+
 const MC_RUNS = 400
 const MC_SEED = 0x9e3779b9
 
@@ -191,6 +231,7 @@ function applyEvent(
       s.homeValue = ev.newValue
       s.mortgage = ev.newValue * ltv
       s.mortgageMonthsLeft = MORTGAGE_TERM_MONTHS // fresh 30-year loan
+      s.mortgageReplaced = true
       s.housingReturn = ev.housingReturnOverride ?? globalHousingReturn
       break
     }
@@ -362,7 +403,10 @@ function runPath(
     cash: state.cashBuffer,
     debt: state.otherDebtBalance,
     debtMonthsLeft: Math.max(0, Math.round(state.otherDebtTermYears * 12)),
+    mortgageReplaced: false,
   }
+
+  const stepUpByYear = afdragsfriStepUp(state, years)
 
   // Apply any events registered at the starting age before recording year 0.
   for (const e of byAge.get(state.currentAge) ?? []) {
@@ -437,6 +481,10 @@ function runPath(
       y <= state.mortgageInterestOnlyYears
     ).balance
     s.mortgageMonthsLeft = Math.max(0, s.mortgageMonthsLeft - 12)
+    // When afdragsfrihed ends the skipped principal is squeezed into a shorter
+    // remainder and the payment steps up. Charging that is what stops the
+    // faster paydown from showing up as equity nobody paid for.
+    const mortgageServiceDelta = s.mortgageReplaced ? 0 : stepUpByYear[y]
 
     // 2b) Cash buffer keeps its real value (grows with price inflation).
     s.cash *= 1 + state.assumptions.inflation
@@ -479,7 +527,7 @@ function runPath(
       // outruns the saving is drawn from assets rather than deposited as a
       // negative amount, which would quietly drain the portfolio and report the
       // year as a withdrawal under "Indbetalinger".
-      const net = contribution - propertyTaxThisYear
+      const net = contribution - propertyTaxThisYear - mortgageServiceDelta
       contribThisYear = Math.max(0, net)
       s.investments += contribThisYear
       s.investmentBasis += contribThisYear
@@ -489,8 +537,13 @@ function runPath(
       const inflatedSpending =
         state.annualSpending * Math.pow(1 + state.assumptions.inflation, y)
       spendingThisYear = inflatedSpending
-      // Living costs plus any remaining other-debt service and property tax.
-      const need = inflatedSpending + debtServiceThisYear + propertyTaxThisYear
+      // Living costs plus any remaining other-debt service, property tax and
+      // the afdragsfri step-up if the period ends after retiring.
+      const need =
+        inflatedSpending +
+        debtServiceThisYear +
+        propertyTaxThisYear +
+        mortgageServiceDelta
       const surplus = netPensionByYear[y] - need
       if (surplus >= 0) {
         // A surplus first repays any equity borrowed earlier for spending
