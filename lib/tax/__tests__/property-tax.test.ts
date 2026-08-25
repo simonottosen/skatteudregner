@@ -87,19 +87,26 @@ describe("Property tax", () => {
   })
 
   /**
-   * Condos run both rates through the same reduction, so the brackets have to
-   * stay disjoint there too. This pins the bracket structure only — whether the
-   * reduction itself belongs on a condo at all is tracked separately.
+   * A condo runs both bracket rates through the same nedslag, so the brackets
+   * have to stay disjoint there too.
+   *
+   * Stated as the *gap* to an identical house rather than as absolute condo
+   * rates. Whether a condo should get that nedslag at all is wrong today and
+   * tracked in #17, so asserting the effective condo rate here would pin a
+   * figure we already know has to change. The gap is the structural claim: one
+   * nedslag per bracket. Stacking applies it twice above the limit and once
+   * below, so the two ratios diverge — and if #17 removes the nedslag, both
+   * collapse to zero and the test still holds.
    */
-  it("7.2d - keeps the brackets disjoint for a condo", () => {
+  it("7.2d - applies the condo nedslag once per bracket, not twice", () => {
     const limit = rates.ejendomsvaerdiSkatThreshold
-    const low = rates.ejendomsvaerdiSkatLowRate - rates.ejendomsvaerdiSkatPre1998Rate
-    const high = rates.ejendomsvaerdiSkatHighRate - rates.ejendomsvaerdiSkatPre1998Rate
-    const excess = 12_000_000 - limit
-    expect(evs(limit, true)).toBe(Math.round(low * limit))
-    expect(evs(12_000_000, true)).toBe(Math.round(low * limit + high * excess))
-    // Marginal rate above the limit is the condo high rate on its own.
-    expect(evs(12_000_000, true) - evs(limit, true)).toBeCloseTo(high * excess, -1)
+    const excess = 3_000_000
+    const belowGap = evs(limit) - evs(limit, true)
+    const aboveGap =
+      evs(limit + excess) -
+      evs(limit) -
+      (evs(limit + excess, true) - evs(limit, true))
+    expect(aboveGap / excess).toBeCloseTo(belowGap / limit, 5)
   })
 
   it("7.3 - with ownership share 50%", () => {
