@@ -335,6 +335,23 @@ describe("Pensionistnedslag (ejendomsskatteloven §§ 25-26)", () => {
     ).toBe(withoutPensioner)
   })
 
+  it("does not let enlig forsørger stand in for folkepensionsalderen", () => {
+    // The default birth date is decades short of folkepensionsalderen, and
+    // enlig forsørger is not one of § 25's groups, so the full tax stands.
+    expect(evsFor({ ...bothProperties, singleParent: true })).toBe(
+      withoutPensioner,
+    )
+  })
+
+  it("keeps the nedslag for a single parent who has reached the age", () => {
+    // The age test is the only one there is, so ticking enlig forsørger must not
+    // take the nedslag away either — nor let it skip the § 26 graduation.
+    expect(nedslag({ singleParent: true })).toBe(8_000)
+    expect(
+      nedslag({ singleParent: true, transferIncome: threshold + 40_000 }),
+    ).toBe(8_000 - 2_000)
+  })
+
   it("grades a couple on the spouses' combined personlige indkomst", () => {
     // The pensioner alone sits exactly at the couple's grundbeløb, so every
     // krone the spouse earns is above it: 5 % of 60.000 kr. = 3.000 kr.
