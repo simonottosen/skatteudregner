@@ -58,7 +58,7 @@ export function usePlanning() {
   // total come off the shared budget summary rather than being derived a second
   // time here — /resultat reads that same object, and re-deriving it is how the
   // two pages came to disagree in the first place (issue #2).
-  const { budgetExpenses, remaining: budgetRemaining } = budget
+  const { budgetExpenses, remaining: budgetRemaining, savingsAttribution } = budget
 
   const mortgage = budget.state.mortgage
 
@@ -316,6 +316,15 @@ export function usePlanning() {
      * built on a saving of zero and no hint that the premise is impossible.
      */
     budgetRemaining,
+    /**
+     * How the budget page splits the household's monthly saving between joint
+     * and personal goals. The projection stays a single household simulation
+     * and is divided by these shares afterwards — simulating each person
+     * separately would double a 400-run Monte Carlo that already reruns on
+     * every keystroke, for an answer that differs only in cross-person tax
+     * interactions this model does not have.
+     */
+    savingsAttribution,
     patch,
     setAssumption,
     setPension,

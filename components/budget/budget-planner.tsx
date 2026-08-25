@@ -27,9 +27,20 @@ import {
 import { CATEGORY_KINDS, UNCATEGORIZED_ID } from "@/lib/budget/categories"
 import { computeMortgage, looksLikeMortgage } from "@/lib/budget/mortgage"
 import {
+  DEFAULT_SAVINGS_SPLIT,
+  SAVINGS_SPLITS,
+  statedSavingsPatch,
+  type SavingsAttribution,
+  type SavingsConfig,
+  type SavingsSplit,
+} from "@/lib/budget/savings-split"
+import {
   CATEGORY_KIND_LABELS,
+  SAVINGS_SPLIT_LABELS,
   savingsBreakdownView,
+  savingsSplitView,
   type SavingsBreakdownView,
+  type SavingsSplitView,
 } from "@/lib/budget/savings-view"
 import { MoneyInput } from "@/components/planlaegning/money-input"
 import { BudgetWizard } from "./budget-wizard"
@@ -314,6 +325,105 @@ function SavingsBreakdown({ view }: { view: SavingsBreakdownView }) {
   )
 }
 
+/**
+ * Lets a couple say "we save X together and Y each". Only the attribution of an
+ * already-computed household figure changes here — no amount moves in or out of
+ * the budget, so every downstream total is untouched by the choice.
+ */
+function SavingsSplitCard({
+  view,
+  config,
+  attribution,
+  onChange,
+}: {
+  view: SavingsSplitView
+  config: SavingsConfig | undefined
+  attribution: SavingsAttribution
+  onChange: (patch: Partial<SavingsConfig>) => void
+}) {
+  const split = config?.split ?? DEFAULT_SAVINGS_SPLIT
+  const manual = config?.manual === true
+  const allocation = config?.allocation ?? { p1: 0, p2: 0 }
+
+  return (
+    <Card className="mb-6">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-lg">Opsparing — fælles og hver for sig</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <RadioButtonGroup
+          legendText="Hvordan deler I opsparingen?"
+          name="savings-split"
+          valueSelected={split}
+          onChange={(value) => onChange({ split: value as SavingsSplit })}
+        >
+          {SAVINGS_SPLITS.map((option) => (
+            <RadioButton
+              key={option}
+              labelText={SAVINGS_SPLIT_LABELS[option]}
+              value={option}
+              id={`savings-split-${option}`}
+            />
+          ))}
+        </RadioButtonGroup>
+
+        {split === "individual" && (
+          <>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <MoneyInput
+                id="savings-shared"
+                label="Fælles opsparing / md."
+                value={config?.sharedPortion ?? 0}
+                onChange={(v) => onChange({ sharedPortion: v })}
+              />
+              {manual && (
+                <>
+                  <MoneyInput
+                    id="savings-p1"
+                    label={`${view.p1Label} / md.`}
+                    value={allocation.p1}
+                    onChange={(v) =>
+                      onChange({ allocation: { ...allocation, p1: v } })
+                    }
+                  />
+                  <MoneyInput
+                    id="savings-p2"
+                    label={`${view.p2Label} / md.`}
+                    value={allocation.p2}
+                    onChange={(v) =>
+                      onChange({ allocation: { ...allocation, p2: v } })
+                    }
+                  />
+                </>
+              )}
+            </div>
+            <Checkbox
+              id="savings-manual"
+              labelText="Vi lægger forskellige beløb til side hver især"
+              checked={manual}
+              onChange={(_e, { checked }) =>
+                onChange(statedSavingsPatch(config, checked, attribution))
+              }
+            />
+          </>
+        )}
+
+        {view.warning && (
+          <InlineNotification
+            className="max-w-full"
+            kind="warning"
+            lowContrast
+            hideCloseButton
+            title="Mere fordelt end sparet op"
+            subtitle={view.warning}
+          />
+        )}
+        <SavingsBreakdown view={view} />
+      </CardContent>
+    </Card>
+  )
+}
+
 export function BudgetPlanner() {
   const router = useRouter()
   const budget = useBudget()
@@ -342,9 +452,18 @@ export function BudgetPlanner() {
     setCategoryKind,
     setAssumptions,
     setMortgage,
+    setSavings,
     mortgageMonthly,
+    savingsAttribution,
   } = budget
   const savingsView = savingsBreakdownView(budget)
+  const splitView = savingsSplitView({
+    attribution: savingsAttribution,
+    mode: state.mode,
+    p1Name: state.person1.name,
+    p2Name: state.person2.name,
+    mortgageMonthly,
+  })
   const [wizardOpen, setWizardOpen] = useState(false)
   const mortgage = state.mortgage
   const mortgageBreakdown = computeMortgage(mortgage)
@@ -741,6 +860,16 @@ export function BudgetPlanner() {
           )}
         </CardContent>
       </Card>
+
+      {/* Joint vs. personal savings — a couple only */}
+      {splitView && (
+        <SavingsSplitCard
+          view={splitView}
+          config={state.savings}
+          attribution={savingsAttribution}
+          onChange={setSavings}
+        />
+      )}
 
       {/* Summary + expenses */}
       {state.mode === "separate" ? (

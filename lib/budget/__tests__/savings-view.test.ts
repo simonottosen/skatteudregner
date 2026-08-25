@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { computeBudgetSummary, normalizeBudget } from "../state"
-import { savingsBreakdownView } from "../savings-view"
+import { savingsBreakdownView, savingsSplitView } from "../savings-view"
+import { attributeSavings, type SavingsConfig } from "../savings-split"
 
 /** 30.000 in; `savings` and `sinking` are monthly kroner in those buckets. */
 function summary(opts: { savings?: number; sinking?: number; mortgage?: boolean }) {
@@ -81,5 +82,180 @@ describe("savingsBreakdownView", () => {
     // number should not have to guess why this page disagrees.
     const notes = savingsBreakdownView(summary({ savings: 3000 }))?.notes ?? []
     expect(notes.some((n) => n.includes("Opsparingsraten på Resultat"))).toBe(true)
+  })
+})
+
+/**
+ * A couple saving 26.000 a month: 50.000 in (28.000 + 22.000), 24.000 consumed
+ * and 3.000 already sitting in an Opsparing category. Same figures either way
+ * the expenses are arranged, so the two layouts stay comparable.
+ */
+function splitView(
+  opts: {
+    mode?: "single" | "shared" | "separate"
+    savings?: SavingsConfig
+    p2Name?: string
+  } = {}
+) {
+  const mode = opts.mode ?? "shared"
+  const separate = mode === "separate"
+  const state = normalizeBudget({
+    mode,
+    person1: {
+      name: "Anna",
+      incomeSource: "manual",
+      manualIncome: 28000,
+      items: separate
+        ? [
+            { id: "x", label: "Husleje", amount: 12000, categoryId: "bolig" },
+            { id: "z", label: "Opsparing", amount: 3000, categoryId: "opsparing" },
+          ]
+        : [],
+    },
+    person2: {
+      name: opts.p2Name ?? "Bo",
+      incomeSource: "manual",
+      manualIncome: 22000,
+      items: separate
+        ? [{ id: "y", label: "Husleje", amount: 12000, categoryId: "bolig" }]
+        : [],
+    },
+    categories: [
+      { id: "bolig", name: "Bolig" },
+      { id: "opsparing", name: "Opsparing" },
+    ],
+    sharedItems: separate
+      ? []
+      : [
+          { id: "a", label: "Husleje", amount: 24000, categoryId: "bolig" },
+          { id: "b", label: "Opsparing", amount: 3000, categoryId: "opsparing" },
+        ],
+    savings: opts.savings,
+  })
+  const sum = computeBudgetSummary(state, 0, 0)
+  return savingsSplitView({
+    attribution: attributeSavings(state, sum),
+    mode: state.mode,
+    p1Name: state.person1.name,
+    p2Name: state.person2.name,
+    mortgageMonthly: sum.mortgageMonthly,
+  })
+}
+
+describe("savingsSplitView", () => {
+  it("stays quiet for a one-person household", () => {
+    // There is nobody to share with, so the whole question is moot.
+    expect(splitView({ mode: "single" })).toBeNull()
+  })
+
+  it("shows one joint figure for a couple on a shared budget", () => {
+    // A second row restating the same 26.000 under "i alt" would only invite
+    // the reader to add the two together.
+    expect(splitView()?.figures).toEqual([
+      { label: "Fælles opsparing", amount: 26000, highlight: true },
+    ])
+  })
+
+  it("names each person when the budget is split per person", () => {
+    const view = splitView({ mode: "separate" })
+    expect(view?.figures).toEqual([
+      { label: "Anna", amount: 16000 },
+      { label: "Bo", amount: 10000 },
+      { label: "Opsparing i alt / md.", amount: 26000, highlight: true },
+    ])
+  })
+
+  it("falls back to a placeholder for a blank name", () => {
+    expect(splitView({ mode: "separate", p2Name: "  " })?.p2Label).toBe("Person 2")
+  })
+
+  it("splits the remainder evenly until two amounts are stated", () => {
+    const view = splitView({
+      savings: { split: "individual", sharedPortion: 5000 },
+    })
+    expect(view?.figures).toEqual([
+      { label: "Fælles opsparing", amount: 5000 },
+      { label: "Anna", amount: 10500 },
+      { label: "Bo", amount: 10500 },
+      { label: "Opsparing i alt / md.", amount: 26000, highlight: true },
+    ])
+    expect(view?.warning).toBeUndefined()
+  })
+
+  it("shows what is left over when the couple states its own amounts", () => {
+    const view = splitView({
+      savings: {
+        split: "individual",
+        sharedPortion: 5000,
+        allocation: { p1: 1000, p2: 1000 },
+        manual: true,
+      },
+    })
+    expect(view?.figures).toEqual([
+      { label: "Fælles opsparing", amount: 5000 },
+      { label: "Anna", amount: 1000 },
+      { label: "Bo", amount: 1000 },
+      { label: "Ikke fordelt", amount: 19000 },
+      { label: "Opsparing i alt / md.", amount: 26000, highlight: true },
+    ])
+  })
+
+  it("warns rather than quietly capping an over-commitment", () => {
+    const view = splitView({
+      savings: {
+        split: "individual",
+        sharedPortion: 20000,
+        allocation: { p1: 4000, p2: 4000 },
+        manual: true,
+      },
+    })
+    expect(view?.figures).toContainEqual({
+      label: "Fordelt for meget",
+      amount: -2000,
+    })
+    expect(view?.warning).toContain("2.000 kr.")
+  })
+
+  it("says how the realkredit payment was apportioned, and only then", () => {
+    // The per-person expense cards leave the loan unallocated; the savings
+    // figures cannot, or they would not add up to the household's. Saying so is
+    // what keeps both statements honest on the same page.
+    const state = normalizeBudget({
+      mode: "separate",
+      person1: {
+        name: "Anna",
+        incomeSource: "manual",
+        manualIncome: 28000,
+        items: [{ id: "x", label: "Mad", amount: 8000, categoryId: "bolig" }],
+      },
+      person2: {
+        name: "Bo",
+        incomeSource: "manual",
+        manualIncome: 22000,
+        items: [{ id: "y", label: "Mad", amount: 7000, categoryId: "bolig" }],
+      },
+      categories: [{ id: "bolig", name: "Bolig" }],
+      mortgage: {
+        enabled: true,
+        homeValue: 2_000_000,
+        remainingYears: 30,
+        ltv: 0.8,
+        interestRate: 0.04,
+        bidragssats: 0.006,
+        interestOnly: false,
+      },
+    })
+    const sum = computeBudgetSummary(state, 0, 0)
+    const view = savingsSplitView({
+      attribution: attributeSavings(state, sum),
+      mode: "separate",
+      p1Name: "Anna",
+      p2Name: "Bo",
+      mortgageMonthly: sum.mortgageMonthly,
+    })
+    expect(view?.notes.some((n) => n.includes("50/50"))).toBe(true)
+    expect(splitView({ mode: "separate" })?.notes.some((n) => n.includes("50/50"))).toBe(
+      false
+    )
   })
 })
