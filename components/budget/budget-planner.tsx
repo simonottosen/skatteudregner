@@ -309,7 +309,7 @@ function SavingsBreakdown({ view }: { view: SavingsBreakdownView }) {
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         {view.figures.map((f) => (
           <Figure
-            key={f.label}
+            key={f.id}
             label={f.label}
             amount={f.amount}
             tone={f.highlight ? "remaining" : undefined}
