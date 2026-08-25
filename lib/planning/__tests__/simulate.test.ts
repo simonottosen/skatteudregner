@@ -9,6 +9,8 @@ import {
   DEFAULT_TAX_PROFILE,
   type PlanningState,
 } from "../types"
+import { amortizeYear } from "../amortisation"
+import { applyScenario } from "../scenario"
 import { pensionIncomeTax, type TaxContext } from "../taxation"
 import { afterPalReturn } from "../pension"
 
@@ -332,6 +334,236 @@ describe("simulatePlanning", () => {
     // Mortgage gone → home equity equals the (flat) home value afterwards.
     const at60 = res.points.find((p) => p.age === 60)!
     expect(at60.homeEquity).toBeCloseTo(3_000_000, -4)
+  })
+
+  it("builds no equity while afdragsfrihed runs, then catches up", () => {
+    // Home value is flat here, so equity moves only with the mortgage balance.
+    // The contribution has to cover the step-up: a household that cannot pay it
+    // borrows against the house instead, which cancels the extra afdrag out of
+    // equity and is its own case below.
+    const base = {
+      currentAge: 40,
+      endAge: 90,
+      retirementAge: 65,
+      startInvestments: 0,
+      monthlyContribution: 20_000,
+      homeValue: 3_000_000,
+      mortgageBalance: 2_000_000,
+      mortgageRate: 0.04,
+      mortgageTermYears: 20,
+      assumptions: {
+        ...DEFAULT_PLANNING_STATE.assumptions,
+        housingReturn: 0,
+        volatility: 0,
+      },
+    }
+    const plain = simulatePlanning(makeState(base))
+    const io = simulatePlanning(
+      makeState({ ...base, mortgageInterestOnlyYears: 5 })
+    )
+    const at = (r: typeof plain, age: number) =>
+      r.points.find((p) => p.age === age)!
+
+    // Nothing repaid for five years — equity sits at the starting 1 M.
+    expect(at(io, 45).homeEquity).toBeCloseTo(1_000_000, 0)
+    expect(at(io, 45).homeEquity).toBeLessThan(at(plain, 45).homeEquity)
+    // Then the skipped principal is squeezed into the years left, so afdrag
+    // (the whole housing gain at 0 % appreciation) steps up above the plain loan.
+    expect(at(io, 45).housingGainYoY).toBeCloseTo(0, 0)
+    expect(at(io, 46).housingGainYoY).toBeGreaterThan(
+      at(plain, 46).housingGainYoY * 1.2
+    )
+    // The loan keeps its maturity, so it is still gone twenty years in.
+    expect(io.debtFreeAge).toBe(60)
+  })
+
+  it("pushes the debt-free age out of reach when afdragsfrihed covers the term", () => {
+    // Interest-only to maturity leaves nothing scheduled to repay the principal.
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 40,
+        endAge: 90,
+        retirementAge: 65,
+        startInvestments: 0,
+        monthlyContribution: 0,
+        homeValue: 3_000_000,
+        mortgageBalance: 2_000_000,
+        mortgageRate: 0.04,
+        mortgageTermYears: 20,
+        mortgageInterestOnlyYears: 20,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          housingReturn: 0,
+          volatility: 0,
+        },
+      })
+    )
+    expect(res.debtFreeAge).toBeNull()
+    expect(res.points.find((p) => p.age === 70)!.homeEquity).toBeCloseTo(
+      1_000_000,
+      0
+    )
+  })
+
+  /**
+   * The two tests above run with `monthlyContribution: 0`, so `Math.max(0, …)`
+   * swallowed anything charged against the contribution — which is how the
+   * step-up came to be modelled on the balance sheet but not in the cash flow.
+   * These run with a real contribution so the payment has somewhere to land.
+   */
+  describe("the afdragsfri step-up is charged to the household", () => {
+    // Every source of growth is off, so a krone of net worth can only come from
+    // a krone the household actually put in.
+    const base = {
+      currentAge: 40,
+      endAge: 70,
+      retirementAge: 100, // never retires — contributions run the whole horizon
+      startInvestments: 0,
+      monthlyContribution: 10_000,
+      homeValue: 3_000_000,
+      mortgageBalance: 2_000_000,
+      mortgageRate: 0.04,
+      mortgageTermYears: 20,
+      includePropertyTax: false,
+      assumptions: {
+        ...DEFAULT_PLANNING_STATE.assumptions,
+        investmentReturn: 0,
+        investmentFee: 0,
+        volatility: 0,
+        inflation: 0,
+        housingReturn: 0,
+        contributionGrowth: 0,
+      },
+    }
+    const run = (mortgageInterestOnlyYears: number) =>
+      simulatePlanning(makeState({ ...base, mortgageInterestOnlyYears }))
+    const contribAt = (r: ReturnType<typeof run>, age: number) =>
+      r.points.find((p) => p.age === age)!.contributionYoY
+
+    // Derived from the loan module rather than restated from the simulation, so
+    // this is an independent expectation and not a copy of the implementation.
+    const IO_YEARS = 5
+    const ioService = 2_000_000 * 0.04 // balance stands still → interest only
+    const afterCliff = amortizeYear(
+      2_000_000,
+      0.04,
+      (20 - IO_YEARS) * 12 // maturity is fixed: the term lost those five years
+    )
+    const stepUp = 2_000_000 - afterCliff.balance + afterCliff.interest - ioService
+
+    it("leaves a plan without afdragsfrihed completely untouched", () => {
+      // The reconciliation must be invisible to every existing projection.
+      const r = run(0)
+      for (const p of r.points.slice(1)) {
+        expect(p.contributionYoY).toBeCloseTo(120_000, 6)
+      }
+    })
+
+    it("does not touch contributions while the period runs", () => {
+      // The budget-derived contribution already nets off today's interest-only
+      // payment, so nothing changes until the payment does.
+      const r = run(IO_YEARS)
+      for (let age = 41; age <= 45; age++) {
+        expect(contribAt(r, age)).toBeCloseTo(120_000, 6)
+      }
+    })
+
+    it("cuts the contribution by exactly the rise in the payment", () => {
+      const r = run(IO_YEARS)
+      expect(stepUp).toBeGreaterThan(0)
+      expect(contribAt(r, 46)).toBeCloseTo(120_000 - stepUp, 6)
+      // …and stays there for the rest of the shortened term.
+      expect(contribAt(r, 59)).toBeCloseTo(120_000 - stepUp, 6)
+    })
+
+    it("stops charging once the loan is repaid", () => {
+      // A repaid loan can leave a sub-krone residue; treating that as "still
+      // servicing" refunded the whole baseline payment every year after.
+      const r = run(IO_YEARS)
+      expect(r.debtFreeAge).toBe(60)
+      expect(contribAt(r, 61)).toBeCloseTo(120_000, 6)
+      expect(contribAt(r, 70)).toBeCloseTo(120_000, 6)
+    })
+
+    it("no longer hands over equity nobody paid for", () => {
+      // With nothing growing, terminal wealth is the house plus what was paid
+      // in. Before the step-up was charged the household reached the same
+      // debt-free age on an unreduced contribution, ending ~1,46 mio. richer
+      // for free.
+      const r = run(IO_YEARS)
+      const paidIn = r.points.reduce((t, p) => t + p.contributionYoY, 0)
+      expect(r.points.find((p) => p.age === 60)!.netWorth).toBeCloseTo(
+        3_000_000 + 120_000 * IO_YEARS + (120_000 - stepUp) * (20 - IO_YEARS),
+        0
+      )
+      expect(r.points.at(-1)!.netWorth).toBeCloseTo(3_000_000 + paidIn, 0)
+      expect(r.points.at(-1)!.netWorth).toBeLessThan(
+        run(0).points.at(-1)!.netWorth
+      )
+    })
+
+    it("charges the step-up against assets when it lands after retiring", () => {
+      // Retired at 44, cliff at 46: there is no contribution left to reduce, so
+      // the payment has to come out of the portfolio instead of being ignored.
+      // Ages 45 and 46 are both retired years, one either side of the cliff, so
+      // the difference between their drawdowns isolates the step-up.
+      const r = simulatePlanning(
+        makeState({
+          ...base,
+          retirementAge: 44,
+          startInvestments: 5_000_000, // deep enough never to run dry
+          annualSpending: 100_000,
+          mortgageInterestOnlyYears: IO_YEARS,
+        })
+      )
+      const inv = (age: number) =>
+        r.points.find((p) => p.age === age)!.investments
+      const drawdownBefore = inv(44) - inv(45)
+      const drawdownAtCliff = inv(45) - inv(46)
+      expect(drawdownAtCliff - drawdownBefore).toBeCloseTo(stepUp, 6)
+    })
+  })
+
+  it("survives a scenario shortening the term below the afdragsfri period", () => {
+    // `applyScenario` spreads overrides straight onto the state without going
+    // back through `normalizePlanning`, and `mortgageInterestOnlyYears` is not
+    // itself overridable — so a scenario that shortens the term is the one way
+    // an afdragsfri period can outlast the loan it belongs to. No clamp is
+    // needed at the point of use: past maturity `amortizeYear` charges interest
+    // only regardless, so the extra afdragsfri years ask for what already
+    // happens. This pins that, since the obvious "fix" is a clamp no test can
+    // tell apart from its absence.
+    const base = makeState({
+      currentAge: 40,
+      endAge: 90,
+      retirementAge: 65,
+      startInvestments: 0,
+      monthlyContribution: 30_000,
+      homeValue: 3_000_000,
+      mortgageBalance: 2_000_000,
+      mortgageRate: 0.04,
+      mortgageTermYears: 30,
+      mortgageInterestOnlyYears: 25,
+      assumptions: {
+        ...DEFAULT_PLANNING_STATE.assumptions,
+        housingReturn: 0,
+        volatility: 0,
+      },
+    })
+    const res = simulatePlanning(
+      applyScenario(base, { overrides: { mortgageTermYears: 10 } })
+    )
+    // Interest-only for the whole (shortened) term leaves the principal
+    // untouched: still 2 M owed when the loan matures at 50 and ever after.
+    expect(res.debtFreeAge).toBeNull()
+    expect(res.points.find((p) => p.age === 50)!.homeEquity).toBeCloseTo(
+      1_000_000,
+      0
+    )
+    expect(res.points.find((p) => p.age === 60)!.homeEquity).toBeCloseTo(
+      1_000_000,
+      0
+    )
   })
 
   it("reports no debt-free age when there is no mortgage", () => {

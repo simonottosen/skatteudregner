@@ -274,6 +274,13 @@ export interface PlanningState {
   mortgageRate: number
   /** Remaining years on the mortgage (drives the debt-free age). */
   mortgageTermYears: number
+  /**
+   * Afdragsfrihed: years from now with interest only and no principal repayment.
+   * The loan keeps its maturity, so the principal skipped here is repaid over a
+   * correspondingly shorter remainder — the payment cliff when the period ends
+   * is the reason to model it at all.
+   */
+  mortgageInterestOnlyYears: number
   /** Monthly amount saved/invested in DKK (defaults to budget "til rådighed"). */
   monthlyContribution: number
   /** Annual household spending in DKK, used for the FI threshold. */
@@ -307,6 +314,7 @@ export const DEFAULT_PLANNING_STATE: PlanningState = {
   mortgageBalance: 0,
   mortgageRate: 0.041,
   mortgageTermYears: 30,
+  mortgageInterestOnlyYears: 0,
   monthlyContribution: 0,
   annualSpending: 0,
   assumptions: { ...DEFAULT_ASSUMPTIONS },
