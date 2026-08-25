@@ -272,6 +272,22 @@ export interface PlanningState {
   mortgageBalance: number
   /** Annual interest rate used to amortize the mortgage. */
   mortgageRate: number
+  /**
+   * Annual bidragssats — the realkredit fee, charged on the outstanding balance
+   * on top of interest and afdrag.
+   *
+   * Modelled so the payment the simulation charges is the *same quantity* as
+   * {@link mortgageBudgetedMonthly}, which the budget reports inclusive of
+   * bidrag. Leaving it out would hand back a fee that was never charged, every
+   * year, and lose it again at maturity.
+   *
+   * Zero by default because /planlaegning never asks for a bidragssats: the real
+   * one arrives with the budget's own figure, which is the only place the fee
+   * and the deduction it is reconciled against are guaranteed to describe one
+   * loan. A hand-entered loan therefore models interest + afdrag only — an
+   * omission the projection states rather than a fee it invents.
+   */
+  mortgageBidragssats: number
   /** Remaining years on the mortgage (drives the debt-free age). */
   mortgageTermYears: number
   /**
@@ -281,6 +297,28 @@ export interface PlanningState {
    * is the reason to model it at all.
    */
   mortgageInterestOnlyYears: number
+  /**
+   * The monthly realkredit payment the household's budget already subtracted
+   * before reporting the surplus that becomes `monthlyContribution`
+   * (`remaining = income − expenses − mortgage`, `lib/budget/state.ts`). Bidrag
+   * included, because the budget's figure includes it.
+   *
+   * Carried in from the budget rather than reconstructed from the loan above.
+   * The budget's mortgage module is off by default and then deducts nothing,
+   * while `mortgageBalance` can still be inferred from the interest entered on
+   * /skat — so the two describe different loans at least as often as the same
+   * one, and reconstructing this would credit payments no one ever made.
+   *
+   * An explicit 0 means "the budget deducted nothing", and the whole modelled
+   * payment is charged. That is what the stated inputs imply, but it is also a
+   * plan describing itself two ways at once, so `mortgageBudgetNotice`
+   * (`./summary`) says so instead of letting the arithmetic pass unremarked.
+   *
+   * Deliberately absent from `ScenarioChanges["overrides"]`: it measures the
+   * budget, not the plan. A what-if about a larger loan should still be priced
+   * against the payment the household actually makes today.
+   */
+  mortgageBudgetedMonthly: number
   /** Monthly amount saved/invested in DKK (defaults to budget "til rådighed"). */
   monthlyContribution: number
   /** Annual household spending in DKK, used for the FI threshold. */
@@ -313,8 +351,10 @@ export const DEFAULT_PLANNING_STATE: PlanningState = {
   propertyTaxInBudget: false,
   mortgageBalance: 0,
   mortgageRate: 0.041,
+  mortgageBidragssats: 0,
   mortgageTermYears: 30,
   mortgageInterestOnlyYears: 0,
+  mortgageBudgetedMonthly: 0,
   monthlyContribution: 0,
   annualSpending: 0,
   assumptions: { ...DEFAULT_ASSUMPTIONS },

@@ -139,8 +139,13 @@ function fundShortfall(
 }
 
 /**
- * One year of servicing a loan: the principal repaid plus the interest accrued,
- * i.e. what actually leaves the household's account.
+ * One year of servicing a loan: the principal repaid, the interest accrued and
+ * the bidrag charged — i.e. what actually leaves the household's account.
+ *
+ * Bidrag is taken on the balance the year opens with, which is how the budget
+ * quotes it (`loan × bidragssats`, `lib/budget/mortgage.ts`), so a plan whose
+ * loan is the budget's loan reconciles to zero in year one instead of to a
+ * rounding-sized residue.
  *
  * A repaid loan leaves a sub-krone floating-point residue, which needs no floor
  * here: the residue's service is a residue too, so a paid-off loan costs ~0 a
@@ -150,11 +155,33 @@ function serviceYear(
   balance: number,
   rate: number,
   monthsLeft: number,
-  interestOnly: boolean
+  interestOnly: boolean,
+  bidragssats: number
 ): { service: number; balance: number } {
   if (balance <= 0) return { service: 0, balance: 0 }
   const step = amortizeYear(balance, rate, monthsLeft, interestOnly)
-  return { service: balance - step.balance + step.interest, balance: step.balance }
+  return {
+    service: balance - step.balance + step.interest + balance * bidragssats,
+    balance: step.balance,
+  }
+}
+
+/**
+ * The plan's own loan costs this much a month in its first year. Not used by the
+ * cash flow — that reads the schedule below — but it is the figure that makes
+ * `mortgageBudgetNotice` (`./summary`) actionable, and it has to be the same
+ * arithmetic or the notice would quote a payment the projection never charges.
+ */
+export function modelledMortgageMonthly(state: PlanningState): number {
+  return (
+    serviceYear(
+      state.mortgageBalance,
+      state.mortgageRate,
+      mortgageTermMonths(state),
+      state.mortgageInterestOnlyYears >= 1,
+      state.mortgageBidragssats
+    ).service / 12
+  )
 }
 
 interface MortgageCost {
@@ -170,34 +197,33 @@ interface MortgageCost {
    */
   byYear: number[]
   /**
-   * The payment the household's budget has already deducted.
-   * `monthlyContribution` is the budget's surplus, and the budget subtracts the
-   * realkredit payment before reporting it (`remaining = income − expenses −
-   * mortgage`, `lib/budget/state.ts`). So the working household has already
-   * paid this much to its lender by the time the contribution reaches the
-   * simulation, and may only be charged what the modelled service differs from
-   * it by.
+   * The payment the household's budget already deducted, per year — a reading of
+   * `state.mortgageBudgetedMonthly` and never of the loan above. The working
+   * household has already paid this much to its lender by the time the
+   * contribution reaches the simulation, so it may only be charged what the
+   * modelled service differs from it by. See {@link PlanningState.mortgageBudgetedMonthly}.
    *
-   * Read off the loan the user described and fixed for the whole projection:
-   * the budget was measured once, today, and never learns that a property event
-   * swapped the loan out or that it matured.
+   * Fixed for the whole projection: the budget was measured once, today, and
+   * never learns that a property event swapped the loan out or that it matured.
    */
   budgeted: number
 }
 
-/** Pure in `state`, so the Monte Carlo paths all share one schedule. */
+/**
+ * Pure in `state`, so the Monte Carlo paths all share one schedule.
+ *
+ * One bidragssats serves every loan in the projection, the plan's own and any a
+ * property event creates. The rate a lender charges does climb with LTV, so a
+ * move to a more leveraged home understates its fee slightly — but the
+ * household's own rate is better evidence about its own lender than a generic
+ * band average would be, and the move's dominant effect on bidrag, the change in
+ * balance, is modelled either way.
+ */
 function mortgageCost(state: PlanningState, years: number): MortgageCost {
   const byYear = new Array<number>(Math.max(0, years) + 1).fill(0)
   const byAge = eventsByAge(state.events)
   let balance = state.mortgageBalance
   let monthsLeft = mortgageTermMonths(state)
-
-  const budgeted = serviceYear(
-    balance,
-    state.mortgageRate,
-    monthsLeft,
-    state.mortgageInterestOnlyYears >= 1
-  ).service
 
   const swapLoanAt = (age: number) => {
     for (const e of byAge.get(age) ?? []) {
@@ -214,14 +240,15 @@ function mortgageCost(state: PlanningState, years: number): MortgageCost {
       balance,
       state.mortgageRate,
       monthsLeft,
-      y <= state.mortgageInterestOnlyYears
+      y <= state.mortgageInterestOnlyYears,
+      state.mortgageBidragssats
     )
     byYear[y] = year.service
     balance = year.balance
     monthsLeft = Math.max(0, monthsLeft - 12)
     swapLoanAt(state.currentAge + y)
   }
-  return { byYear, budgeted }
+  return { byYear, budgeted: state.mortgageBudgetedMonthly * 12 }
 }
 
 const MC_RUNS = 400
@@ -580,7 +607,9 @@ function runPath(
       // payment, so handing that payment back and charging the modelled one is
       // what keeps the two in step: a step-up or a larger loan after a move eats
       // into the saving, and a repaid loan frees the whole payment to be
-      // invested instead of being paid to a lender that no longer exists.
+      // invested instead of being paid to a lender that no longer exists. A
+      // budget that deducted nothing hands back nothing, so the whole modelled
+      // payment falls on the saving — see `mortgageBudgetedMonthly`.
       const net =
         contribution + mortgage.budgeted - mortgage.byYear[y] - propertyTaxThisYear
       contribThisYear = Math.max(0, net)

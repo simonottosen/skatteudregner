@@ -54,4 +54,81 @@ describe("normalizePlanning", () => {
       ).toBe(0)
     })
   })
+
+  describe("mortgageBudgetedMonthly", () => {
+    /**
+     * This is the payment the *budget* withheld, and the simulation hands it
+     * back before charging the modelled one. Guessing it is the failure the
+     * field exists to prevent, so every unreadable input has to land on zero —
+     * "the budget deducted nothing" — and never on a plausible-looking payment.
+     */
+    it("reads zero for a plan saved before the field existed", () => {
+      // The old shape carries a loan and no deduction. Silence is not consent:
+      // a plan that never recorded a deduction did not make one.
+      const s = normalizePlanning({ mortgageBalance: 2_000_000 })
+      expect(s.mortgageBudgetedMonthly).toBe(0)
+      expect(s.mortgageBalance).toBe(2_000_000)
+    })
+
+    it("keeps a real deduction", () => {
+      expect(
+        normalizePlanning({ mortgageBudgetedMonthly: 12_119 })
+          .mortgageBudgetedMonthly
+      ).toBe(12_119)
+    })
+
+    it("floors a negative deduction at zero", () => {
+      // A negative hand-back would be a payment the household received.
+      expect(
+        normalizePlanning({ mortgageBudgetedMonthly: -5_000 })
+          .mortgageBudgetedMonthly
+      ).toBe(0)
+    })
+
+    it("falls back to the default when absent or unusable", () => {
+      for (const raw of [
+        {},
+        { mortgageBudgetedMonthly: "12119" },
+        { mortgageBudgetedMonthly: NaN },
+      ]) {
+        expect(normalizePlanning(raw).mortgageBudgetedMonthly).toBe(
+          DEFAULT_PLANNING_STATE.mortgageBudgetedMonthly
+        )
+      }
+    })
+  })
+
+  describe("mortgageBidragssats", () => {
+    it("keeps a rate the budget would accept", () => {
+      // Same bound as the budget's own field, so a plan seeded from a budget
+      // survives the round trip with the fee it was priced with.
+      expect(
+        normalizePlanning({ mortgageBidragssats: 0.006 }).mortgageBidragssats
+      ).toBe(0.006)
+    })
+
+    it("clamps a rate outside the budget's range", () => {
+      expect(
+        normalizePlanning({ mortgageBidragssats: 0.5 }).mortgageBidragssats
+      ).toBe(0.05)
+      expect(
+        normalizePlanning({ mortgageBidragssats: -0.01 }).mortgageBidragssats
+      ).toBe(0)
+    })
+
+    it("falls back to the default when absent or unusable", () => {
+      // Zero, not a market average: /planlaegning never asks for a bidragssats,
+      // and an invented fee would be charged against the saving every year.
+      for (const raw of [
+        {},
+        { mortgageBidragssats: "0.006" },
+        { mortgageBidragssats: NaN },
+      ]) {
+        expect(normalizePlanning(raw).mortgageBidragssats).toBe(
+          DEFAULT_PLANNING_STATE.mortgageBidragssats
+        )
+      }
+      expect(DEFAULT_PLANNING_STATE.mortgageBidragssats).toBe(0)
+    })
+  })
 })

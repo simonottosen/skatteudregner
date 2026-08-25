@@ -20,6 +20,7 @@ import {
   type PlanningTaxProfile,
   type ScenarioChanges,
 } from "@/lib/planning/types"
+import { mortgageFromBudget } from "@/lib/planning/from-budget"
 import { newId, normalizePlanning } from "@/lib/planning/normalize"
 import { folkepensionAge } from "@/lib/planning/pension"
 import { getMunicipality } from "@/lib/tax/municipalities"
@@ -58,7 +59,12 @@ export function usePlanning() {
   // total come off the shared budget summary rather than being derived a second
   // time here — /resultat reads that same object, and re-deriving it is how the
   // two pages came to disagree in the first place (issue #2).
-  const { budgetExpenses, remaining: budgetRemaining, savingsAttribution } = budget
+  const {
+    budgetExpenses,
+    remaining: budgetRemaining,
+    savingsAttribution,
+    mortgageMonthly,
+  } = budget
 
   const mortgage = budget.state.mortgage
 
@@ -92,6 +98,11 @@ export function usePlanning() {
       mortgageTermYears: mortgage.enabled
         ? mortgage.remainingYears
         : DEFAULT_PLANNING_STATE.mortgageTermYears,
+      // What the budget really held back, straight off the shared summary — not
+      // what the loan above would cost. The module is off by default, and then
+      // `remaining` is gross of whatever the household pays its lender even
+      // though `mortgageBalance` was inferred from the /skat interest.
+      ...mortgageFromBudget(mortgage, mortgageMonthly),
       currentAge,
       tax: {
         year: input.year,
@@ -116,6 +127,7 @@ export function usePlanning() {
   }, [
     budgetRemaining,
     budgetExpenses,
+    mortgageMonthly,
     mortgage,
     input.property?.propertyValue,
     input.property?.landValue,

@@ -7,9 +7,19 @@ import {
   DEFAULT_PENSION_PERSON,
   DEFAULT_PLANNING_STATE,
   DEFAULT_TAX_PROFILE,
+  type PlanningResult,
   type PlanningState,
 } from "../types"
 import { amortizeYear } from "../amortisation"
+// The budget's own quote, so the reconciliation tests below compare the
+// simulation against what /budget really withholds rather than against a
+// restatement of it.
+import {
+  DEFAULT_MORTGAGE,
+  computeMortgage,
+  mortgageMonthlyTotal,
+  type MortgageState,
+} from "@/lib/budget/mortgage"
 import { applyScenario } from "../scenario"
 import { pensionIncomeTax, type TaxContext } from "../taxation"
 import { afterPalReturn } from "../pension"
@@ -27,18 +37,20 @@ function pTax(gross: number, married = false, spouse?: number): number {
 }
 
 /**
- * A year's loan service (principal repaid + interest), from the loan module
- * rather than restated from the simulation — so the mortgage expectations below
- * are independent figures and not a copy of the implementation.
+ * A year's loan service (principal repaid + interest + bidrag), from the loan
+ * module and the definition of bidrag rather than restated from the simulation —
+ * so the mortgage expectations below are independent figures and not a copy of
+ * the implementation.
  */
 function serviceOf(
   balance: number,
   rate: number,
   months: number,
-  interestOnly = false
+  interestOnly = false,
+  bidragssats = 0
 ): number {
   const y = amortizeYear(balance, rate, months, interestOnly)
-  return balance - y.balance + y.interest
+  return balance - y.balance + y.interest + balance * bidragssats
 }
 
 function makeState(overrides: Partial<PlanningState> = {}): PlanningState {
@@ -112,6 +124,11 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         homeValue: 2_000_000,
         mortgageBalance: 1_000_000,
+        // This is a balance-sheet test: the household's budget pays the loan, so
+        // the cash flow has nothing to charge and cannot borrow against the very
+        // equity being measured.
+        mortgageBudgetedMonthly:
+          serviceOf(1_000_000, DEFAULT_PLANNING_STATE.mortgageRate, 30 * 12) / 12,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           housingReturn: 0.02,
@@ -337,6 +354,9 @@ describe("simulatePlanning", () => {
         mortgageBalance: 2_000_000,
         mortgageRate: 0.04,
         mortgageTermYears: 20,
+        // Same reason as above: a budget that pays the loan keeps this about the
+        // amortisation schedule and not about how the payment is funded.
+        mortgageBudgetedMonthly: serviceOf(2_000_000, 0.04, 20 * 12) / 12,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           housingReturn: 0,
@@ -409,6 +429,11 @@ describe("simulatePlanning", () => {
         mortgageRate: 0.04,
         mortgageTermYears: 20,
         mortgageInterestOnlyYears: 20,
+        // The budget pays this loan's interest, so the balance moves with the
+        // schedule alone. Leave it out and the household has no contribution to
+        // charge the interest against, borrows it against the house instead,
+        // and the balance climbs — a real behaviour, but a different test.
+        mortgageBudgetedMonthly: serviceOf(2_000_000, 0.04, 20 * 12, true) / 12,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           housingReturn: 0,
@@ -435,6 +460,14 @@ describe("simulatePlanning", () => {
    * in the cash flow.
    */
   describe("the modelled payment is reconciled against the budget's", () => {
+    const IO_YEARS = 5
+    const service = (balance: number, months: number, interestOnly = false) =>
+      serviceOf(balance, 0.04, months, interestOnly)
+    const payment = service(2_000_000, 20 * 12) // level annuity, ~145.435/yr
+    const ioService = service(2_000_000, 20 * 12, true) // balance stands still
+    // Maturity is fixed: the term lost the afdragsfri years.
+    const stepUp = service(2_000_000, (20 - IO_YEARS) * 12) - ioService
+
     // Every source of growth is off, so a krone of net worth can only come from
     // a krone the household actually put in.
     const base = {
@@ -458,18 +491,22 @@ describe("simulatePlanning", () => {
         contributionGrowth: 0,
       },
     }
+    /**
+     * A household whose budget really does pay this loan. The deduction is
+     * *today's* payment — the interest-only one while afdragsfrihed runs — and
+     * it is stated here rather than reconstructed from the loan, because the
+     * budget is the only thing that knows what it withheld.
+     */
+    const withBudget = (mortgageInterestOnlyYears: number) => ({
+      ...base,
+      mortgageInterestOnlyYears,
+      mortgageBudgetedMonthly:
+        (mortgageInterestOnlyYears >= 1 ? ioService : payment) / 12,
+    })
     const run = (mortgageInterestOnlyYears: number) =>
-      simulatePlanning(makeState({ ...base, mortgageInterestOnlyYears }))
+      simulatePlanning(makeState(withBudget(mortgageInterestOnlyYears)))
     const contribAt = (r: ReturnType<typeof run>, age: number) =>
       r.points.find((p) => p.age === age)!.contributionYoY
-
-    const IO_YEARS = 5
-    const service = (balance: number, months: number, interestOnly = false) =>
-      serviceOf(balance, 0.04, months, interestOnly)
-    const payment = service(2_000_000, 20 * 12) // level annuity, ~145.435/yr
-    const ioService = service(2_000_000, 20 * 12, true) // balance stands still
-    // Maturity is fixed: the term lost the afdragsfri years.
-    const stepUp = service(2_000_000, (20 - IO_YEARS) * 12) - ioService
 
     it("leaves the contribution alone while a plain loan runs its term", () => {
       // A level annuity never differs from what the budget deducted, so there
@@ -543,11 +580,10 @@ describe("simulatePlanning", () => {
       // the difference between their drawdowns isolates the step-up.
       const r = simulatePlanning(
         makeState({
-          ...base,
+          ...withBudget(IO_YEARS),
           retirementAge: 44,
           startInvestments: 5_000_000, // deep enough never to run dry
           annualSpending: 100_000,
-          mortgageInterestOnlyYears: IO_YEARS,
         })
       )
       const inv = (age: number) =>
@@ -563,7 +599,7 @@ describe("simulatePlanning", () => {
       const move = (mortgageLtv: number) =>
         simulatePlanning(
           makeState({
-            ...base,
+            ...withBudget(0),
             monthlyContribution: 30_000, // 360.000/yr
             events: [
               {
@@ -596,6 +632,146 @@ describe("simulatePlanning", () => {
         const r = move(0)
         expect(contribAt(r, 46)).toBeCloseTo(360_000 + payment, 6)
       })
+    })
+  })
+
+  /**
+   * The hand-back is a reading of the *budget* (`mortgageBudgetedMonthly`),
+   * never of the modelled loan. Reconstructing it from the loan — principal +
+   * interest on the plan's own balance — is right only for the household whose
+   * budget happens to pay exactly that loan, exactly that way. These are the
+   * three households for which it is wrong.
+   */
+  describe("the hand-back comes from the budget, not from the loan", () => {
+    const base = {
+      currentAge: 40,
+      endAge: 70,
+      retirementAge: 100, // never retires — contributions run the whole horizon
+      startInvestments: 0,
+      monthlyContribution: 10_000, // 120.000/yr
+      homeValue: 3_000_000,
+      mortgageRate: 0.04,
+      mortgageTermYears: 20,
+      includePropertyTax: false,
+      assumptions: {
+        ...DEFAULT_PLANNING_STATE.assumptions,
+        investmentReturn: 0,
+        investmentFee: 0,
+        volatility: 0,
+        inflation: 0,
+        housingReturn: 0,
+        contributionGrowth: 0,
+      },
+    }
+    const contribAt = (r: PlanningResult, age: number) =>
+      r.points.find((p) => p.age === age)!.contributionYoY
+
+    it("charges the whole payment when the budget deducted nothing", () => {
+      // The budget's realkredit module is off by default, so it withholds 0 —
+      // yet `usePlanning` still infers a balance from the interest on /skat.
+      // Reconstructing the hand-back from that balance handed this household
+      // ~145.435 kr./yr it never earned, and went on handing it over after
+      // maturity, when even the modelled loan cost nothing.
+      const payment = serviceOf(2_000_000, 0.04, 20 * 12)
+      const r = simulatePlanning(
+        makeState({
+          ...base,
+          // Big enough that the whole payment fits inside it; at 10.000/md. the
+          // `Math.max(0, …)` floor would hide the size of the charge.
+          monthlyContribution: 20_000, // 240.000/yr
+          mortgageBalance: 2_000_000,
+          mortgageBudgetedMonthly: 0,
+        })
+      )
+      expect(payment).toBeGreaterThan(0)
+      expect(contribAt(r, 41)).toBeCloseTo(240_000 - payment, 6)
+      expect(r.debtFreeAge).toBe(60)
+      // Maturity returns the contribution to its full size and no further: a
+      // budget that deducted nothing has nothing to give back.
+      expect(contribAt(r, 61)).toBeCloseTo(240_000, 6)
+      expect(contribAt(r, 70)).toBeCloseTo(240_000, 6)
+    })
+
+    it("reconciles to zero against the budget's own bidrag-inclusive payment", () => {
+      // The budget quotes interest + bidrag + afdrag (`mortgageMonthlyTotal`).
+      // The modelled service has to be the same quantity or the difference is
+      // banked as saving every year — a fee-sized version of the bug above.
+      const m: MortgageState = {
+        ...DEFAULT_MORTGAGE,
+        enabled: true,
+        homeValue: 2_500_000,
+        ltv: 0.8, // a 2 mio. loan
+        interestRate: 0.04,
+        remainingYears: 20,
+        bidragssats: 0.006,
+      }
+      const quoted = computeMortgage(m)
+      expect(quoted.loan).toBe(2_000_000)
+      expect(quoted.monthlyBidrag * 12).toBeCloseTo(12_000, 6)
+
+      const r = simulatePlanning(
+        makeState({
+          ...base,
+          mortgageBalance: quoted.loan,
+          mortgageBidragssats: m.bidragssats,
+          mortgageBudgetedMonthly: mortgageMonthlyTotal(m),
+        })
+      )
+      // Year one: the plan's loan *is* the budget's loan, so the two payments
+      // cancel and the contribution passes through untouched.
+      expect(contribAt(r, 41)).toBeCloseTo(120_000, 6)
+      // Maturity frees the whole quoted payment, bidrag included. Omitting
+      // bidrag from the schedule would strand those 12.000 kr./yr with the
+      // lender forever, which is the second half of the same mistake.
+      const freed = serviceOf(2_000_000, 0.04, 20 * 12, false, m.bidragssats)
+      expect(freed).toBeCloseTo(mortgageMonthlyTotal(m) * 12, 6)
+      expect(contribAt(r, 61)).toBeCloseTo(120_000 + freed, 6)
+      expect(freed - serviceOf(2_000_000, 0.04, 20 * 12)).toBeCloseTo(12_000, 6)
+    })
+
+    it("charges the afdrag a budget on afdragsfrihed never paid", () => {
+      // The budget's `interestOnly` flag and the plan's
+      // `mortgageInterestOnlyYears` are separate inputs, so they can disagree:
+      // here the household pays interest + bidrag only, while the plan
+      // amortizes from year one. The gap is the afdrag, and it has to be
+      // charged — the plan cannot repay principal out of money nobody paid.
+      const m: MortgageState = {
+        ...DEFAULT_MORTGAGE,
+        enabled: true,
+        homeValue: 2_500_000,
+        ltv: 0.8,
+        interestRate: 0.04,
+        remainingYears: 20,
+        bidragssats: 0.006,
+        interestOnly: true, // the budget's household repays nothing
+      }
+      const budgeted = mortgageMonthlyTotal(m) * 12
+      const modelled = serviceOf(2_000_000, 0.04, 20 * 12, false, m.bidragssats)
+      const afdrag = modelled - budgeted
+      expect(afdrag).toBeGreaterThan(0)
+
+      const r = simulatePlanning(
+        makeState({
+          ...base,
+          mortgageBalance: 2_000_000,
+          mortgageBidragssats: m.bidragssats,
+          mortgageBudgetedMonthly: mortgageMonthlyTotal(m),
+          // The plan disagrees with the budget: no afdragsfrihed here.
+          mortgageInterestOnlyYears: 0,
+        })
+      )
+      expect(contribAt(r, 41)).toBeCloseTo(120_000 - afdrag, 6)
+      // The krone is not lost, only moved: the home value is flat, so what
+      // leaves the saving arrives as equity. The two differ by ~1.200 kr. and
+      // not by zero, because the budget quotes interest flat on the opening
+      // balance while the schedule accrues it on a declining one — the plan is
+      // charged the difference between two real payments, not a rounded one.
+      const equityAt = (age: number) =>
+        r.points.find((p) => p.age === age)!.homeEquity
+      const year1 = amortizeYear(2_000_000, 0.04, 20 * 12, false)
+      const repaid = 2_000_000 - year1.balance
+      expect(equityAt(41) - equityAt(40)).toBeCloseTo(repaid, 6)
+      expect(repaid - afdrag).toBeCloseTo(2_000_000 * 0.04 - year1.interest, 6)
     })
   })
 
