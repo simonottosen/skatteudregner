@@ -51,16 +51,11 @@ import {
 } from "@/lib/planning/summary"
 import { formatCompactDKK, formatDKK } from "@/lib/format"
 import { PlanningChart, type WealthView } from "./planning-chart"
-import { MoneyInput } from "./money-input"
+import { MoneyInput, num } from "./money-input"
 import { PropertyList } from "./property-list"
 import { EventEditor } from "./event-editor"
 import { ScenarioEditor } from "./scenario-editor"
 import { MunicipalitySelect } from "@/components/tax-calculator/municipality-select"
-
-function num(value: number | string, fallback: number): number {
-  const n = typeof value === "number" ? value : parseFloat(value)
-  return Number.isNaN(n) ? fallback : n
-}
 
 /** NumberInput bound to a fraction but shown as a percentage. */
 function PercentField({

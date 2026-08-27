@@ -10,7 +10,7 @@
  */
 
 import type { MortgageState } from "@/lib/budget/mortgage"
-import { DEFAULT_PROPERTY_LABEL, newId } from "./normalize"
+import { homeProperty } from "./normalize"
 import type { PlannedProperty, PlanningState } from "./types"
 
 /**
@@ -83,16 +83,5 @@ export function propertiesFromBudget(
   if (first && first.kind === "helaarsbolig") {
     return [{ ...first, value, landValue }, ...current.slice(1)]
   }
-  return [
-    {
-      id: newId("prop"),
-      label: DEFAULT_PROPERTY_LABEL.helaarsbolig,
-      kind: "helaarsbolig",
-      value,
-      landValue,
-      acquisitionAge: 0,
-      disposalAge: null,
-    },
-    ...current,
-  ]
+  return [homeProperty(value, landValue), ...current]
 }

@@ -11,7 +11,7 @@ import {
   TextInput,
 } from "@carbon/react"
 import { Add, ChevronDown, ChevronUp, TrashCan } from "@carbon/icons-react"
-import { MoneyInput } from "./money-input"
+import { MoneyInput, num } from "./money-input"
 import {
   PROPERTY_KINDS,
   PROPERTY_KIND_LABEL,
@@ -22,11 +22,6 @@ import {
   replaceProperty,
 } from "@/lib/planning/properties"
 import type { PlannedProperty, PropertyKind } from "@/lib/planning/types"
-
-function num(value: number | string, fallback: number): number {
-  const n = typeof value === "number" ? value : parseFloat(value)
-  return Number.isNaN(n) ? fallback : n
-}
 
 /**
  * The household's properties: what each is worth, what its plot is worth, and

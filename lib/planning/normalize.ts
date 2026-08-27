@@ -138,37 +138,48 @@ function normalizeProperty(raw: unknown): PlannedProperty | null {
 }
 
 /**
- * Version 1 of the plan held a single property as `homeValue` + `landValue`. A
- * blob without a `properties` array is one of those, and its home becomes the
- * first — and loan-bearing — entry of the list, owned from the start.
+ * The household's own home as a list entry: a helårsbolig it already owns and
+ * never sells. Both places that have a home but no list — a version-1 plan and
+ * the budget — describe exactly this.
+ */
+export function homeProperty(value: number, landValue: number): PlannedProperty {
+  return {
+    id: newId("prop"),
+    label: DEFAULT_PROPERTY_LABEL.helaarsbolig,
+    kind: "helaarsbolig",
+    value,
+    landValue,
+    acquisitionAge: 0,
+    disposalAge: null,
+  }
+}
+
+/**
+ * Read a plan blob's property list, migrating it if it predates one.
+ *
+ * Version 1 held a single property as `homeValue` + `landValue`. A blob without
+ * a `properties` array is one of those, and its home becomes the first — and
+ * loan-bearing — entry of the list.
  *
  * Keyed on the array being absent rather than on `version`, because a blob can
  * arrive from localStorage, Supabase or an MCP client with any version field it
- * likes, and the shape is the thing actually being asked about.
+ * likes, and the shape is the thing actually being asked about. That is also why
+ * this takes the whole blob: the legacy amounts it falls back to are siblings of
+ * the field it reads, not something a caller could pass separately.
  */
-export function normalizeProperties(value: unknown, legacy?: unknown): PlannedProperty[] {
-  if (Array.isArray(value)) {
+export function normalizeProperties(blob: unknown): PlannedProperty[] {
+  const o = (blob ?? {}) as Record<string, unknown>
+  if (Array.isArray(o.properties)) {
     const out: PlannedProperty[] = []
-    for (const raw of value) {
+    for (const raw of o.properties) {
       const p = normalizeProperty(raw)
       if (p) out.push(p)
     }
     return out
   }
-  const o = (legacy ?? {}) as Record<string, unknown>
   const homeValue = clampNum(o.homeValue, 0, 0)
   if (homeValue <= 0) return []
-  return [
-    {
-      id: newId("prop"),
-      label: DEFAULT_PROPERTY_LABEL.helaarsbolig,
-      kind: "helaarsbolig",
-      value: homeValue,
-      landValue: clampNum(o.landValue, 0, 0),
-      acquisitionAge: 0,
-      disposalAge: null,
-    },
-  ]
+  return [homeProperty(homeValue, clampNum(o.landValue, 0, 0))]
 }
 
 export function normalizePensionPerson(value: unknown): PensionPerson {
@@ -252,7 +263,7 @@ export function normalizeScenarioChanges(value: unknown): ScenarioChanges {
     // A scenario may also say "what if I also owned a summer house", so the
     // legacy scalars are read here too — the same migration the base plan gets.
     if ("properties" in ov || "homeValue" in ov)
-      out.properties = normalizeProperties(ov.properties, ov)
+      out.properties = normalizeProperties(ov)
     if (typeof ov.includePropertyTax === "boolean") out.includePropertyTax = ov.includePropertyTax
     if (typeof ov.propertyTaxInBudget === "boolean")
       out.propertyTaxInBudget = ov.propertyTaxInBudget
@@ -371,10 +382,7 @@ export function normalizePlanning(raw: unknown): PlanningState {
       1,
       40
     ),
-    properties: normalizeProperties(
-      (o as Record<string, unknown>).properties,
-      o
-    ),
+    properties: normalizeProperties(o),
     includePropertyTax: boolOr(
       o.includePropertyTax,
       DEFAULT_PLANNING_STATE.includePropertyTax

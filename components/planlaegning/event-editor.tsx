@@ -13,7 +13,7 @@ import type {
   PlanningEvent,
   PlanningEventType,
 } from "@/lib/planning/types"
-import { MoneyInput } from "./money-input"
+import { MoneyInput, num } from "./money-input"
 
 const TYPE_LABEL: Record<PlanningEventType, string> = {
   expense: "Stor engangsudgift (fx bryllup)",
@@ -82,11 +82,6 @@ function fromDraft(d: Draft): NewPlanningEvent {
         housingReturnOverride: d.housingReturnPct / 100,
       }
   }
-}
-
-function num(value: number | string, fallback: number): number {
-  const n = typeof value === "number" ? value : parseFloat(value)
-  return Number.isNaN(n) ? fallback : n
 }
 
 export function EventEditor({

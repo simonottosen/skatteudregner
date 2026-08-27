@@ -268,7 +268,9 @@ export function createPropertyPortfolioTax(
     }
 
     // The nedslag-bearing call: both § 25 dwellings at once, so the graduation
-    // is applied to their combined amounts exactly once.
+    // is applied to their combined amounts exactly once. A missing kind indexes
+    // at -1 and reads `undefined`, which `setSlot` zeroes — the engine then
+    // returns nothing for that slot rather than taxing a property of 0 kr.
     setSlot(home, properties[homeIdx], f)
     setSlot(summer, properties[summerIdx], f)
     input.birthDate = syntheticBirthDate(age, profile.year)

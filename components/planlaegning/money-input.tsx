@@ -2,6 +2,16 @@
 
 import { TextInput } from "@carbon/react"
 
+/**
+ * Carbon's `NumberInput` reports an empty or half-typed field as a string, so
+ * every caller needs the same reading of it: the number if there is one, and the
+ * value already held if there is not — never NaN, which would reach the state.
+ */
+export function num(value: number | string, fallback: number): number {
+  const n = typeof value === "number" ? value : parseFloat(value)
+  return Number.isNaN(n) ? fallback : n
+}
+
 /** Group whole kroner with Danish thousand separators: 2000000 → "2.000.000". */
 function group(n: number): string {
   if (!Number.isFinite(n) || n === 0) return n === 0 ? "0" : ""
