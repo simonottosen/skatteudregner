@@ -7,6 +7,7 @@ import {
   DEFAULT_PENSION_PERSON,
   DEFAULT_PLANNING_STATE,
   DEFAULT_TAX_PROFILE,
+  type PlannedProperty,
   type PlanningResult,
   type PlanningState,
 } from "../types"
@@ -22,12 +23,16 @@ import {
 } from "@/lib/budget/mortgage"
 import { applyScenario } from "../scenario"
 import {
+  ASSESSMENT_FACTOR,
+  createPropertyPortfolioTax,
   grossUpStockSale,
   pensionIncomeTax,
   propertyHoldingTax,
   stockGainTax,
   type TaxContext,
 } from "../taxation"
+import { getMunicipality } from "@/lib/tax/municipalities"
+import { getRates } from "@/lib/tax/rates"
 import {
   afterPalReturn,
   annuityPayment,
@@ -63,11 +68,51 @@ function serviceOf(
   return balance - y.balance + y.interest + balance * bidragssats
 }
 
-function makeState(overrides: Partial<PlanningState> = {}): PlanningState {
+let propertyIds = 0
+
+/** A plan property with the fields these tests rarely care about filled in. */
+function property(
+  fields: Partial<PlannedProperty> & { value: number }
+): PlannedProperty {
+  return {
+    id: `p${propertyIds++}`,
+    label: "Bolig",
+    kind: "helaarsbolig",
+    landValue: 0,
+    acquisitionAge: 0,
+    disposalAge: null,
+    ...fields,
+  }
+}
+
+/**
+ * The plan's own shape, plus a one-home shorthand.
+ *
+ * Most of these tests predate {@link PlanningState.properties} and describe a
+ * household with a single owner-occupied home, which is a list of one entry.
+ * Spelling that list out at every call site would bury the field each test is
+ * actually about; the tests that are about the list pass `properties` instead.
+ */
+type StateOverrides = Partial<PlanningState> & {
+  homeValue?: number
+  landValue?: number
+}
+
+function makeState(overrides: StateOverrides = {}): PlanningState {
+  const { homeValue, landValue = 0, ...rest } = overrides
+  // The shorthand wins over a list spread in from another `makeState` call, so
+  // that `makeState({ ...base, homeValue: X })` still says what it looks like.
+  const properties =
+    homeValue === undefined
+      ? (rest.properties ?? DEFAULT_PLANNING_STATE.properties)
+      : homeValue > 0
+        ? [property({ value: homeValue, landValue })]
+        : []
   return {
     ...DEFAULT_PLANNING_STATE,
-    assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, ...(overrides.assumptions ?? {}) },
-    ...overrides,
+    assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, ...(rest.assumptions ?? {}) },
+    ...rest,
+    properties,
   }
 }
 
@@ -641,6 +686,43 @@ describe("simulatePlanning", () => {
       it("frees the whole payment when the new home is bought outright", () => {
         const r = move(0)
         expect(contribAt(r, 46)).toBeCloseTo(360_000 + payment, 6)
+      })
+
+      /**
+       * Selling the mortgaged home settles that loan out of the proceeds, so the
+       * household is billed nothing from the sale onwards — but only for *that*
+       * loan. Moving into a new home afterwards is a new debt, and the schedule
+       * has to start billing again. Getting this wrong gives the household a
+       * free house: it lives in a 5.000.000 kr. home financed at 80 % and never
+       * pays a krone of service on it.
+       */
+      it("bills the loan a move takes out after the old one was repaid", () => {
+        const r = simulatePlanning(
+          makeState({
+            ...withBudget(0),
+            monthlyContribution: 30_000,
+            // The same home as `base`, but with a disposal — spelled as a list
+            // because `makeState`'s `homeValue` shorthand would otherwise win.
+            homeValue: undefined,
+            properties: [property({ value: 3_000_000, disposalAge: 45 })],
+            events: [
+              {
+                id: "p1",
+                type: "property",
+                label: "Nyt hus",
+                age: 50,
+                newValue: 5_000_000,
+                mortgageLtv: 0.8,
+              },
+            ],
+          })
+        )
+        // Sold at 45 and not yet re-bought: no loan to service, and the budget
+        // hands its whole deduction back.
+        expect(contribAt(r, 47)).toBeCloseTo(360_000 + payment, 6)
+        // Bought again at 50, so the new loan is charged from the year after.
+        expect(contribAt(r, 51)).toBeCloseTo(360_000 + payment - newPayment, 6)
+        expect(contribAt(r, 60)).toBeCloseTo(360_000 + payment - newPayment, 6)
       })
     })
   })
@@ -2189,6 +2271,276 @@ describe("simulatePlanning", () => {
       assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
     })
     expect(solveRequiredMonthlyContribution(unreachable)).toBeNull()
+  })
+
+  describe("a portfolio of more than one property", () => {
+    /** No returns, no inflation, no shocks — every figure below is derivable. */
+    const still = {
+      ...DEFAULT_PLANNING_STATE.assumptions,
+      investmentReturn: 0,
+      investmentFee: 0,
+      housingReturn: 0,
+      inflation: 0,
+      volatility: 0,
+      housingVolatility: 0,
+    }
+
+    /**
+     * A household that owns `properties` and nothing else worth modelling: no
+     * pension, no loan, no spending, on an aktiesparekonto so no sale is ever
+     * aktieindkomst. Both halves of the § 26 base are therefore zero and the
+     * nedslag is granted in full — which is what makes the § 25 amounts below
+     * readable straight off the difference between two ages.
+     */
+    const owning = (properties: PlannedProperty[], currentAge: number) =>
+      makeState({
+        currentAge,
+        endAge: currentAge + 1,
+        retirementAge: Math.min(currentAge, 65),
+        startInvestments: 5_000_000,
+        investmentTaxMode: "ask",
+        monthlyContribution: 0,
+        annualSpending: 0,
+        properties,
+        mortgageBalance: 0,
+        includePropertyTax: true,
+        propertyTaxInBudget: false,
+        assumptions: still,
+        pension: {
+          ...DEFAULT_PLANNING_STATE.pension,
+          single: true,
+          includeFolkepension: false,
+          person1: { ...DEFAULT_PENSION_PERSON },
+          person2: { ...DEFAULT_PENSION_PERSON },
+        },
+      })
+
+    /** The first full year's charge on this portfolio at this age. */
+    const charge = (properties: PlannedProperty[], currentAge: number) =>
+      simulatePlanning(owning(properties, currentAge)).points[1].propertyTax
+
+    /**
+     * What retirement is worth to a portfolio: the § 25 nedslag the household
+     * actually receives, as the difference between the same properties taxed
+     * below and above folkepensionsalderen.
+     */
+    const granted = (properties: PlannedProperty[]) =>
+      charge(properties, 40) - charge(properties, 70)
+
+    const home = (value: number, landValue = 0) =>
+      property({ kind: "helaarsbolig", value, landValue })
+    const summer = (value: number, landValue = 0) =>
+      property({ kind: "fritidsbolig", value, landValue })
+
+    const rates = getRates(DEFAULT_TAX_PROFILE.year)
+    const HOME_NEDSLAG = rates.ejendomsvaerdiSkatPensionerReduction
+    const SUMMER_NEDSLAG = rates.ejendomsvaerdiSkatPensionerReductionSummer
+
+    it("grades the nedslag once for the household, not once per property", () => {
+      // The regression PR #23 fixed, reached through the simulation this time:
+      // three homes are three § 22 progressions but still one § 26 graduation,
+      // and § 25 attaches to the one helårsbolig the pensioner lives in.
+      const three = [home(4_000_000), home(4_000_000), home(4_000_000)]
+      expect(granted(three)).toBe(HOME_NEDSLAG)
+      expect(granted(three)).toBeLessThan(3 * HOME_NEDSLAG)
+      // Each of them owes more than the nedslag on its own, so a per-property
+      // grant would have had room to show up.
+      expect(charge([home(4_000_000)], 40)).toBeGreaterThan(HOME_NEDSLAG)
+    })
+
+    it("adds a fritidsbolig's own 2.000 kr. to a helårsbolig's 6.000", () => {
+      // § 25 is an amount per boligenhed, so the two dwellings each keep their
+      // own — it is § 26's graduation that is spent once, and there is none to
+      // spend here.
+      expect(granted([home(4_000_000), summer(2_000_000)])).toBe(
+        HOME_NEDSLAG + SUMMER_NEDSLAG
+      )
+      expect(granted([home(4_000_000)])).toBe(HOME_NEDSLAG)
+      expect(granted([summer(2_000_000)])).toBe(SUMMER_NEDSLAG)
+    })
+
+    it("gives a third dwelling no nedslag but its own § 22 progression", () => {
+      const two = [home(4_000_000), summer(2_000_000)]
+      const third = home(12_000_000)
+      // Nothing more to claim: § 25's two slots are taken.
+      expect(granted([...two, third])).toBe(HOME_NEDSLAG + SUMMER_NEDSLAG)
+      // It is taxed all the same, at what it would owe standing alone — the
+      // progression is per property, so the third does not inherit a rate from
+      // the two it is added to.
+      expect(charge([...two, third], 40) - charge(two, 40)).toBe(
+        charge([third], 40)
+      )
+    })
+
+    it("charges grundskyld on each property's own land value", () => {
+      // Absolute kroner per property, not a share of the household's combined
+      // value: adding a summer house with land of its own costs exactly the
+      // grundskyld on that land, and adding one without land costs none.
+      const muni = getMunicipality(
+        DEFAULT_TAX_PROFILE.municipality,
+        DEFAULT_TAX_PROFILE.year
+      )!
+      const grundskyld = (land: number) =>
+        Math.round((muni.grundskyldRate / 1000) * land * ASSESSMENT_FACTOR)
+
+      const base = [home(4_000_000, 2_000_000)]
+      const noLand = charge([...base, summer(1_500_000, 0)], 40)
+      const withLand = charge([...base, summer(1_500_000, 1_000_000)], 40)
+      expect(withLand - noLand).toBe(grundskyld(1_000_000))
+      // And the plot the household already had is still charged on its own
+      // figure rather than on a fraction re-derived from the pair.
+      expect(charge(base, 40) - charge([home(4_000_000, 0)], 40)).toBe(
+        grundskyld(2_000_000)
+      )
+    })
+
+    it("starts and stops charging a property as it changes hands", () => {
+      const bought = property({
+        kind: "fritidsbolig",
+        value: 2_000_000,
+        landValue: 1_000_000,
+        acquisitionAge: 42,
+        disposalAge: 44,
+      })
+      const state = {
+        ...owning([home(4_000_000, 2_000_000), bought], 40),
+        endAge: 45,
+      }
+      const byAge = new Map(
+        simulatePlanning(state).points.map((p) => [p.age, p.propertyTax])
+      )
+      const alone = charge([home(4_000_000, 2_000_000)], 40)
+      expect(byAge.get(41)).toBe(alone)
+      // Ownership is half-open: charged from the year of purchase through the
+      // year before the sale, and nothing in the year of the sale itself.
+      expect(byAge.get(42)).toBeGreaterThan(alone)
+      expect(byAge.get(43)).toBe(byAge.get(42))
+      expect(byAge.get(44)).toBe(alone)
+      expect(byAge.get(45)).toBe(alone)
+    })
+
+    it("counts every owned property in the household's home equity", () => {
+      const both = simulatePlanning(
+        owning([home(4_000_000), summer(2_000_000)], 40)
+      ).points[1]
+      const one = simulatePlanning(owning([home(4_000_000)], 40)).points[1]
+      expect(both.homeEquity - one.homeEquity).toBe(2_000_000)
+    })
+
+    /**
+     * The invariant PR #44 established, carried onto a portfolio: the charge and
+     * the drawdown that funds it are mutually recursive under realisation, and
+     * `settleAgainstDrawdown` resolves them on a throwaway clone so that the one
+     * `fundShortfall` call against the real state fires exactly once a year. A
+     * second call would sell the pot twice over.
+     */
+    describe("under a realisation drawdown", () => {
+      const RETURN = 0.1
+      const GAIN_FRACTION = RETURN / (1 + RETURN)
+      /**
+       * Large, deliberately: this household has no pension income, so the only
+       * thing that can carry it into § 26's graduation band is the aktieindkomst
+       * of the drawdown itself — which is the coupling under test. Spending less
+       * would leave the nedslag untouched whatever the sale realised, and the
+       * settlement would have nothing to settle.
+       */
+      const SPENDING = 2_960_000
+      const HOME = home(4_000_000, 2_000_000)
+      const SUMMER = summer(2_000_000, 1_000_000)
+      const ctxAt = (t: number): TaxContext => ({
+        t,
+        inflation: 0,
+        profile: DEFAULT_TAX_PROFILE,
+        married: false,
+      })
+
+      const path = (properties: PlannedProperty[]) =>
+        simulatePlanning(
+          makeState({
+            currentAge: 69,
+            endAge: 71,
+            retirementAge: 70,
+            startInvestments: 12_000_000,
+            monthlyContribution: 0,
+            annualSpending: SPENDING,
+            properties,
+            mortgageBalance: 0,
+            includePropertyTax: true,
+            propertyTaxInBudget: false,
+            assumptions: { ...still, investmentReturn: RETURN },
+            pension: {
+              ...DEFAULT_PLANNING_STATE.pension,
+              single: true,
+              includeFolkepension: false,
+              person1: { ...DEFAULT_PENSION_PERSON },
+              person2: { ...DEFAULT_PENSION_PERSON },
+            },
+          })
+        ).points
+      const drawing = (properties: PlannedProperty[]) =>
+        path(properties).find((p) => p.age === 70)!
+
+      it("reaches a charge the sale that funds it agrees with", () => {
+        const year = drawing([HOME, SUMMER])
+        const portfolio = createPropertyPortfolioTax(DEFAULT_TAX_PROFILE, false)
+        const asked = portfolio([HOME, SUMMER], 70, ctxAt(1), {
+          personalIncome: 0,
+          positiveStockIncome: year.investmentsSold * GAIN_FRACTION,
+        })
+        expect(Math.abs(year.propertyTax - asked)).toBeLessThan(1)
+        // An interior point of the band, so the settlement had something to do:
+        // ignoring the drawdown's gain charges materially less, and the whole
+        // 6.000 + 2.000 has not been graded away either.
+        const given = (positiveStockIncome: number) =>
+          portfolio([HOME, SUMMER], 70, ctxAt(1), {
+            personalIncome: 0,
+            positiveStockIncome,
+          })
+        expect(year.propertyTax).toBeGreaterThan(given(0) + 1_000)
+        expect(year.propertyTax).toBeLessThan(given(10_000_000))
+      })
+
+      it("funds the whole year with one sale, not one per property", () => {
+        const points = path([HOME, SUMMER])
+        const opening = points.find((p) => p.age === 69)!.investments
+        const year = points.find((p) => p.age === 70)!
+        // The sale reported is the settled need — spending plus the charge the
+        // settlement landed on — grossed up for the tax on its gain.
+        expect(year.investmentsSold).toBeCloseTo(
+          grossUpStockSale(SPENDING + year.propertyTax, GAIN_FRACTION, ctxAt(1)),
+          4
+        )
+        // And the pot fell by that one sale and no more. Asserted against the
+        // balance rather than against `investmentsSold` alone, because a second
+        // `fundShortfall` against the real state drains the pot twice while
+        // still *reporting* one sale: the proportional cost basis makes both
+        // calls gross up to the same figure, so only the balance shows it.
+        expect(year.investments).toBeCloseTo(
+          opening * (1 + RETURN) - year.investmentsSold,
+          4
+        )
+        expect(year.borrowed).toBe(0)
+      })
+
+      it("settles a portfolio the same way it settles a single home", () => {
+        // One property is the case PR #44 pinned; the portfolio path has to
+        // reach the same answer for it, and a larger portfolio has to cost more
+        // rather than diverge.
+        const one = drawing([HOME])
+        expect(
+          Math.abs(
+            one.propertyTax -
+              propertyHoldingTax(HOME.value, HOME.landValue, 70, ctxAt(1), {
+                personalIncome: 0,
+                positiveStockIncome: one.investmentsSold * GAIN_FRACTION,
+              })
+          )
+        ).toBeLessThan(1)
+        expect(drawing([HOME, SUMMER]).propertyTax).toBeGreaterThan(
+          one.propertyTax
+        )
+      })
+    })
   })
 
   it("is deterministic across runs and keeps p10 <= median <= p90", () => {

@@ -51,15 +51,11 @@ import {
 } from "@/lib/planning/summary"
 import { formatCompactDKK, formatDKK } from "@/lib/format"
 import { PlanningChart, type WealthView } from "./planning-chart"
-import { MoneyInput } from "./money-input"
+import { MoneyInput, num } from "./money-input"
+import { PropertyList } from "./property-list"
 import { EventEditor } from "./event-editor"
 import { ScenarioEditor } from "./scenario-editor"
 import { MunicipalitySelect } from "@/components/tax-calculator/municipality-select"
-
-function num(value: number | string, fallback: number): number {
-  const n = typeof value === "number" ? value : parseFloat(value)
-  return Number.isNaN(n) ? fallback : n
-}
 
 /** NumberInput bound to a fraction but shown as a percentage. */
 function PercentField({
@@ -832,12 +828,6 @@ export function PlanningOverview() {
               onChange={(v) => planning.patch({ annualSpending: v * 12 })}
             />
             <MoneyInput
-              id="plan-home"
-              label="Boligværdi"
-              value={state.homeValue}
-              onChange={(v) => planning.patch({ homeValue: v })}
-            />
-            <MoneyInput
               id="plan-mortgage"
               label="Restgæld på bolig"
               value={state.mortgageBalance}
@@ -882,6 +872,19 @@ export function PlanningOverview() {
                   otherDebtTermYears: num(value, state.otherDebtTermYears),
                 })
               }
+            />
+          </div>
+          <Separator />
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium">Boliger</h3>
+            <p className="text-muted-foreground text-xs">
+              Den første bolig på listen er den, restgælden ovenfor hører til.
+            </p>
+            <PropertyList
+              properties={state.properties}
+              currentAge={state.currentAge}
+              endAge={state.endAge}
+              onChange={(properties) => planning.patch({ properties })}
             />
           </div>
           {planning.savingsSplit && (
@@ -1127,28 +1130,19 @@ export function PlanningOverview() {
           </div>
           {state.includePropertyTax && (
             <>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <MoneyInput
-                  id="plan-land-value"
-                  label="Grundværdi (til grundskyld)"
-                  value={state.landValue}
-                  onChange={(v) => planning.patch({ landValue: v })}
-                />
-                <div className="flex items-end">
-                  <Checkbox
-                    id="plan-prop-tax-in-budget"
-                    labelText="Ejendomsskatten står allerede som en udgift i mit budget"
-                    checked={state.propertyTaxInBudget}
-                    onChange={(_e, { checked }) =>
-                      planning.patch({ propertyTaxInBudget: checked })
-                    }
-                  />
-                </div>
-              </div>
+              <Checkbox
+                id="plan-prop-tax-in-budget"
+                labelText="Ejendomsskatten står allerede som en udgift i mit budget"
+                checked={state.propertyTaxInBudget}
+                onChange={(_e, { checked }) =>
+                  planning.patch({ propertyTaxInBudget: checked })
+                }
+              />
               <p className="text-muted-foreground text-[11px]">
-                Ejendomsskatten betales hele livet — også efter pension. Står den
-                allerede i dit budget, så sæt fluebenet ovenfor; ellers beregnes
-                den og trækkes både før og efter pension.
+                Ejendomsskatten beregnes af hver bolig på listen ovenfor og
+                betales hele livet — også efter pension. Står den allerede i dit
+                budget, så sæt fluebenet ovenfor; ellers beregnes den og trækkes
+                både før og efter pension.
               </p>
             </>
           )}

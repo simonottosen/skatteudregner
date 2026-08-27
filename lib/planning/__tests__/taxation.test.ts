@@ -1,18 +1,21 @@
 import { describe, it, expect } from "vitest"
 import {
   ASSESSMENT_FACTOR,
-  createPropertyHoldingTax,
+  createPropertyPortfolioTax,
   grossUpStockSale,
   nedslagRespondsToStockIncome,
   pensionIncomeTax,
+  pensionerNedslagInPlay,
   propertyHoldingTax,
   qualifiesForPensionerNedslag,
   stockGainTax,
   type PensionerIncomeYear,
+  type TaxableProperty,
   type TaxContext,
 } from "../taxation"
 import { DEFAULT_TAX_PROFILE } from "../types"
 import { getRates } from "@/lib/tax/rates"
+import { getMunicipality } from "@/lib/tax/municipalities"
 
 const ctx: TaxContext = {
   t: 0,
@@ -299,7 +302,9 @@ describe("propertyHoldingTax progression", () => {
       let saidYes = 0
       for (const personal of [0, threshold - 50_000, gradedBy(0.5), gradedBy(2)]) {
         for (const gain of [0, 20_000, 60_000, 200_000]) {
-          if (nedslagRespondsToStockIncome(ctxFor(2025), personal, gain)) {
+          if (
+            nedslagRespondsToStockIncome(ctxFor(2025), personal, gain, nedslag)
+          ) {
             saidYes++
             continue
           }
@@ -316,16 +321,24 @@ describe("propertyHoldingTax progression", () => {
 
     it("says yes inside the graduation band and no outside it", () => {
       const ctx2025 = ctxFor(2025)
-      expect(nedslagRespondsToStockIncome(ctx2025, gradedBy(0.5), 0)).toBe(true)
+      expect(
+        nedslagRespondsToStockIncome(ctx2025, gradedBy(0.5), 0, nedslag)
+      ).toBe(true)
       // Personal income alone has already taken the whole nedslag.
-      expect(nedslagRespondsToStockIncome(ctx2025, gradedBy(2), 0)).toBe(false)
+      expect(
+        nedslagRespondsToStockIncome(ctx2025, gradedBy(2), 0, nedslag)
+      ).toBe(false)
       // Far below the grundbeløb, with no gain in sight to close the distance.
-      expect(nedslagRespondsToStockIncome(ctx2025, 0, 0)).toBe(false)
+      expect(nedslagRespondsToStockIncome(ctx2025, 0, 0, nedslag)).toBe(false)
+      // A year with nothing to claim cannot move at all, however the income sits.
+      expect(
+        nedslagRespondsToStockIncome(ctx2025, gradedBy(0.5), 0, 0)
+      ).toBe(false)
     })
   })
 })
 
-describe("createPropertyHoldingTax", () => {
+describe("createPropertyPortfolioTax", () => {
   const NO_INCOME: PensionerIncomeYear = {
     personalIncome: 0,
     positiveStockIncome: 0,
@@ -363,9 +376,201 @@ describe("createPropertyHoldingTax", () => {
       ],
       [4_000_000, 2_000_000, 70, at(0), NO_INCOME],
     ]
-    const bound = createPropertyHoldingTax(profile, false)
-    for (const c of [...cases, ...[...cases].reverse()]) {
-      expect(bound(...c)).toBe(propertyHoldingTax(...c))
+    const bound = createPropertyPortfolioTax(profile, false)
+    for (const [value, landValue, age, ctx, income] of [
+      ...cases,
+      ...[...cases].reverse(),
+    ]) {
+      const one: TaxableProperty[] =
+        value > 0 ? [{ value, landValue, kind: "helaarsbolig" }] : []
+      expect(bound(one, age, ctx, income)).toBe(
+        propertyHoldingTax(value, landValue, age, ctx, income)
+      )
     }
+  })
+})
+
+/**
+ * How several dwellings share one household's pensionistnedslag.
+ *
+ * The two halves of ejendomsskatteloven pull in different directions and are
+ * easy to conflate: § 25 states an *amount per boligenhed* (6.000 kr. for a
+ * helårsbolig, 2.000 kr. for a fritidsbolig), while § 26 grades "nedslaget efter
+ * § 25" — one amount belonging to the person — by 5 % of income over a
+ * grundbeløb. Looping a single-property tax over a list would grade afresh on
+ * every property, and treating the whole thing as one per-person amount would
+ * drop the second dwelling's own 2.000 kr. Both are tested against below.
+ */
+describe("the § 25 nedslag across a portfolio", () => {
+  const NO_INCOME: PensionerIncomeYear = {
+    personalIncome: 0,
+    positiveStockIncome: 0,
+  }
+  const profile = { ...DEFAULT_TAX_PROFILE, year: 2025 as const }
+  const r = getRates(2025)
+  const HOME_NEDSLAG = r.ejendomsvaerdiSkatPensionerReduction
+  const SUMMER_NEDSLAG = r.ejendomsvaerdiSkatPensionerReductionSummer
+  const threshold = r.ejendomsvaerdiSkatPensionerIncomeThresholdSingle
+
+  const ctx: TaxContext = { t: 0, inflation: 0, profile, married: false }
+  const tax = (
+    properties: readonly TaxableProperty[],
+    age: number,
+    income: PensionerIncomeYear = NO_INCOME
+  ) => createPropertyPortfolioTax(profile, false)(properties, age, ctx, income)
+
+  const home = (value: number, landValue = 0): TaxableProperty => ({
+    value,
+    landValue,
+    kind: "helaarsbolig",
+  })
+  const summer = (value: number, landValue = 0): TaxableProperty => ({
+    value,
+    landValue,
+    kind: "fritidsbolig",
+  })
+
+  /**
+   * What the pensionistnedslag is worth this year: the same portfolio taxed at
+   * an age too young to claim it, less the charge actually made. Measured
+   * against the engine rather than restated, so it cannot drift from the rules.
+   */
+  const granted = (
+    properties: readonly TaxableProperty[],
+    income: PensionerIncomeYear = NO_INCOME
+  ) => tax(properties, 40, income) - tax(properties, 70, income)
+
+  it("grants one graduation to a household, not one per property", () => {
+    // The regression PR #23 guards, and the one issue #7's own text would have
+    // reintroduced: three dwellings must not collect three nedslag.
+    const three = [home(4_000_000), home(4_000_000), home(4_000_000)]
+    expect(granted(three)).toBe(HOME_NEDSLAG)
+    expect(granted(three)).toBeLessThan(3 * HOME_NEDSLAG)
+    // Each of them owes more than a nedslag on its own, so § 25's floor at zero
+    // is not what is holding the total down.
+    expect(tax([home(4_000_000)], 40)).toBeGreaterThan(HOME_NEDSLAG)
+  })
+
+  it("adds a fritidsbolig's own 2.000 kr. to a helårsbolig's 6.000", () => {
+    expect(granted([home(4_000_000)])).toBe(HOME_NEDSLAG)
+    expect(granted([summer(4_000_000)])).toBe(SUMMER_NEDSLAG)
+    expect(granted([home(4_000_000), summer(3_000_000)])).toBe(
+      HOME_NEDSLAG + SUMMER_NEDSLAG
+    )
+  })
+
+  it("grades the combined 6.000 + 2.000 exactly once", () => {
+    // Income that takes half of the *combined* amount. Grading each dwelling
+    // against its own maximum instead would spend the same 4.000 kr. twice:
+    // 2.000 left on the home and nothing at all on the summer house.
+    const income: PensionerIncomeYear = {
+      personalIncome:
+        threshold +
+        ((HOME_NEDSLAG + SUMMER_NEDSLAG) * 0.5) /
+          r.ejendomsvaerdiSkatPensionerIncomeRate,
+      positiveStockIncome: 0,
+    }
+    expect(granted([home(4_000_000), summer(3_000_000)], income)).toBe(
+      (HOME_NEDSLAG + SUMMER_NEDSLAG) / 2
+    )
+    // Not the per-property grading, which lands on 2.000 kr. here.
+    expect(granted([home(4_000_000), summer(3_000_000)], income)).not.toBe(
+      HOME_NEDSLAG -
+        (HOME_NEDSLAG + SUMMER_NEDSLAG) * 0.5
+    )
+  })
+
+  it("gives a third dwelling no nedslag but its own § 22 progression", () => {
+    const two = [home(4_000_000), summer(3_000_000)]
+    // 12 mio. is above the 2025 progression valuation of 11.5 mio., so its own
+    // brackets are exercised — and 52.520 kr. is what the engine charges an
+    // owner too young for any nedslag.
+    const third = home(12_000_000)
+    expect(tax([third], 40)).toBe(52_520)
+    expect(tax([...two, third], 70) - tax(two, 70)).toBe(tax([third], 40))
+    // …and it does not enlarge what the household gets for the first two.
+    expect(granted([...two, third])).toBe(HOME_NEDSLAG + SUMMER_NEDSLAG)
+  })
+
+  it("runs the § 22 progression per property, not across their sum", () => {
+    // Two 6 mio. homes are 12 mio. together, which would cross the threshold if
+    // the brackets were applied to the combined value. The engine applies them
+    // per property (`calculateEjendomsvaerdiSkat` reads one assessmentBasis), so
+    // both stay entirely in the low bracket.
+    const pair = [home(6_000_000), home(6_000_000)]
+    expect(tax(pair, 40)).toBe(2 * tax([home(6_000_000)], 40))
+    expect(tax(pair, 40)).toBe(
+      2 *
+        Math.round(
+          6_000_000 * ASSESSMENT_FACTOR * r.ejendomsvaerdiSkatLowRate
+        )
+    )
+  })
+
+  it("charges grundskyld on each property's own land value", () => {
+    // The absolute `landValue` that replaced the old global land *fraction*.
+    // Grundskyld follows the stated grundværdi and nothing else — not the
+    // building on it, and not a ratio taken across the portfolio.
+    const muni = getMunicipality(profile.municipality, profile.year)!
+    const grundskyld = (land: number) =>
+      Math.round((muni.grundskyldRate / 1000) * land * ASSESSMENT_FACTOR)
+    // Worth nothing, all plot: a ratio-of-value model would charge these zero.
+    const plots = [home(0, 500_000), summer(0, 4_000_000)]
+    expect(tax(plots, 40)).toBe(grundskyld(500_000) + grundskyld(4_000_000))
+    expect(tax(plots, 40)).toBeGreaterThan(0)
+    // All building, no plot: ejendomsværdiskat alone, whatever the rest of the
+    // household's land is worth.
+    const flat = home(10_000_000, 0)
+    const flatOnly = Math.round(
+      10_000_000 * ASSESSMENT_FACTOR * r.ejendomsvaerdiSkatLowRate
+    )
+    expect(tax([flat], 40)).toBe(flatOnly)
+    expect(tax([flat, summer(0, 4_000_000)], 40)).toBe(
+      flatOnly + grundskyld(4_000_000)
+    )
+  })
+
+  it("charges nothing for an empty portfolio", () => {
+    expect(tax([], 70)).toBe(0)
+    expect(tax([], 40)).toBe(0)
+  })
+})
+
+describe("pensionerNedslagInPlay", () => {
+  const profile = { ...DEFAULT_TAX_PROFILE, year: 2025 as const }
+  const r = getRates(2025)
+  const kinds = (...ks: TaxableProperty["kind"][]): TaxableProperty[] =>
+    ks.map((kind) => ({ value: 1, landValue: 0, kind }))
+
+  it("is the sum of the § 25 amounts the year's kinds can claim", () => {
+    expect(pensionerNedslagInPlay([], profile)).toBe(0)
+    expect(pensionerNedslagInPlay(kinds("helaarsbolig"), profile)).toBe(
+      r.ejendomsvaerdiSkatPensionerReduction
+    )
+    expect(pensionerNedslagInPlay(kinds("fritidsbolig"), profile)).toBe(
+      r.ejendomsvaerdiSkatPensionerReductionSummer
+    )
+    expect(
+      pensionerNedslagInPlay(kinds("helaarsbolig", "fritidsbolig"), profile)
+    ).toBe(
+      r.ejendomsvaerdiSkatPensionerReduction +
+        r.ejendomsvaerdiSkatPensionerReductionSummer
+    )
+  })
+
+  it("counts each kind once however many the household owns", () => {
+    // It measures the width of the band `nedslagRespondsToStockIncome` tests
+    // against, so it has to mirror which dwellings actually get a nedslag —
+    // one of each kind. Counting all four would widen the band and send the
+    // settlement looking for movement that cannot happen.
+    expect(
+      pensionerNedslagInPlay(
+        kinds("helaarsbolig", "helaarsbolig", "fritidsbolig", "fritidsbolig"),
+        profile
+      )
+    ).toBe(
+      r.ejendomsvaerdiSkatPensionerReduction +
+        r.ejendomsvaerdiSkatPensionerReductionSummer
+    )
   })
 })

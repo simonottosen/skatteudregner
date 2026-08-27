@@ -261,7 +261,17 @@ describe("mortgageBudgetNotice", () => {
    * inconsistent plan is the original bug with extra steps.
    */
   const inconsistent = makeState({
-    homeValue: 3_000_000,
+    properties: [
+      {
+        id: "p0",
+        label: "Bolig",
+        kind: "helaarsbolig",
+        value: 3_000_000,
+        landValue: 0,
+        acquisitionAge: 0,
+        disposalAge: null,
+      },
+    ],
     mortgageBalance: 2_000_000,
     mortgageRate: 0.04,
     mortgageTermYears: 20,

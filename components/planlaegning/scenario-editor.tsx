@@ -7,7 +7,7 @@ import type {
   PlanningScenario,
   ScenarioChanges,
 } from "@/lib/planning/types"
-import { MoneyInput } from "./money-input"
+import { MoneyInput, num } from "./money-input"
 
 interface Draft {
   name: string
@@ -72,11 +72,6 @@ function fromDraft(d: Draft, currentAge: number): ScenarioChanges {
   if (addEvents.length > 0) changes.addEvents = addEvents
   if (d.setRetirementAge) changes.overrides = { retirementAge: d.retirementAge }
   return changes
-}
-
-function num(value: number | string, fallback: number): number {
-  const n = typeof value === "number" ? value : parseFloat(value)
-  return Number.isNaN(n) ? fallback : n
 }
 
 export function ScenarioEditor({
