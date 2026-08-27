@@ -90,12 +90,12 @@ export function propertiesFromBudget(
  * Everything a plan reads off /skat and /budget rather than asking the user for.
  *
  * The linked half is `Partial<PlanningState>` rather than a restatement of the
- * fields, so a key that is not a plan field cannot be declared here at all. That
- * is load-bearing: `home` used to travel in this object unannounced and reach
- * persisted state as a key `PlanningState` never declared. `home` and `pension`
- * are named separately because neither *is* a plan field — the home is two
- * amounts that have to be merged into a list the user also edits, and the
- * pension is only the few person fields the other pages happen to know.
+ * fields, so a key that is not a plan field cannot be declared here at all —
+ * `home` used to travel in this object unannounced and reach persisted state as
+ * a key `PlanningState` has never had. `home` and `pension` are named separately
+ * because neither *is* a plan field: the home is two amounts that have to be
+ * merged into a list the user also edits, and the pension is only the few person
+ * fields the other pages happen to know.
  */
 export type PlanningDerivedDefaults = Partial<
   Omit<PlanningState, "properties" | "pension">
@@ -112,13 +112,12 @@ export type PlanningDerivedDefaults = Partial<
 /**
  * Fold the derived defaults into a plan.
  *
- * One function because there are two callers — the untouched-state effect and
- * the explicit "hent igen" — and when they were two copies of this merge they
- * drifted: the effect spread the defaults wholesale, so `home` landed as a stray
- * key while `properties` was never set at all. Every fresh visit takes that
- * path, which left a homeowner carrying the mortgage with neither the home nor
- * its ejendomsskat. Whether the plan counts as touched afterwards is the
- * caller's business and stays there; the merge itself is the same either way.
+ * One function because there are two callers — the effect that keeps an
+ * untouched plan mirroring the other pages, and "Hent fra skat & budget" — and
+ * as two copies of this merge they drifted. The effect never set `properties`,
+ * so a fresh visit gave a homeowner the mortgage with neither the home as an
+ * asset nor its ejendomsskat. Whether the plan counts as touched afterwards is
+ * the caller's business and stays there; the merge is the same either way.
  */
 export function applyDerivedDefaults(
   prev: PlanningState,

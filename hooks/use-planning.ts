@@ -73,9 +73,9 @@ export function usePlanning() {
 
   const mortgage = budget.state.mortgage
 
-  // Annotated so the returned literal is checked against the plan's own fields:
-  // a key that is not one (`home` and `pension` aside) is a compile error here
-  // rather than a stray property that reaches localStorage.
+  // Annotated so the literal below is checked against the plan's own fields: a
+  // key that is not one is a compile error here rather than a stray property
+  // that rides the merge into localStorage.
   const derivedDefaults = useMemo<PlanningDerivedDefaults>(() => {
     const currentAge =
       ageFromBirthDate(input.birthDate) ?? DEFAULT_PLANNING_STATE.currentAge
