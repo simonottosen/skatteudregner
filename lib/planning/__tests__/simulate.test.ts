@@ -7,6 +7,7 @@ import {
   DEFAULT_PENSION_PERSON,
   DEFAULT_PLANNING_STATE,
   DEFAULT_TAX_PROFILE,
+  type PlannedProperty,
   type PlanningResult,
   type PlanningState,
 } from "../types"
@@ -63,11 +64,51 @@ function serviceOf(
   return balance - y.balance + y.interest + balance * bidragssats
 }
 
-function makeState(overrides: Partial<PlanningState> = {}): PlanningState {
+let propertyIds = 0
+
+/** A plan property with the fields these tests rarely care about filled in. */
+function property(
+  fields: Partial<PlannedProperty> & { value: number }
+): PlannedProperty {
+  return {
+    id: `p${propertyIds++}`,
+    label: "Bolig",
+    kind: "helaarsbolig",
+    landValue: 0,
+    acquisitionAge: 0,
+    disposalAge: null,
+    ...fields,
+  }
+}
+
+/**
+ * The plan's own shape, plus a one-home shorthand.
+ *
+ * Most of these tests predate {@link PlanningState.properties} and describe a
+ * household with a single owner-occupied home, which is a list of one entry.
+ * Spelling that list out at every call site would bury the field each test is
+ * actually about; the tests that are about the list pass `properties` instead.
+ */
+type StateOverrides = Partial<PlanningState> & {
+  homeValue?: number
+  landValue?: number
+}
+
+function makeState(overrides: StateOverrides = {}): PlanningState {
+  const { homeValue, landValue = 0, ...rest } = overrides
+  // The shorthand wins over a list spread in from another `makeState` call, so
+  // that `makeState({ ...base, homeValue: X })` still says what it looks like.
+  const properties =
+    homeValue === undefined
+      ? (rest.properties ?? DEFAULT_PLANNING_STATE.properties)
+      : homeValue > 0
+        ? [property({ value: homeValue, landValue })]
+        : []
   return {
     ...DEFAULT_PLANNING_STATE,
-    assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, ...(overrides.assumptions ?? {}) },
-    ...overrides,
+    assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, ...(rest.assumptions ?? {}) },
+    ...rest,
+    properties,
   }
 }
 
