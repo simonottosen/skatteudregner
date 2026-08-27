@@ -687,6 +687,43 @@ describe("simulatePlanning", () => {
         const r = move(0)
         expect(contribAt(r, 46)).toBeCloseTo(360_000 + payment, 6)
       })
+
+      /**
+       * Selling the mortgaged home settles that loan out of the proceeds, so the
+       * household is billed nothing from the sale onwards — but only for *that*
+       * loan. Moving into a new home afterwards is a new debt, and the schedule
+       * has to start billing again. Getting this wrong gives the household a
+       * free house: it lives in a 5.000.000 kr. home financed at 80 % and never
+       * pays a krone of service on it.
+       */
+      it("bills the loan a move takes out after the old one was repaid", () => {
+        const r = simulatePlanning(
+          makeState({
+            ...withBudget(0),
+            monthlyContribution: 30_000,
+            // The same home as `base`, but with a disposal — spelled as a list
+            // because `makeState`'s `homeValue` shorthand would otherwise win.
+            homeValue: undefined,
+            properties: [property({ value: 3_000_000, disposalAge: 45 })],
+            events: [
+              {
+                id: "p1",
+                type: "property",
+                label: "Nyt hus",
+                age: 50,
+                newValue: 5_000_000,
+                mortgageLtv: 0.8,
+              },
+            ],
+          })
+        )
+        // Sold at 45 and not yet re-bought: no loan to service, and the budget
+        // hands its whole deduction back.
+        expect(contribAt(r, 47)).toBeCloseTo(360_000 + payment, 6)
+        // Bought again at 50, so the new loan is charged from the year after.
+        expect(contribAt(r, 51)).toBeCloseTo(360_000 + payment - newPayment, 6)
+        expect(contribAt(r, 60)).toBeCloseTo(360_000 + payment - newPayment, 6)
+      })
     })
   })
 
