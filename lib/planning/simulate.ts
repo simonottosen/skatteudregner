@@ -325,15 +325,15 @@ interface MortgageCost {
  * band average would be, and the move's dominant effect on bidrag, the change in
  * balance, is modelled either way.
  */
-function mortgageCost(state: PlanningState, years: number): MortgageCost {
+function mortgageCost(
+  state: PlanningState,
+  years: number,
+  schedule: PropertySchedule
+): MortgageCost {
   const byYear = new Array<number>(Math.max(0, years) + 1).fill(0)
   const byAge = eventsByAge(state.events)
   let balance = state.mortgageBalance
   let monthsLeft = mortgageTermMonths(state)
-  // The loan is secured on the first property (issue #8 gives the others their
-  // own), so selling that one repays it and the schedule stops billing for it.
-  const securedOn = state.properties[0]
-  const loanEndsAt = securedOn?.disposalAge ?? Infinity
 
   const swapLoanAt = (age: number) => {
     for (const e of byAge.get(age) ?? []) {
@@ -346,7 +346,12 @@ function mortgageCost(state: PlanningState, years: number): MortgageCost {
   // Events at the starting age fire before year 1, as they do in `runPath`.
   swapLoanAt(state.currentAge)
   for (let y = 1; y < byYear.length; y++) {
-    if (state.currentAge + y >= loanEndsAt) balance = 0
+    // The sale settles the loan out of the proceeds (`runPath`, step 2e), so the
+    // household is billed nothing from that year on. Fired once, at the sale,
+    // rather than in every later year: a move afterwards takes out a new loan,
+    // and blanking the balance again would bill nothing for a debt `runPath`
+    // does charge interest on.
+    if (y === schedule.loanRepaidYear) balance = 0
     const year = serviceYear(
       balance,
       state.mortgageRate,
@@ -523,6 +528,11 @@ function applyEvent(
       home.landValue = oldValue > 0 ? (home.landValue * ev.newValue) / oldValue : 0
       home.value = ev.newValue
       home.owned = true
+      // A move leaves the household living in a helårsbolig whatever the slot
+      // held before, which is what `MOVE_HOME` already assumes when it counts the
+      // year's § 25 amounts. Saying it here too keeps the two from disagreeing
+      // for a plan whose first entry is a fritidsbolig.
+      home.kind = "helaarsbolig"
       home.housingReturn = ev.housingReturnOverride ?? globalHousingReturn
       s.mortgage = newMortgage
       s.mortgageMonthsLeft = MORTGAGE_TERM_MONTHS // fresh 30-year loan
@@ -619,6 +629,18 @@ interface PropertySchedule {
    * settlement in {@link settleAgainstDrawdown}.
    */
   nedslagByYear: number[]
+  /**
+   * The year the loan-bearing property (index 0) is disposed of, or `Infinity`
+   * if it never is.
+   *
+   * Read by both halves of the loan's arithmetic — {@link mortgageCost} stops
+   * billing for it and {@link runPath} stops amortising it — so that the balance
+   * the sale settles is the one the household last paid for. Derived from the
+   * same ownership transitions as {@link soldByYear} rather than from
+   * `disposalAge` directly, which is what keeps the two from disagreeing about a
+   * property that is disposed of in the year it is bought.
+   */
+  loanRepaidYear: number
 }
 
 function propertySchedule(
@@ -639,6 +661,7 @@ function propertySchedule(
   // plan's own list says, so the nedslag has to see it too.
   const moveAge = firstMoveAge(state.events)
   const claiming: TaxableProperty[] = []
+  let loanRepaidYear = Infinity
 
   for (let y = 0; y <= years; y++) {
     const age = state.currentAge + y
@@ -650,6 +673,7 @@ function propertySchedule(
         if (into[y] === NO_TRANSFERS) into[y] = []
         ;(into[y] as number[]).push(i)
         owned[i] = now
+        if (i === 0 && !now && loanRepaidYear === Infinity) loanRepaidYear = y
       }
     }
     claiming.length = 0
@@ -664,7 +688,14 @@ function propertySchedule(
     }
     nedslagByYear[y] = pensionerNedslagInPlay(claiming, state.tax)
   }
-  return { items, ownedAtStart, boughtByYear, soldByYear, nedslagByYear }
+  return {
+    items,
+    ownedAtStart,
+    boughtByYear,
+    soldByYear,
+    nedslagByYear,
+    loanRepaidYear,
+  }
 }
 
 /** A year's pension income split by tax treatment, for one person. */
@@ -940,13 +971,17 @@ function runPath(
     }
     s.propertyValue = ownedValueNow
     // Afdragsfrihed is counted from today, not from when the loan was taken out
-    // — the user enters the years they have left of it.
-    s.mortgage = amortizeYear(
-      s.mortgage,
-      state.mortgageRate,
-      s.mortgageMonthsLeft,
-      y <= state.mortgageInterestOnlyYears
-    ).balance
+    // — the user enters the years they have left of it. The year the loan-bearing
+    // property is sold is skipped: `mortgageCost` bills nothing for it, so
+    // amortising anyway would hand the household a year's afdrag it never paid.
+    if (y !== schedule.loanRepaidYear) {
+      s.mortgage = amortizeYear(
+        s.mortgage,
+        state.mortgageRate,
+        s.mortgageMonthsLeft,
+        y <= state.mortgageInterestOnlyYears
+      ).balance
+    }
     s.mortgageMonthsLeft = Math.max(0, s.mortgageMonthsLeft - 12)
 
     // 2b) Cash buffer keeps its real value (grows with price inflation).
@@ -1237,17 +1272,18 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
   // Retirement income per year (deterministic — shared by all paths).
   const pension = pensionNetIncomeByYear(state)
 
-  // Also deterministic: the loan schedule doesn't care about return draws.
-  const mortgage = mortgageCost(state, years)
+  // Deterministic too: which properties are held in which year, and what § 25
+  // they can claim, turns on ages and kinds — not on a return draw.
+  const schedule = propertySchedule(state, years)
+
+  // The loan schedule doesn't care about return draws either, but it does care
+  // about the year the property it is secured on is sold.
+  const mortgage = mortgageCost(state, years, schedule)
 
   // Bound once for the whole run rather than per path: the kommune lookup and
   // the default input behind each call are fixed for the household, and the
   // paths below ask tens of thousands of times between them.
   const holdingTax = createPropertyPortfolioTax(state.tax, !state.pension.single)
-
-  // Likewise deterministic: which properties are held in which year, and what
-  // § 25 they can claim, turns on ages and kinds — not on a return draw.
-  const schedule = propertySchedule(state, years)
 
   // Deterministic path (median + growth sources).
   const deterministic = runPath(

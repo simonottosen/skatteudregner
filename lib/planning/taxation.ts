@@ -348,7 +348,7 @@ export function pensionerNedslagInPlay(
 
 /**
  * Whether the household is old enough for a § 25 pensionistnedslag at all, asked
- * the way {@link createPropertyHoldingTax} asks it: of the synthesised birth
+ * the way {@link createPropertyPortfolioTax} asks it: of the synthesised birth
  * date, so the two can never disagree about a boundary year.
  *
  * Memoised on (rules year, whole age) — the only two things it depends on, since
