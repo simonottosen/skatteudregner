@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest"
-import { calculateItemizedDeductions } from "@/lib/tax/calculations/itemized-deductions"
+import {
+  calculateAge,
+  calculateItemizedDeductions,
+  calculateRetirementAge,
+} from "@/lib/tax/calculations/itemized-deductions"
 import { calculateAmBidrag } from "@/lib/tax/calculations/am-bidrag"
 import { calculatePersonalIncome } from "@/lib/tax/calculations/personal-income"
 import { getRates } from "@/lib/tax/rates"
@@ -213,6 +217,26 @@ describe("Itemized deductions", () => {
         employeePension: 100000,
       })
       expect(result.ekstraBeskaeftigelseForsorgere).toBe(0)
+    })
+  })
+
+  // Both helpers are memoised, so what needs pinning is the key rather than the
+  // arithmetic: `calculateAge` answers a question about a rules year, and a cache
+  // keyed on the birth date alone would hand one year's age to the next.
+  describe("Age helpers", () => {
+    it("ages the same birth date by a year when the rules year moves", () => {
+      const birthDate = "1958-06-15"
+      const age2026 = calculateAge(birthDate, 2026)
+      const age2027 = calculateAge(birthDate, 2027)
+      expect(age2027 - age2026).toBeCloseTo(1, 2)
+      // Asking again in the original order must not return the later answer.
+      expect(calculateAge(birthDate, 2026)).toBe(age2026)
+    })
+
+    it("keeps the half-year retirement bands apart across repeated calls", () => {
+      expect(calculateRetirementAge("1954-06-15")).toBe(65.5)
+      expect(calculateRetirementAge("1954-07-15")).toBe(66)
+      expect(calculateRetirementAge("1954-06-15")).toBe(65.5)
     })
   })
 
