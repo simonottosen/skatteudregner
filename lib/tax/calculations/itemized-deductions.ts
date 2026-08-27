@@ -33,9 +33,12 @@ export interface ItemizedDeductionsResult {
  * Unbounded on purpose. The form supplies one birth date and the planning engine
  * synthesises them as `${year - Math.round(age)}-06-15`, so a whole simulation
  * produces a few dozen distinct keys; the count is bounded by the span of years
- * modelled rather than by how much work is asked of them, and the engine has no
- * server-side caller that could feed it arbitrary strings. No eviction policy is
- * warranted.
+ * modelled rather than by how much work is asked of them. The MCP route is a
+ * server-side caller, but its requests still cannot mint keys: the planning tools
+ * carry an age that the engine converts into one of those synthetic dates, and
+ * `compute_tax` takes its birth date from the caller's own saved profile, never
+ * from the tool arguments — no tool schema exposes a birth-date field. No
+ * eviction policy is warranted.
  */
 const ageCache = new Map<string, number>()
 const retirementAgeCache = new Map<string, number>()
