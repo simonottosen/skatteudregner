@@ -272,4 +272,15 @@ describe("newId", () => {
     expect(newId("sc").startsWith("sc-")).toBe(true)
     expect(newId().startsWith("pe-")).toBe(true)
   })
+
+  it("carries neither a counter nor the clock", () => {
+    // Both tie the id to the process that minted it, so the same list built on
+    // the server and again on the client comes out with different ids — the
+    // hydration mismatch #47 fixed. A counter still "does not repeat", so that
+    // test on its own does not notice one coming back.
+    for (const id of Array.from({ length: 50 }, () => newId("prop"))) {
+      expect(id.split("-")).toHaveLength(2)
+      expect(id).not.toMatch(/\d{10,}/)
+    }
+  })
 })
