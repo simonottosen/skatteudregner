@@ -260,6 +260,65 @@ describe("normalizePlanning", () => {
       expect(p.landValue).toBe(0)
     })
   })
+
+  /**
+   * What actually made #47's hydration fix hold, which the id format alone does
+   * not: a *random* id minted during render mismatches just as badly as the old
+   * counter did, so the guarantee is about where ids come from, not what they
+   * look like. Restoring a saved plan is the half of that boundary reachable
+   * from a test — the persisted blob is what both sides render from, so reading
+   * it has to hand back the ids it already carries and mint nothing.
+   *
+   * The mirror half — that only a user action mints a new id — lives at the
+   * call sites instead (`hooks/use-planning.ts` normalizes inside `useEffect`,
+   * never during render) and is *not* covered here: the repo carries no
+   * `@testing-library`, so a React hook cannot be rendered in a test at all.
+   */
+  describe("restoring a saved plan", () => {
+    const saved = {
+      version: 2,
+      properties: [
+        { id: "prop-4f2a9c1d", label: "Rækkehuset", kind: "helaarsbolig", value: 4_000_000 },
+        { id: "prop-b7e05a33", label: "Sommerhuset", kind: "fritidsbolig", value: 1_800_000 },
+      ],
+      events: [
+        { id: "pe-1c8d0e42", type: "expense", label: "Nyt tag", age: 45, amount: 250_000 },
+        { id: "pe-9a3b6f70", type: "recurring", label: "Deltid", age: 60, monthlyDelta: -8_000 },
+      ],
+      scenarios: [
+        {
+          id: "sc-2d61ae94",
+          name: "Sommerhus",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          changes: {
+            overrides: {
+              properties: [{ id: "prop-e5c7801b", kind: "fritidsbolig", value: 2_000_000 }],
+            },
+          },
+        },
+      ],
+    }
+
+    it("hands back every id the blob already carries", () => {
+      const s = normalizePlanning(saved)
+      expect(s.properties.map((p) => p.id)).toEqual(["prop-4f2a9c1d", "prop-b7e05a33"])
+      expect(s.events.map((e) => e.id)).toEqual(["pe-1c8d0e42", "pe-9a3b6f70"])
+      expect(s.scenarios.map((sc) => sc.id)).toEqual(["sc-2d61ae94"])
+      // A scenario's own property list is normalized down the same path.
+      expect(s.scenarios[0].changes.overrides?.properties?.map((p) => p.id)).toEqual([
+        "prop-e5c7801b",
+      ])
+    })
+
+    it("reads the same blob into the same plan twice", () => {
+      // Two independent reads of one blob — a remote sync echoing back what was
+      // just saved, or the MCP server reading the row the browser wrote — have
+      // to agree. Whole-state equality rather than the ids alone, because
+      // anything else minted per call (a `createdAt` defaulting to now) would
+      // put the two renders out of step exactly as an id does.
+      expect(normalizePlanning(saved)).toEqual(normalizePlanning(saved))
+    })
+  })
 })
 
 describe("newId", () => {
@@ -274,13 +333,21 @@ describe("newId", () => {
   })
 
   it("carries neither a counter nor the clock", () => {
-    // Both tie the id to the process that minted it, so the same list built on
-    // the server and again on the client comes out with different ids — the
-    // hydration mismatch #47 fixed. A counter still "does not repeat", so that
-    // test on its own does not notice one coming back.
-    for (const id of Array.from({ length: 50 }, () => newId("prop"))) {
+    // Both tie the id to the process that minted it, so a list built once and
+    // built again elsewhere comes out with different ids. A counter never
+    // repeats either, so "does not repeat" above cannot see one coming back.
+    const ids = Array.from({ length: 50 }, () => newId("prop"))
+    for (const id of ids) {
+      // The regression that shipped was `prop-3-1712345678901`: an extra
+      // segment, and a millisecond clock reading inside it.
       expect(id.split("-")).toHaveLength(2)
       expect(id).not.toMatch(/\d{10,}/)
     }
+    // A bare `prop-1` passes both checks above, so the format alone does not
+    // rule out a counter. What does is that every counter suffix is digits
+    // only. Asserted of the batch rather than of each id because a base-36
+    // random suffix comes out digits-only about once in 28_000 — rare enough
+    // to be worth ruling out, common enough to flake as a per-id assertion.
+    expect(ids.some((id) => /[a-z]/.test(id.split("-")[1]))).toBe(true)
   })
 })
