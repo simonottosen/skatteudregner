@@ -23,13 +23,50 @@ export interface ItemizedDeductionsResult {
   totalItemizedDeductions: number
 }
 
+/**
+ * The two helpers below are the hot spot of `calculatePropertyTax`: a planning
+ * run asks them on the order of 16.000 times and re-parses the same handful of
+ * `birthDate` strings, and the parse rather than the arithmetic is nearly all of
+ * the cost. Both are pure functions of their arguments, so the cache cannot go
+ * stale — the same reasoning `qualifiesForPensionerNedslag` already runs on.
+ *
+ * Unbounded on purpose. The form supplies one birth date and the planning engine
+ * synthesises them as `${year - Math.round(age)}-06-15`, so a whole simulation
+ * produces a few dozen distinct keys; the count is bounded by the span of years
+ * modelled rather than by how much work is asked of them. The MCP route is a
+ * server-side caller, but its requests still cannot mint keys: the planning tools
+ * carry an age that the engine converts into one of those synthetic dates, and
+ * `compute_tax` takes its birth date from the caller's own saved profile, never
+ * from the tool arguments — no tool schema exposes a birth-date field. No
+ * eviction policy is warranted.
+ */
+const ageCache = new Map<string, number>()
+const retirementAgeCache = new Map<string, number>()
+
 export function calculateAge(birthDate: string, year: number): number {
+  // The rules year moves the reference date, so it belongs in the key: caching
+  // on the birth date alone would return one year's age for another year.
+  const key = `${birthDate}|${year}`
+  const cached = ageCache.get(key)
+  if (cached !== undefined) return cached
+
   const bd = new Date(birthDate)
   const refDate = new Date(year, 11, 31)
-  return (refDate.getTime() - bd.getTime()) / (365.25 * 24 * 60 * 60 * 1000)
+  const age = (refDate.getTime() - bd.getTime()) / (365.25 * 24 * 60 * 60 * 1000)
+  ageCache.set(key, age)
+  return age
 }
 
 export function calculateRetirementAge(birthDate: string): number {
+  const cached = retirementAgeCache.get(birthDate)
+  if (cached !== undefined) return cached
+
+  const retirementAge = retirementAgeFor(birthDate)
+  retirementAgeCache.set(birthDate, retirementAge)
+  return retirementAge
+}
+
+function retirementAgeFor(birthDate: string): number {
   const bd = new Date(birthDate)
   const year = bd.getFullYear()
   const halfYear = bd.getMonth() < 6 ? 1 : 2
