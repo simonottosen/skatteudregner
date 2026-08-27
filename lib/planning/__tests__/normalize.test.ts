@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { normalizePlanning } from "../normalize"
+import { newId, normalizePlanning } from "../normalize"
 import { DEFAULT_PLANNING_STATE } from "../types"
 
 describe("normalizePlanning", () => {
@@ -130,5 +130,17 @@ describe("normalizePlanning", () => {
       }
       expect(DEFAULT_PLANNING_STATE.mortgageBidragssats).toBe(0)
     })
+  })
+})
+
+describe("newId", () => {
+  it("does not repeat", () => {
+    const ids = new Set(Array.from({ length: 1000 }, () => newId()))
+    expect(ids.size).toBe(1000)
+  })
+
+  it("keeps the caller's prefix", () => {
+    expect(newId("sc").startsWith("sc-")).toBe(true)
+    expect(newId().startsWith("pe-")).toBe(true)
   })
 })

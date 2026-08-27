@@ -23,9 +23,14 @@ import {
 import { getMunicipality } from "@/lib/tax/municipalities"
 import type { TaxYear } from "@/lib/tax/types"
 
-let nextId = 1
-/** Monotonic, collision-resistant id for events/scenarios. */
-export const newId = (prefix = "pe") => `${prefix}-${nextId++}-${Date.now()}`
+/**
+ * Collision-resistant id for events/scenarios. Random rather than a counter and
+ * the clock, which tie the id to the process that minted it — so the same list
+ * built on the server and on the client comes out with different ids. Mint ids
+ * on a user action or on already-loaded state only, never during render.
+ */
+export const newId = (prefix = "pe") =>
+  `${prefix}-${Math.random().toString(36).slice(2, 10)}`
 
 export function clampNum(
   value: unknown,
