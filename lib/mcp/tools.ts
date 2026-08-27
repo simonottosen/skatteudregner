@@ -175,16 +175,32 @@ const eventSchema = z.object({
   housingReturnOverride: z.number().optional(),
 })
 
-/** Top-level scalar plan fields that can be overridden/edited. */
-const scalarFieldsSchema = z.object({
+/**
+ * One property the household owns or plans to own. `value` and `landValue` are
+ * absolute kroner — a summer house and a flat share no land-to-building ratio,
+ * so there is none to derive the second from the first with. Everything else has
+ * a default `normalizePlanning` fills in.
+ */
+const propertySchema = z.object({
+  label: z.string().optional(),
+  kind: z.enum(["helaarsbolig", "fritidsbolig"]).optional(),
+  value: z.number(),
+  landValue: z.number().optional(),
+  acquisitionAge: z.number().optional(),
+  disposalAge: z.number().nullable().optional(),
+})
+
+/** Top-level plan fields that can be overridden/edited. */
+const planFieldsSchema = z.object({
   monthlyContribution: z.number().optional(),
   annualSpending: z.number().optional(),
   retirementAge: z.number().optional(),
   startInvestments: z.number().optional(),
   cashBuffer: z.number().optional(),
   investmentTaxMode: z.enum(["realisation", "lager", "ask"]).optional(),
-  homeValue: z.number().optional(),
-  landValue: z.number().optional(),
+  // The whole list, since a partial one cannot say which entry it means. The
+  // first is the home the mortgage below is secured on.
+  properties: z.array(propertySchema).optional(),
   includePropertyTax: z.boolean().optional(),
   propertyTaxInBudget: z.boolean().optional(),
   mortgageBalance: z.number().optional(),
@@ -222,7 +238,7 @@ const taxSchema = z.object({
 
 const changesSchema = z
   .object({
-    overrides: scalarFieldsSchema.optional(),
+    overrides: planFieldsSchema.optional(),
     assumptionOverrides: assumptionsSchema.optional(),
     pensionOverrides: pensionSharedSchema.optional(),
     taxOverrides: taxSchema.optional(),
@@ -231,7 +247,7 @@ const changesSchema = z
   .describe(
     "Changes layered on the base plan. Salary +X kr./mo invested ⇒ " +
       'addEvents:[{type:"recurring",age:<currentAge>,monthlyDelta:X}]. ' +
-      "Also supports overriding mortgage, other debt, home/land value, " +
+      "Also supports overriding mortgage, other debt, the property list, " +
       "investmentTaxMode, includePropertyTax, shared pension fields and the " +
       "tax profile (kommune/kirkeskat/year)."
   )
@@ -489,7 +505,7 @@ export function registerPlanningTools(
         "field is left unchanged; values are clamped to valid ranges. Returns " +
         "the updated plan and its projection.",
       inputSchema: {
-        fields: scalarFieldsSchema.optional(),
+        fields: planFieldsSchema.optional(),
         assumptions: assumptionsSchema.optional(),
         pension: pensionSharedSchema
           .extend({

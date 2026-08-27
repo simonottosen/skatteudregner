@@ -47,6 +47,7 @@
  */
 
 import type {
+  PlannedProperty,
   PlanningEvent,
   PlanningResult,
   PlanningState,
@@ -61,13 +62,15 @@ import {
 } from "./pension"
 import {
   annualInvestmentTax,
-  createPropertyHoldingTax,
+  createPropertyPortfolioTax,
   grossUpStockSale,
   nedslagRespondsToStockIncome,
   pensionIncomeTax,
+  pensionerNedslagInPlay,
   qualifiesForPensionerNedslag,
   stockGainTax,
-  type PropertyHoldingTax,
+  type PropertyPortfolioTax,
+  type TaxableProperty,
   type TaxContext,
 } from "./taxation"
 
@@ -87,7 +90,18 @@ interface SimState {
   investments: number
   /** Cost basis of the investments (for taxing realised gains). */
   investmentBasis: number
-  homeValue: number
+  /**
+   * Combined market value of every property owned right now.
+   *
+   * A single number rather than the per-property list, which lives beside this
+   * in {@link runPath}. Everything reading it — {@link homeEquityOf} and through
+   * it {@link fundShortfall} — asks only what the household could borrow
+   * against, and the list would answer that with a loop. Keeping it out also
+   * keeps `SimState` a flat bag of numbers, which is what makes the `{...s}`
+   * snapshot in {@link settleAgainstDrawdown} an exact copy rather than a shared
+   * reference the throwaway pass could mutate.
+   */
+  propertyValue: number
   /**
    * The scheduled loan: the plan's own realkredit, plus whatever a property
    * event replaces it with. Kept apart from {@link borrowedForSpending} because
@@ -104,8 +118,6 @@ interface SimState {
   borrowedForSpending: number
   /** Months left on the current mortgage (drives the amortization annuity). */
   mortgageMonthsLeft: number
-  /** Housing return for the current home (a property event can change it). */
-  housingReturn: number
   /** Monthly contribution (a recurring event can change it). */
   monthly: number
   /** Liquid cash buffer (grows with inflation, spent before investments). */
@@ -116,13 +128,36 @@ interface SimState {
   debtMonthsLeft: number
 }
 
-/** What the household owns of its home: the value less every claim on it. */
+/**
+ * What the household owns of its property: every value less every claim on it.
+ *
+ * One figure across the portfolio, not one per property. Both claims are
+ * portfolio-wide in effect — a lender looks at the household's whole balance
+ * sheet — and splitting them per property would need an allocation rule the plan
+ * has no input for.
+ */
 const homeEquityOf = (s: SimState) =>
-  s.homeValue - s.mortgage - s.borrowedForSpending
+  s.propertyValue - s.mortgage - s.borrowedForSpending
+
+/**
+ * One property as a path sees it: the plan's static facts plus the value and
+ * ownership that the path moves. Local to {@link runPath} — every Monte Carlo
+ * path grows its properties through its own housing shocks, so these cannot be
+ * shared the way the schedule around them is.
+ */
+interface RunProperty {
+  value: number
+  landValue: number
+  kind: TaxableProperty["kind"]
+  /** This property's own appreciation (a property event can change slot 0's). */
+  housingReturn: number
+  /** Whether the household holds it right now — see {@link PropertySchedule}. */
+  owned: boolean
+}
 
 interface PathResult {
   investments: number[]
-  /** Per-year home equity (home value − scheduled loan − borrowed equity). */
+  /** Per-year home equity (property values − scheduled loan − borrowed equity). */
   homeEquity: number[]
   /** Per-year liquid cash buffer. */
   cash: number[]
@@ -295,6 +330,10 @@ function mortgageCost(state: PlanningState, years: number): MortgageCost {
   const byAge = eventsByAge(state.events)
   let balance = state.mortgageBalance
   let monthsLeft = mortgageTermMonths(state)
+  // The loan is secured on the first property (issue #8 gives the others their
+  // own), so selling that one repays it and the schedule stops billing for it.
+  const securedOn = state.properties[0]
+  const loanEndsAt = securedOn?.disposalAge ?? Infinity
 
   const swapLoanAt = (age: number) => {
     for (const e of byAge.get(age) ?? []) {
@@ -307,6 +346,7 @@ function mortgageCost(state: PlanningState, years: number): MortgageCost {
   // Events at the starting age fire before year 1, as they do in `runPath`.
   swapLoanAt(state.currentAge)
   for (let y = 1; y < byYear.length; y++) {
+    if (state.currentAge + y >= loanEndsAt) balance = 0
     const year = serviceYear(
       balance,
       state.mortgageRate,
@@ -352,15 +392,16 @@ const PROPERTY_TAX_REFINEMENT_PASSES = 3
  * borrow floor and the ruin test would then fire on a partial delta.
  *
  * A fixed three passes, never a tolerance loop. Each pass shrinks the error by
- * at most 5 % × g/(1 − 42 % × g) ≤ 0,087, and the whole nedslag is only
- * 6.000 kr., so three passes leave under 4 kr. even for a pot that is all gain
- * — and under an øre at a realistic gain fraction. That is finer than the
- * engine's own resolution, since `calculatePropertyTax` rounds to whole real
- * kroner. The same rounding is what makes a tolerance loop the wrong shape: it
- * turns the map into a step function that can cycle between two adjacent
- * integers forever. Repeating a value exactly *is* a fixed point, so the early
- * return below both stops that and settles the year exactly — the real sale is
- * then funded at the very charge it was predicted from.
+ * at most 5 % × g/(1 − 42 % × g) ≤ 0,087, and the whole nedslag is at most
+ * 6.000 + 2.000 kr. — a helårsbolig and a fritidsbolig — so three passes leave
+ * under 5,3 kr. even for a pot that is all gain, and under an øre at a realistic
+ * gain fraction. That is finer than the engine's own resolution, since
+ * `calculatePropertyTax` rounds to whole real kroner. The same rounding is what
+ * makes a tolerance loop the wrong shape: it turns the map into a step function
+ * that can cycle between two adjacent integers forever. Repeating a value
+ * exactly *is* a fixed point, so the early return below both stops that and
+ * settles the year exactly — the real sale is then funded at the very charge it
+ * was predicted from.
  *
  * Lives out here rather than inside {@link runPath} because a body this size
  * nested in the year loop measurably slows every path that never reaches it.
@@ -370,6 +411,8 @@ function settleAgainstDrawdown(
   taxCtx: TaxContext,
   /** The § 26 base's personal-income half — the same figure `chargeGiven` uses. */
   personalIncome: number,
+  /** The year's combined § 25 amounts — the width of the band that can move. */
+  nedslagInPlay: number,
   initialCharge: number,
   chargeGiven: (realisedGain: number) => number,
   shortfallGiven: (propertyTax: number) => number
@@ -385,7 +428,12 @@ function settleAgainstDrawdown(
     // prediction costs a fraction of the tax call it saves.
     if (
       pass === 0 &&
-      !nedslagRespondsToStockIncome(taxCtx, personalIncome, realised)
+      !nedslagRespondsToStockIncome(
+        taxCtx,
+        personalIncome,
+        realised,
+        nedslagInPlay
+      )
     ) {
       return charge
     }
@@ -417,11 +465,18 @@ function nextNormal(rng: () => number): number {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
 }
 
-/** Apply a single life event to the running state (mutates and returns it). */
+/**
+ * Apply a single life event to the running state (mutates and returns it).
+ *
+ * `properties` is the path's live list; a move rewrites its first entry, the one
+ * the scheduled loan is secured on. Giving a move its own choice of which
+ * property to replace is issue #9.
+ */
 function applyEvent(
   s: SimState,
   event: PlanningEvent,
-  globalHousingReturn: number
+  globalHousingReturn: number,
+  properties: RunProperty[]
 ): SimState {
   // Fraction of the investment pot that is cost basis (not gains).
   const basisFraction =
@@ -442,9 +497,15 @@ function applyEvent(
       break
     case "property": {
       const ev = event as PropertyEvent
+      // `planProperties` guarantees the slot exists whenever a move can fire.
+      const home = properties[0]
+      // A home the plan has not bought yet is worth nothing to sell, and the
+      // move is what makes the household own one.
+      const oldValue = home.owned ? home.value : 0
       // Selling settles every claim on the house, borrowed equity included, so
-      // the borrowing does not follow the household into the new home.
-      const realisedEquity = homeEquityOf(s)
+      // the borrowing does not follow the household into the new home. Only the
+      // home is sold: any further property stays put, value and all.
+      const realisedEquity = oldValue - s.mortgage - s.borrowedForSpending
       s.borrowedForSpending = 0
       s.investments += realisedEquity
       s.investmentBasis += realisedEquity // tax-free home proceeds → basis
@@ -454,10 +515,17 @@ function applyEvent(
         s.investments > 0 ? Math.min(1, s.investmentBasis / s.investments) : 1
       s.investments -= downPayment
       s.investmentBasis = Math.max(0, s.investmentBasis - downPayment * newBasisFraction)
-      s.homeValue = ev.newValue
+      s.propertyValue += ev.newValue - oldValue
+      // The grundværdi moves with the home it belongs to. Scaling by the change
+      // in value is the only estimate available — the event says what the new
+      // home costs, not how its plot is valued — and it keeps a move from
+      // carrying the old plot's grundskyld into a home twice the size.
+      home.landValue = oldValue > 0 ? (home.landValue * ev.newValue) / oldValue : 0
+      home.value = ev.newValue
+      home.owned = true
+      home.housingReturn = ev.housingReturnOverride ?? globalHousingReturn
       s.mortgage = newMortgage
       s.mortgageMonthsLeft = MORTGAGE_TERM_MONTHS // fresh 30-year loan
-      s.housingReturn = ev.housingReturnOverride ?? globalHousingReturn
       break
     }
   }
@@ -473,6 +541,130 @@ function eventsByAge(events: PlanningEvent[]): Map<number, PlanningEvent[]> {
     map.set(e.age, arr)
   }
   return map
+}
+
+/** Ownership is the half-open interval `[acquisitionAge, disposalAge)`. */
+const ownsAt = (p: PlannedProperty, age: number) =>
+  age >= p.acquisitionAge && (p.disposalAge === null || age < p.disposalAge)
+
+/** The earliest age a move happens at, or null if the plan has no move. */
+function firstMoveAge(events: PlanningEvent[]): number | null {
+  let first: number | null = null
+  for (const e of events) {
+    if (e.type !== "property") continue
+    if (first === null || e.age < first) first = e.age
+  }
+  return first
+}
+
+/**
+ * The properties a run tracks, in the order its `RunProperty` indices follow.
+ *
+ * Normally the plan's own list. A {@link PropertyEvent} in a plan that lists no
+ * property is the exception: the household still lives somewhere afterwards, and
+ * reserving the slot here — worth nothing until the move fills it — lets every
+ * later step read one list rather than special-case a home that has no entry.
+ */
+function planProperties(state: PlanningState): PlannedProperty[] {
+  if (state.properties.length > 0) return state.properties
+  const moveAge = firstMoveAge(state.events)
+  if (moveAge === null) return state.properties
+  return [
+    {
+      id: "move",
+      label: "",
+      kind: "helaarsbolig",
+      value: 0,
+      landValue: 0,
+      acquisitionAge: moveAge,
+      disposalAge: null,
+    },
+  ]
+}
+
+/** Shared stand-in for "nothing changed hands this year" — never mutated. */
+const NO_TRANSFERS: readonly number[] = []
+
+/**
+ * The helårsbolig a move leaves the household living in, for the § 25 count
+ * alone. Only its kind is read, so it needs no value of its own.
+ */
+const MOVE_HOME: TaxableProperty = {
+  value: 0,
+  landValue: 0,
+  kind: "helaarsbolig",
+}
+
+/**
+ * Everything about the portfolio that every Monte Carlo path agrees on.
+ *
+ * Which properties are held, bought and sold in a given year turns on ages
+ * alone, and so does the § 25 nedslag their kinds can claim — none of it moves
+ * with a return draw. Computing it once instead of inside `runPath` takes the
+ * work off the 400 paths that would otherwise each redo it. What is *not*
+ * hoistable is the values: every path grows its properties through its own
+ * housing shocks, so those live in {@link RunProperty}.
+ */
+interface PropertySchedule {
+  items: PlannedProperty[]
+  /** Whether each property is already held at the plan's starting age. */
+  ownedAtStart: boolean[]
+  /** Indices acquired in year y (element 0 unused). */
+  boughtByYear: (readonly number[])[]
+  /** Indices disposed of in year y (element 0 unused). */
+  soldByYear: (readonly number[])[]
+  /**
+   * The year's combined § 25 amounts before § 26 grades them. Zero in a year
+   * with nothing to claim, which is also the cheapest possible way to skip the
+   * settlement in {@link settleAgainstDrawdown}.
+   */
+  nedslagByYear: number[]
+}
+
+function propertySchedule(
+  state: PlanningState,
+  years: number
+): PropertySchedule {
+  const items = planProperties(state)
+  const boughtByYear: (readonly number[])[] = new Array(years + 1).fill(
+    NO_TRANSFERS
+  )
+  const soldByYear: (readonly number[])[] = new Array(years + 1).fill(
+    NO_TRANSFERS
+  )
+  const nedslagByYear = new Array<number>(years + 1).fill(0)
+  const ownedAtStart = items.map((p) => ownsAt(p, state.currentAge))
+  const owned = [...ownedAtStart]
+  // A move makes the household a homeowner from the year it fires, whatever the
+  // plan's own list says, so the nedslag has to see it too.
+  const moveAge = firstMoveAge(state.events)
+  const claiming: TaxableProperty[] = []
+
+  for (let y = 0; y <= years; y++) {
+    const age = state.currentAge + y
+    if (y > 0) {
+      for (let i = 0; i < items.length; i++) {
+        const now = ownsAt(items[i], age)
+        if (now === owned[i]) continue
+        const into = now ? boughtByYear : soldByYear
+        if (into[y] === NO_TRANSFERS) into[y] = []
+        ;(into[y] as number[]).push(i)
+        owned[i] = now
+      }
+    }
+    claiming.length = 0
+    let hasHome = false
+    for (let i = 0; i < items.length; i++) {
+      if (!owned[i]) continue
+      claiming.push(items[i])
+      hasHome ||= items[i].kind !== "fritidsbolig"
+    }
+    if (!hasHome && moveAge !== null && age >= moveAge) {
+      claiming.push(MOVE_HOME)
+    }
+    nedslagByYear[y] = pensionerNedslagInPlay(claiming, state.tax)
+  }
+  return { items, ownedAtStart, boughtByYear, soldByYear, nedslagByYear }
 }
 
 /** A year's pension income split by tax treatment, for one person. */
@@ -628,7 +820,9 @@ function runPath(
   /** What the mortgage costs, modelled and as the budget already saw it. */
   mortgage: MortgageCost,
   /** The household's property tax, bound to its kommune and rules year. */
-  holdingTax: PropertyHoldingTax,
+  holdingTax: PropertyPortfolioTax,
+  /** Which properties are held, bought and sold in each year of the plan. */
+  schedule: PropertySchedule,
   /** Per-year home-price shock (0 for the deterministic path). */
   housingShockFor: (yearIndex: number) => number = () => 0
 ): PathResult {
@@ -646,14 +840,25 @@ function runPath(
     state.includePropertyTax &&
     !state.propertyTaxInBudget &&
     state.investmentTaxMode === "realisation"
+  // The path's own copy: it grows these through its own housing shocks, so
+  // nothing here may be shared with the schedule or with another path.
+  const properties: RunProperty[] = schedule.items.map((p, i) => ({
+    value: p.value,
+    landValue: p.landValue,
+    kind: p.kind,
+    housingReturn: state.assumptions.housingReturn,
+    owned: schedule.ownedAtStart[i],
+  }))
+  let ownedValue = 0
+  for (const p of properties) if (p.owned) ownedValue += p.value
+
   const s: SimState = {
     investments: state.startInvestments,
     investmentBasis: state.startInvestments,
-    homeValue: state.homeValue,
+    propertyValue: ownedValue,
     mortgage: state.mortgageBalance,
     borrowedForSpending: 0,
     mortgageMonthsLeft: mortgageTermMonths(state),
-    housingReturn: state.assumptions.housingReturn,
     monthly: state.monthlyContribution,
     cash: state.cashBuffer,
     debt: state.otherDebtBalance,
@@ -662,7 +867,7 @@ function runPath(
 
   // Apply any events registered at the starting age before recording year 0.
   for (const e of byAge.get(state.currentAge) ?? []) {
-    applyEvent(s, e, state.assumptions.housingReturn)
+    applyEvent(s, e, state.assumptions.housingReturn, properties)
   }
 
   const liquid0 = s.investments + s.cash
@@ -681,10 +886,10 @@ function runPath(
   const borrowedSeries: number[] = [0]
   const propertyTaxSeries: number[] = [0]
 
-  // Land value as a fraction of home value (kept constant across the projection,
-  // so property events that change the home value scale the land value too).
-  const landFraction =
-    state.homeValue > 0 ? Math.min(1, state.landValue / state.homeValue) : 0
+  // Refilled with the year's owned properties and handed straight to the tax,
+  // which reads it synchronously and keeps no reference. One array for the whole
+  // path rather than one per year: the year loop below is the hot one.
+  const taxable: TaxableProperty[] = []
 
   // First age the household can't fund its spending (investments + home gone).
   let ruinAge: number | null = null
@@ -718,10 +923,22 @@ function runPath(
       s.investmentBasis = s.investments
     }
 
-    // 2) Home appreciation (+ a Monte Carlo shock) + mortgage paydown.
+    // 2) Property appreciation (+ a Monte Carlo shock) + mortgage paydown. The
+    // shock is one housing market, so every property feels the same draw; the
+    // trend is per property, since a plan may say a summer house appreciates
+    // differently from the home. Grundværdi rides along at the same rate — the
+    // plan has no separate land-price assumption to grow it by.
     const equityBefore = homeEquityOf(s)
-    s.homeValue *= 1 + s.housingReturn + housingShockFor(y)
-    if (s.homeValue < 0) s.homeValue = 0
+    const shock = housingShockFor(y)
+    let ownedValueNow = 0
+    for (const p of properties) {
+      if (!p.owned) continue
+      const growth = 1 + p.housingReturn + shock
+      p.value = Math.max(0, p.value * growth)
+      p.landValue = Math.max(0, p.landValue * growth)
+      ownedValueNow += p.value
+    }
+    s.propertyValue = ownedValueNow
     // Afdragsfrihed is counted from today, not from when the loan was taken out
     // — the user enters the years they have left of it.
     s.mortgage = amortizeYear(
@@ -751,6 +968,52 @@ function runPath(
     // repayment it never made.
     const borrowedInterestThisYear = s.borrowedForSpending * state.mortgageRate
 
+    // 2e) Properties change hands. A disposal is settled at the value it has
+    // just grown to; an acquisition is paid at the value the plan states, which
+    // is the price in the year it is bought, and starts appreciating from there.
+    // Both are all-equity, since the plan has one loan and it stays with the
+    // home (issue #8) — and a helårsbolig sale is tax-free under EBL § 8, a
+    // fritidsbolig sale under stk. 2, so no gain is realised either way.
+    let housingCash = 0
+    for (const i of schedule.soldByYear[y]) {
+      const p = properties[i]
+      if (!p.owned) continue
+      p.owned = false
+      s.propertyValue -= p.value
+      housingCash += p.value
+      if (i === 0 && s.mortgage > 0) {
+        // The loan is secured on this property, so the sale settles it. Not
+        // floored at zero: a household selling for less than it owes still owes
+        // the difference, and hiding that would forgive a real debt.
+        housingCash -= s.mortgage
+        s.mortgage = 0
+        s.mortgageMonthsLeft = 0
+      }
+      if (s.propertyValue <= 0 && s.borrowedForSpending > 0) {
+        // Equity borrowing is secured on the portfolio as a whole, so it comes
+        // due only when the last of it is gone.
+        housingCash -= s.borrowedForSpending
+        s.borrowedForSpending = 0
+      }
+    }
+    for (const i of schedule.boughtByYear[y]) {
+      const p = properties[i]
+      if (p.owned) continue
+      p.owned = true
+      s.propertyValue += p.value
+      housingCash -= p.value
+    }
+    // A net inflow is money the household now holds; a net outflow joins the
+    // year's funding need below, so the one `fundShortfall` call covers it along
+    // with everything else instead of drawing on the pot a second time.
+    let housingNeed = 0
+    if (housingCash > 0) {
+      s.investments += housingCash
+      s.investmentBasis += housingCash
+    } else {
+      housingNeed = -housingCash
+    }
+
     // 3) Cash flow. While working: deposit the contribution (forbrug is paid
     // from salary). In retirement: cover inflation-grown spending from net
     // pension income, then by selling investments (gains taxed), then by
@@ -767,7 +1030,10 @@ function runPath(
     // working or retired — but both the contribution and `annualSpending` derive
     // from the budget, so a budget that already lists the tax would count it twice.
     const chargesPropertyTax =
-      state.includePropertyTax && s.homeValue > 0 && !state.propertyTaxInBudget
+      state.includePropertyTax &&
+      s.propertyValue > 0 &&
+      !state.propertyTaxInBudget
+    const nedslagInPlay = schedule.nedslagByYear[y]
     /**
      * The year's charge as a function of the aktieindkomst a drawdown realises —
      * but only in a year where the two define each other, and null in every
@@ -776,8 +1042,10 @@ function runPath(
      */
     let chargeGivenDrawdown: ((realisedGain: number) => number) | null = null
     if (chargesPropertyTax) {
+      taxable.length = 0
+      for (const p of properties) if (p.owned) taxable.push(p)
       const chargeGiven = (realisedGain: number) =>
-        holdingTax(s.homeValue, s.homeValue * landFraction, age, taxCtx, {
+        holdingTax(taxable, age, taxCtx, {
           // Pension income only. A household still working carries a salary the
           // plan never sees — it models a contribution, the budget's surplus —
           // so that part of the § 26 base is missing and needs an input this
@@ -792,7 +1060,11 @@ function runPath(
       propertyTaxThisYear = chargeGiven(
         state.investmentTaxMode === "lager" ? Math.max(0, gain) : 0
       )
-      if (nedslagFollowsDrawdown && qualifiesForPensionerNedslag(age, taxCtx)) {
+      if (
+        nedslagFollowsDrawdown &&
+        nedslagInPlay > 0 &&
+        qualifiesForPensionerNedslag(age, taxCtx)
+      ) {
         chargeGivenDrawdown = chargeGiven
       }
     }
@@ -813,7 +1085,8 @@ function runPath(
         contribution +
         mortgage.budgeted -
         mortgage.byYear[y] -
-        borrowedInterestThisYear
+        borrowedInterestThisYear -
+        housingNeed
       // `retirementAge` and folkepensionsalderen are separate inputs, so a
       // household can be old enough for the nedslag while the plan still counts
       // it as working — and the tax that outruns its saving is funded by selling,
@@ -823,6 +1096,7 @@ function runPath(
           s,
           taxCtx,
           pension.taxable[y],
+          nedslagInPlay,
           propertyTaxThisYear,
           chargeGivenDrawdown,
           (tax) => tax - beforePropertyTax
@@ -849,12 +1123,14 @@ function runPath(
         inflatedSpending +
         mortgage.byYear[y] +
         debtServiceThisYear +
-        borrowedInterestThisYear
+        borrowedInterestThisYear +
+        housingNeed
       if (chargeGivenDrawdown) {
         propertyTaxThisYear = settleAgainstDrawdown(
           s,
           taxCtx,
           pension.taxable[y],
+          nedslagInPlay,
           propertyTaxThisYear,
           chargeGivenDrawdown,
           (tax) => beforePropertyTax + tax - pension.net[y]
@@ -881,13 +1157,15 @@ function runPath(
     if (s.investments < 0) s.investments = 0
 
     // Equity change captures appreciation + afdrag − any retirement borrowing
-    // and the interest it accrued.
-    const housingGain = homeEquityOf(s) - equityBefore
+    // and the interest it accrued. Buying and selling move equity too, but they
+    // are transfers, not gains: adding the year's net housing cash flow back
+    // cancels them, so "Boligværdi" reports appreciation and afdrag alone.
+    const housingGain = homeEquityOf(s) - equityBefore + housingCash
 
     // 4) Life events at this age.
     const beforeMonthly = s.monthly
     for (const e of byAge.get(age) ?? []) {
-      applyEvent(s, e, state.assumptions.housingReturn)
+      applyEvent(s, e, state.assumptions.housingReturn, properties)
     }
     if (s.monthly !== beforeMonthly) contribution = s.monthly * 12
 
@@ -965,7 +1243,11 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
   // Bound once for the whole run rather than per path: the kommune lookup and
   // the default input behind each call are fixed for the household, and the
   // paths below ask tens of thousands of times between them.
-  const holdingTax = createPropertyHoldingTax(state.tax, !state.pension.single)
+  const holdingTax = createPropertyPortfolioTax(state.tax, !state.pension.single)
+
+  // Likewise deterministic: which properties are held in which year, and what
+  // § 25 they can claim, turns on ages and kinds — not on a return draw.
+  const schedule = propertySchedule(state, years)
 
   // Deterministic path (median + growth sources).
   const deterministic = runPath(
@@ -973,7 +1255,8 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
     () => meanReturn,
     pension,
     mortgage,
-    holdingTax
+    holdingTax,
+    schedule
   )
 
   // Monte Carlo paths for the bands (only investment return is randomised).
@@ -991,6 +1274,7 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
       pension,
       mortgage,
       holdingTax,
+      schedule,
       () => housingVolatility * nextNormal(rng)
     )
     if (path.ruinAge !== null) mcFailures++

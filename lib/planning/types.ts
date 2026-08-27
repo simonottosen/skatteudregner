@@ -100,9 +100,13 @@ export interface RecurringEvent {
 }
 
 /**
- * Sell the current home and buy a new one. Realised equity (homeValue −
- * mortgage) moves into investments; the down payment (newValue × (1 − ltv)) is
- * taken back out of investments; the new mortgage is newValue × ltv.
+ * Sell the home and buy a new one. Realised equity (its value − mortgage) moves
+ * into investments; the down payment (newValue × (1 − ltv)) is taken back out of
+ * investments; the new mortgage is newValue × ltv.
+ *
+ * "The home" is the first entry of {@link PlanningState.properties} — the one the
+ * scheduled loan is secured on. Any other property the household owns is left
+ * alone, and which of them a move sells is issue #9's question, not this one's.
  */
 export interface PropertyEvent {
   id: string
@@ -122,6 +126,44 @@ export type PlanningEvent =
   | WindfallEvent
   | RecurringEvent
   | PropertyEvent
+
+/**
+ * What a dwelling counts as under ejendomsskatteloven. These are the two kinds
+ * § 25 names — the pensionistnedslag is up to 6.000 kr. for a helårsbolig and
+ * 2.000 kr. for a fritidsbolig — and the two the tax engine's input models.
+ */
+export type PropertyKind = "helaarsbolig" | "fritidsbolig"
+
+/**
+ * One property the household owns, or comes to own, during the projection.
+ *
+ * Ownership is the half-open age interval `[acquisitionAge, disposalAge)`: owned
+ * from the year the household reaches `acquisitionAge`, and no longer owned in
+ * the year it reaches `disposalAge`.
+ */
+export interface PlannedProperty {
+  id: string
+  /** Name shown in the UI ("Hus i Odense", "Sommerhus"). */
+  label: string
+  kind: PropertyKind
+  /** Market value in DKK, nominal in the year it is acquired. */
+  value: number
+  /**
+   * Grundværdi in DKK, which grundskyld is charged on. Absolute rather than a
+   * share of {@link value}: an apartment and a summer house have nothing like
+   * the same land-to-building ratio, so one ratio across a portfolio would be
+   * meaningless. It tracks the property's own value through the projection.
+   */
+  landValue: number
+  /**
+   * Age the household acquires it. At or below `currentAge` it is already owned
+   * and costs nothing; later, it is bought that year and paid for out of the
+   * portfolio — all-equity, since the plan has only one loan (issue #8).
+   */
+  acquisitionAge: number
+  /** Age it is sold at; null means held for the whole projection. */
+  disposalAge: number | null
+}
 
 export type PlanningEventType = PlanningEvent["type"]
 
@@ -147,8 +189,7 @@ export interface ScenarioChanges {
       | "startInvestments"
       | "cashBuffer"
       | "investmentTaxMode"
-      | "homeValue"
-      | "landValue"
+      | "properties"
       | "includePropertyTax"
       | "propertyTaxInBudget"
       | "mortgageBalance"
@@ -231,7 +272,11 @@ export const DEFAULT_PENSION: PensionState = {
 
 /** Persisted state for the planning page. */
 export interface PlanningState {
-  version: 1
+  /**
+   * 2 replaced the single `homeValue`/`landValue` pair with {@link properties}.
+   * `normalizePlanning` migrates a version-1 blob into a one-element list.
+   */
+  version: 2
   /** User's current age (simulation start). */
   currentAge: number
   /** Age the simulation runs to (inclusive). */
@@ -253,10 +298,14 @@ export interface PlanningState {
   otherDebtRate: number
   /** Remaining term in years over which the other debt is paid off. */
   otherDebtTermYears: number
-  /** Current home value in DKK (0 if renting). */
-  homeValue: number
-  /** Land value (grundværdi) in DKK, used for grundskyld. */
-  landValue: number
+  /**
+   * Every property the household owns or plans to own; empty if renting.
+   *
+   * The first entry is "the home": the one {@link mortgageBalance} is secured on
+   * and the one a {@link PropertyEvent} move replaces. Giving each further loan
+   * its own property is issue #8.
+   */
+  properties: PlannedProperty[]
   /** Whether to model ongoing property tax (ejendomsværdiskat + grundskyld). */
   includePropertyTax: boolean
   /**
@@ -333,7 +382,7 @@ export interface PlanningState {
 }
 
 export const DEFAULT_PLANNING_STATE: PlanningState = {
-  version: 1,
+  version: 2,
   currentAge: 30,
   endAge: 90,
   retirementAge: 65,
@@ -343,8 +392,7 @@ export const DEFAULT_PLANNING_STATE: PlanningState = {
   otherDebtBalance: 0,
   otherDebtRate: 0.07,
   otherDebtTermYears: 10,
-  homeValue: 0,
-  landValue: 0,
+  properties: [],
   includePropertyTax: false,
   // Charge it unless the user says their budget already covers it: a projection
   // that silently drops a real, lifelong expense reads as too optimistic.
@@ -369,7 +417,7 @@ export interface PlanningPoint {
   age: number
   /** Median liquid investments (nominal DKK). */
   investments: number
-  /** Median home equity = home value − mortgage (nominal DKK). */
+  /** Median home equity = every property's value − mortgage (nominal DKK). */
   homeEquity: number
   /** Liquid cash buffer (nominal DKK). */
   cash: number

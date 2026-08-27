@@ -14,10 +14,12 @@ import {
   type PensionPerson,
   type PensionState,
   type PlanningAssumptions,
+  type PlannedProperty,
   type PlanningEvent,
   type PlanningScenario,
   type PlanningState,
   type PlanningTaxProfile,
+  type PropertyKind,
   type ScenarioChanges,
 } from "./types"
 import { getMunicipality } from "@/lib/tax/municipalities"
@@ -102,6 +104,73 @@ export function normalizeEvents(value: unknown): PlanningEvent[] {
   return out
 }
 
+/** Danish label a migrated or freshly added property starts out with. */
+export const DEFAULT_PROPERTY_LABEL: Record<PropertyKind, string> = {
+  helaarsbolig: "Bolig",
+  fritidsbolig: "Sommerhus",
+}
+
+/** Normalize one property; returns null if it carries no value to model. */
+function normalizeProperty(raw: unknown): PlannedProperty | null {
+  if (!raw || typeof raw !== "object") return null
+  const o = raw as Record<string, unknown>
+  const kind: PropertyKind =
+    o.kind === "fritidsbolig" ? "fritidsbolig" : "helaarsbolig"
+  const acquisitionAge = clampNum(o.acquisitionAge, 0, 0, 120)
+  return {
+    id: typeof o.id === "string" ? o.id : newId("prop"),
+    label:
+      typeof o.label === "string" && o.label.trim()
+        ? o.label
+        : DEFAULT_PROPERTY_LABEL[kind],
+    kind,
+    value: clampNum(o.value, 0, 0),
+    landValue: clampNum(o.landValue, 0, 0),
+    acquisitionAge,
+    // A disposal before the purchase would describe a property that is never
+    // owned, which is a typo rather than a plan; the floor reads it as a sale in
+    // the year of the purchase.
+    disposalAge:
+      o.disposalAge === null || o.disposalAge === undefined
+        ? null
+        : clampNum(o.disposalAge, 0, acquisitionAge, 120),
+  }
+}
+
+/**
+ * Version 1 of the plan held a single property as `homeValue` + `landValue`. A
+ * blob without a `properties` array is one of those, and its home becomes the
+ * first — and loan-bearing — entry of the list, owned from the start.
+ *
+ * Keyed on the array being absent rather than on `version`, because a blob can
+ * arrive from localStorage, Supabase or an MCP client with any version field it
+ * likes, and the shape is the thing actually being asked about.
+ */
+export function normalizeProperties(value: unknown, legacy?: unknown): PlannedProperty[] {
+  if (Array.isArray(value)) {
+    const out: PlannedProperty[] = []
+    for (const raw of value) {
+      const p = normalizeProperty(raw)
+      if (p) out.push(p)
+    }
+    return out
+  }
+  const o = (legacy ?? {}) as Record<string, unknown>
+  const homeValue = clampNum(o.homeValue, 0, 0)
+  if (homeValue <= 0) return []
+  return [
+    {
+      id: newId("prop"),
+      label: DEFAULT_PROPERTY_LABEL.helaarsbolig,
+      kind: "helaarsbolig",
+      value: homeValue,
+      landValue: clampNum(o.landValue, 0, 0),
+      acquisitionAge: 0,
+      disposalAge: null,
+    },
+  ]
+}
+
 export function normalizePensionPerson(value: unknown): PensionPerson {
   if (!value || typeof value !== "object") return { ...DEFAULT_PENSION_PERSON }
   const o = value as Partial<PensionPerson>
@@ -180,8 +249,10 @@ export function normalizeScenarioChanges(value: unknown): ScenarioChanges {
       ov.investmentTaxMode === "realisation"
     )
       out.investmentTaxMode = ov.investmentTaxMode
-    if ("homeValue" in ov) out.homeValue = clampNum(ov.homeValue, 0, 0)
-    if ("landValue" in ov) out.landValue = clampNum(ov.landValue, 0, 0)
+    // A scenario may also say "what if I also owned a summer house", so the
+    // legacy scalars are read here too — the same migration the base plan gets.
+    if ("properties" in ov || "homeValue" in ov)
+      out.properties = normalizeProperties(ov.properties, ov)
     if (typeof ov.includePropertyTax === "boolean") out.includePropertyTax = ov.includePropertyTax
     if (typeof ov.propertyTaxInBudget === "boolean")
       out.propertyTaxInBudget = ov.propertyTaxInBudget
@@ -277,7 +348,7 @@ export function normalizePlanning(raw: unknown): PlanningState {
     40
   )
   return {
-    version: 1,
+    version: 2,
     currentAge,
     endAge,
     retirementAge: clampNum(
@@ -300,8 +371,10 @@ export function normalizePlanning(raw: unknown): PlanningState {
       1,
       40
     ),
-    homeValue: clampNum(o.homeValue, 0, 0),
-    landValue: clampNum(o.landValue, 0, 0),
+    properties: normalizeProperties(
+      (o as Record<string, unknown>).properties,
+      o
+    ),
     includePropertyTax: boolOr(
       o.includePropertyTax,
       DEFAULT_PLANNING_STATE.includePropertyTax

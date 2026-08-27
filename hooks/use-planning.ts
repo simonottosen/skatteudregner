@@ -20,7 +20,10 @@ import {
   type PlanningTaxProfile,
   type ScenarioChanges,
 } from "@/lib/planning/types"
-import { mortgageFromBudget } from "@/lib/planning/from-budget"
+import {
+  mortgageFromBudget,
+  propertiesFromBudget,
+} from "@/lib/planning/from-budget"
 import { newId, normalizePlanning } from "@/lib/planning/normalize"
 import { planningSavingsSplit } from "@/lib/planning/summary"
 import { folkepensionAge } from "@/lib/planning/pension"
@@ -90,8 +93,7 @@ export function usePlanning() {
     return {
       monthlyContribution: planningContribution(budgetRemaining),
       annualSpending: Math.round(budgetExpenses * 12),
-      homeValue,
-      landValue,
+      home: { value: homeValue, landValue },
       mortgageBalance,
       mortgageRate: mortgage.enabled
         ? mortgage.interestRate
@@ -325,10 +327,11 @@ export function usePlanning() {
   /** Re-pull the linked fields from the current tax/budget data. */
   const pullFromSources = () => {
     setTouched(true)
-    const { pension, ...rest } = derivedDefaults
+    const { pension, home, ...rest } = derivedDefaults
     setState((prev) => ({
       ...prev,
       ...rest,
+      properties: propertiesFromBudget(prev.properties, home),
       pension: {
         ...prev.pension,
         single: pension.single,

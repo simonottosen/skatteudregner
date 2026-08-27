@@ -12,7 +12,11 @@
  * tax — exactly how indexed brackets behave.
  */
 
-import type { InvestmentTaxMode, PlanningTaxProfile } from "./types"
+import type {
+  InvestmentTaxMode,
+  PlanningTaxProfile,
+  PropertyKind,
+} from "./types"
 import { createDefaultInput } from "@/lib/tax/defaults"
 import { calculateTax } from "@/lib/tax/calculator"
 import { getRates } from "@/lib/tax/rates"
@@ -142,18 +146,39 @@ function syntheticBirthDate(age: number, year: number): string {
   return `${year - Math.round(age)}-06-15`
 }
 
+/** One dwelling as the property tax sees it: nominal kroner and its § 25 kind. */
+export interface TaxableProperty {
+  /** Market value in nominal DKK. */
+  value: number
+  /** Grundværdi in nominal DKK. */
+  landValue: number
+  kind: PropertyKind
+}
+
 /** Annual property holding tax for one household, bound to its fixed inputs. */
-export type PropertyHoldingTax = (
-  nominalHomeValue: number,
-  nominalLandValue: number,
+export type PropertyPortfolioTax = (
+  properties: readonly TaxableProperty[],
   age: number,
   ctx: TaxContext,
   income: PensionerIncomeYear
 ) => number
 
+/** The engine's mutable per-property input, zeroed to mean "no such property". */
+function blankPropertyInput() {
+  return {
+    propertyValue: 0,
+    assessmentBasis: 0,
+    landValue: 0,
+    landAssessmentBasis: 0,
+    purchasedBefore19980701: false,
+    isCondo: false,
+    ownershipShare: 1,
+    personalTaxDiscount: 0,
+  }
+}
+
 /**
- * Bind {@link propertyHoldingTax} to a household's kommune, rules year and
- * marital status.
+ * Bind the property tax to a household's kommune, rules year and marital status.
  *
  * A simulation asks for the tax tens of thousands of times, and three of the four
  * things behind each call never change: `getMunicipality` scans every Danish
@@ -164,68 +189,118 @@ export type PropertyHoldingTax = (
  * `calculateAge` + `calculateRetirementAge`, which parse `birthDate` afresh every
  * time. That cost lives in `@/lib/tax` and is the same on every caller.
  *
+ * ## Why the portfolio is taxed here rather than one property at a time
+ *
+ * The § 25 pensionistnedslag is an amount *per boligenhed* — up to 6.000 kr. for
+ * a helårsbolig and 2.000 kr. for a fritidsbolig — but § 26's income graduation
+ * is spent *once per person*, against those amounts combined. The engine's
+ * `pensionerNedslagFactor` is built for exactly that: it grades once and returns
+ * a factor, so each of its two slots keeps its own statutory amount. Handing it
+ * one property at a time and adding the results up would grade afresh on every
+ * call, which is the mistake this function exists to make impossible.
+ *
+ * So one call carries the pensioner gate and both § 25 dwellings — the first
+ * helårsbolig and the first fritidsbolig — and every *further* property is taxed
+ * in a call of its own that claims no nedslag. § 25 attaches to the bolig the
+ * pensioner actually lives in and the fritidsbolig they actually use, so a third
+ * dwelling has none to claim; a household owning two of one kind is the case
+ * this understates, and it understates rather than invents.
+ *
+ * Each property keeps its own § 22 progression either way, because the engine
+ * applies the brackets per property and this makes one call per property.
+ *
  * The returned function reuses one mutable input object, so it is not reentrant;
  * `calculatePropertyTax` reads the input synchronously and keeps no reference to
  * it, which is what makes that safe. `profile` and `married` are fixed here, and
  * the per-call `ctx` supplies only the year offset the amounts are deflated by.
  */
-export function createPropertyHoldingTax(
+export function createPropertyPortfolioTax(
   profile: PlanningTaxProfile,
   married: boolean
-): PropertyHoldingTax {
+): PropertyPortfolioTax {
   const muni = getMunicipality(profile.municipality, profile.year)
   const rates = getRates(profile.year)
   const input = createDefaultInput()
   input.year = profile.year
   input.municipality = profile.municipality
   input.married = married
-  const property = {
-    propertyValue: 0,
-    assessmentBasis: 0,
-    landValue: 0,
-    landAssessmentBasis: 0,
-    purchasedBefore19980701: false,
-    isCondo: false,
-    ownershipShare: 1,
-    personalTaxDiscount: 0,
+  const home = blankPropertyInput()
+  const summer = { ...blankPropertyInput(), municipality: profile.municipality }
+  input.property = home
+  input.summerHouse = summer
+  // A newborn cannot have reached folkepensionsalderen in the rules year, so
+  // `pensionerNedslagFactor` returns 0 and the call grants no § 25 nedslag —
+  // asked of the same synthesised date the gate is asked of everywhere else.
+  const noNedslagBirthDate = syntheticBirthDate(0, profile.year)
+
+  const setSlot = (
+    slot: ReturnType<typeof blankPropertyInput>,
+    p: TaxableProperty | undefined,
+    f: number
+  ) => {
+    const value = p ? Math.max(0, p.value) / f : 0
+    const land = p ? Math.max(0, p.landValue) / f : 0
+    slot.propertyValue = value
+    slot.assessmentBasis = value * ASSESSMENT_FACTOR
+    slot.landValue = land
+    slot.landAssessmentBasis = land * ASSESSMENT_FACTOR
   }
-  input.property = property
-  return (nominalHomeValue, nominalLandValue, age, ctx, income) => {
-    if (nominalHomeValue <= 0 || !muni) return 0
+
+  return (properties, age, ctx, income) => {
+    if (!muni || properties.length === 0) return 0
     const f = realFactor(ctx)
-    const realHome = nominalHomeValue / f
-    const realLand = nominalLandValue / f
+    const basis = {
+      personalIncome: Math.max(0, income.personalIncome) / f,
+      // The projection holds no interest-bearing assets, and the one piece of
+      // kapitalindkomst it does model — mortgage interest — is a deduction, so
+      // the net is negative and § 26 counts only the positive part.
+      positiveCapitalIncome: 0,
+      positiveStockIncome: Math.max(0, income.positiveStockIncome) / f,
+    }
+    let homeIdx = -1
+    let summerIdx = -1
+    for (let i = 0; i < properties.length; i++) {
+      if (properties[i].kind === "fritidsbolig") {
+        if (summerIdx < 0) summerIdx = i
+      } else if (homeIdx < 0) {
+        homeIdx = i
+      }
+    }
+
+    // The nedslag-bearing call: both § 25 dwellings at once, so the graduation
+    // is applied to their combined amounts exactly once.
+    setSlot(home, properties[homeIdx], f)
+    setSlot(summer, properties[summerIdx], f)
     input.birthDate = syntheticBirthDate(age, profile.year)
-    property.propertyValue = realHome
-    property.assessmentBasis = realHome * ASSESSMENT_FACTOR
-    property.landValue = realLand
-    property.landAssessmentBasis = realLand * ASSESSMENT_FACTOR
-    const realTax = calculatePropertyTax(
-      input,
-      rates,
-      {
-        personalIncome: Math.max(0, income.personalIncome) / f,
-        // The projection holds no interest-bearing assets, and the one piece of
-        // kapitalindkomst it does model — mortgage interest — is a deduction, so
-        // the net is negative and § 26 counts only the positive part.
-        positiveCapitalIncome: 0,
-        positiveStockIncome: Math.max(0, income.positiveStockIncome) / f,
-      },
-      muni
-    ).totalPropertyTax
+    let realTax = calculatePropertyTax(input, rates, basis, muni, muni)
+      .totalPropertyTax
+
+    const withNedslag = (homeIdx < 0 ? 0 : 1) + (summerIdx < 0 ? 0 : 1)
+    if (properties.length > withNedslag) {
+      input.birthDate = noNedslagBirthDate
+      for (let i = 0; i < properties.length; i++) {
+        if (i === homeIdx || i === summerIdx) continue
+        const p = properties[i]
+        const isSummer = p.kind === "fritidsbolig"
+        setSlot(home, isSummer ? undefined : p, f)
+        setSlot(summer, isSummer ? p : undefined, f)
+        realTax += calculatePropertyTax(input, rates, basis, muni, muni)
+          .totalPropertyTax
+      }
+    }
     return realTax * f
   }
 }
 
 /**
- * Annual property holding tax (ejendomsværdiskat + grundskyld) on the owned
- * home, via the real engine. `age` lets the pensioner reduction apply once the
- * household is retired, and `income` grades it under § 26. Values are deflated
- * to real terms (forsigtighedsprincippet ≈ 80 % of value) so the rate brackets
- * index with inflation, then the resulting tax is re-inflated.
+ * Annual property holding tax (ejendomsværdiskat + grundskyld) on one owned
+ * helårsbolig, via the real engine. `age` lets the pensioner reduction apply once
+ * the household is retired, and `income` grades it under § 26. Values are
+ * deflated to real terms (forsigtighedsprincippet ≈ 80 % of value) so the rate
+ * brackets index with inflation, then the resulting tax is re-inflated.
  *
- * A one-shot binding of {@link createPropertyHoldingTax}. Anything that asks
- * repeatedly should hold on to the binding instead.
+ * A one-shot binding of {@link createPropertyPortfolioTax}. Anything that asks
+ * repeatedly, or owns more than one property, should use that instead.
  */
 export function propertyHoldingTax(
   nominalHomeValue: number,
@@ -234,12 +309,40 @@ export function propertyHoldingTax(
   ctx: TaxContext,
   income: PensionerIncomeYear
 ): number {
-  return createPropertyHoldingTax(ctx.profile, ctx.married)(
-    nominalHomeValue,
-    nominalLandValue,
+  if (nominalHomeValue <= 0) return 0
+  return createPropertyPortfolioTax(ctx.profile, ctx.married)(
+    [
+      {
+        value: nominalHomeValue,
+        landValue: nominalLandValue,
+        kind: "helaarsbolig",
+      },
+    ],
     age,
     ctx,
     income
+  )
+}
+
+/**
+ * The combined § 25 amounts a year's dwellings can claim, before § 26 grades
+ * them — i.e. the most the pensionistnedslag can be worth that year, and the
+ * width of the band {@link nedslagRespondsToStockIncome} tests against.
+ *
+ * Mirrors which properties {@link createPropertyPortfolioTax} gives the nedslag
+ * to: one helårsbolig and one fritidsbolig. Pure in the kinds owned, so a
+ * simulation computes it once per year rather than once per Monte Carlo path.
+ */
+export function pensionerNedslagInPlay(
+  properties: readonly TaxableProperty[],
+  profile: PlanningTaxProfile
+): number {
+  const rates = getRates(profile.year)
+  const hasSummer = properties.some((p) => p.kind === "fritidsbolig")
+  const hasHome = properties.some((p) => p.kind !== "fritidsbolig")
+  return (
+    (hasHome ? rates.ejendomsvaerdiSkatPensionerReduction : 0) +
+    (hasSummer ? rates.ejendomsvaerdiSkatPensionerReductionSummer : 0)
   )
 }
 
@@ -283,34 +386,35 @@ export function qualifiesForPensionerNedslag(
  * - even the largest gain the feedback can reach leaves the § 26
  *   beskatningsgrundlag under the grundbeløb, so the nedslag survives whole.
  *
- * The responsive band is exactly `grundbeløb … grundbeløb + 6.000/5 %` wide.
- * § 26 grades "nedslaget efter § 25", and the only nedslag this module can
- * produce is the helårsbolig's 6.000 kr.: it never describes a fritidsbolig, so
- * the summer-house amount never joins the total.
+ * The responsive band is exactly `grundbeløb … grundbeløb + nedslag/5 %` wide.
+ * § 26 grades "nedslaget efter § 25" as one amount, so `nedslagInPlay` is the
+ * year's whole § 25 entitlement — 6.000 kr. for a helårsbolig, 8.000 kr. once a
+ * fritidsbolig joins it. {@link pensionerNedslagInPlay} is where that is worked
+ * out; passing the helårsbolig's amount for a household that also owns a summer
+ * house would make the band too narrow and skip a settlement that had work left.
  *
  * `headroom` is what makes the second test safe rather than merely plausible.
- * Grading the nedslag away can raise the charge by at most the whole 6.000 kr.,
- * a krone of extra charge sells at most 1/(1 − 42 %) kroner once the sale is
- * grossed up for its own tax, and at most every krone sold is gain — so the
+ * Grading the nedslag away can raise the charge by at most the whole amount in
+ * play, a krone of extra charge sells at most 1/(1 − 42 %) kroner once the sale
+ * is grossed up for its own tax, and at most every krone sold is gain — so the
  * fixed point's aktieindkomst cannot exceed this one by more than that.
  */
 export function nedslagRespondsToStockIncome(
   ctx: TaxContext,
   nominalPersonalIncome: number,
-  nominalRealisedGain: number
+  nominalRealisedGain: number,
+  nedslagInPlay: number
 ): boolean {
+  if (nedslagInPlay <= 0) return false
   const rates = getRates(ctx.profile.year)
   const threshold = ctx.married
     ? rates.ejendomsvaerdiSkatPensionerIncomeThresholdMarried
     : rates.ejendomsvaerdiSkatPensionerIncomeThresholdSingle
   const f = realFactor(ctx)
   const personal = Math.max(0, nominalPersonalIncome) / f
-  const span =
-    rates.ejendomsvaerdiSkatPensionerReduction /
-    rates.ejendomsvaerdiSkatPensionerIncomeRate
+  const span = nedslagInPlay / rates.ejendomsvaerdiSkatPensionerIncomeRate
   if (personal >= threshold + span) return false
-  const headroom =
-    rates.ejendomsvaerdiSkatPensionerReduction / (1 - rates.stockTaxHighRate)
+  const headroom = nedslagInPlay / (1 - rates.stockTaxHighRate)
   return (
     personal + Math.max(0, nominalRealisedGain) / f + headroom > threshold
   )
