@@ -78,16 +78,52 @@ export const DEFAULT_ASSUMPTIONS: BudgetAssumptions = {
   cars: 1,
 }
 
-const DEFAULT_SHARED_ITEMS: Omit<BudgetItem, "id">[] = [
-  { label: "Husleje / boliglån", amount: 0, categoryId: "bolig" },
-  { label: "Mad og dagligvarer", amount: 0, categoryId: "mad" },
-  { label: "Transport", amount: 0, categoryId: "transport" },
-  { label: "Abonnementer", amount: 0, categoryId: "abonnementer" },
-  { label: "Forsikringer", amount: 0, categoryId: "forsikring" },
+/**
+ * The built-in expense lines. Their ids are literal rather than minted because
+ * {@link defaultBudgetState} runs during the first render on both the server and
+ * the client, and the ids reach the DOM as `id` attributes: a fresh id never
+ * comes out the same in both environments, so it lands as a hydration mismatch.
+ */
+const DEFAULT_SHARED_ITEMS: BudgetItem[] = [
+  {
+    id: "default-bolig",
+    label: "Husleje / boliglån",
+    amount: 0,
+    categoryId: "bolig",
+  },
+  {
+    id: "default-mad",
+    label: "Mad og dagligvarer",
+    amount: 0,
+    categoryId: "mad",
+  },
+  {
+    id: "default-transport",
+    label: "Transport",
+    amount: 0,
+    categoryId: "transport",
+  },
+  {
+    id: "default-abonnementer",
+    label: "Abonnementer",
+    amount: 0,
+    categoryId: "abonnementer",
+  },
+  {
+    id: "default-forsikring",
+    label: "Forsikringer",
+    amount: 0,
+    categoryId: "forsikring",
+  },
 ]
 
-let nextId = 1
-export const newBudgetId = () => `b-${nextId++}-${Date.now()}`
+/**
+ * Id for a row the user adds, or for a persisted row that predates ids. Random
+ * rather than a counter, which is module state: the id it hands out depends on
+ * how many the process happened to mint earlier, and no two processes agree on
+ * that. Never call it during render — see {@link DEFAULT_SHARED_ITEMS}.
+ */
+export const newBudgetId = () => `b-${Math.random().toString(36).slice(2, 10)}`
 
 function defaultPerson(name: string, incomeSource: IncomeSource): PersonConfig {
   return { name, incomeSource, manualIncome: 0, items: [] }
@@ -99,7 +135,7 @@ export function defaultBudgetState(): BudgetState {
     mode: "single",
     person1: defaultPerson("Person 1", "skat"),
     person2: defaultPerson("Person 2", "manual"),
-    sharedItems: DEFAULT_SHARED_ITEMS.map((i) => ({ ...i, id: newBudgetId() })),
+    sharedItems: DEFAULT_SHARED_ITEMS.map((i) => ({ ...i })),
     categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
     assumptions: { ...DEFAULT_ASSUMPTIONS },
     mortgage: { ...DEFAULT_MORTGAGE },

@@ -1,11 +1,45 @@
 import { describe, it, expect } from "vitest"
 import {
+  defaultBudgetState,
+  newBudgetId,
   normalizeBudget,
   computeBudgetSummary,
   computeResultSummary,
   expensesByCategory,
   planningContribution,
 } from "../state"
+
+/**
+ * The starting state is built during the first render on both the server and
+ * the client, and the row ids reach the DOM as `id`/`for` attributes. Anything
+ * the two calls disagree about is therefore a hydration mismatch, so equality
+ * across independent calls is the property to hold onto here.
+ */
+describe("defaultBudgetState", () => {
+  it("gives the same row ids on every call", () => {
+    const ids = () => defaultBudgetState().sharedItems.map((i) => i.id)
+    expect(ids()).toEqual(ids())
+  })
+
+  it("gives the default rows distinct ids", () => {
+    const ids = defaultBudgetState().sharedItems.map((i) => i.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  // Shared ids must not mean shared rows: editing one budget's line would
+  // otherwise show up in the next default state the process hands out.
+  it("hands out rows that can be edited independently", () => {
+    defaultBudgetState().sharedItems[0].amount = 999
+    expect(defaultBudgetState().sharedItems[0].amount).toBe(0)
+  })
+})
+
+describe("newBudgetId", () => {
+  it("does not repeat", () => {
+    const ids = new Set(Array.from({ length: 1000 }, newBudgetId))
+    expect(ids.size).toBe(1000)
+  })
+})
 
 describe("normalizeBudget", () => {
   it("defaults an empty/invalid blob to a v6 single household", () => {
@@ -14,10 +48,34 @@ describe("normalizeBudget", () => {
     expect(s.mode).toBe("single")
     expect(Array.isArray(s.sharedItems)).toBe(true)
   })
+  it("falls back to the default rows without varying their ids", () => {
+    const ids = () =>
+      normalizeBudget({ mode: "single" }).sharedItems.map((i) => i.id)
+    expect(ids()).toEqual(ids())
+  })
   it("migrates a legacy array of items into sharedItems", () => {
     const s = normalizeBudget([{ label: "Mad", amount: 2000, categoryId: "mad" }])
     expect(s.sharedItems).toHaveLength(1)
     expect(s.sharedItems[0].amount).toBe(2000)
+  })
+  it("keeps the ids a persisted budget already carries", () => {
+    // "b-6-…" is the counter-and-clock format rows were saved with before the
+    // default rows got literal ids; both have to survive a load unchanged.
+    const saved = [
+      { id: "b-6-1787678393725", label: "Mad", categoryId: "mad" },
+      { id: "default-bolig", label: "Bolig", categoryId: "bolig" },
+    ]
+    const s = normalizeBudget({ sharedItems: saved })
+    expect(s.sharedItems.map((i) => i.id)).toEqual(saved.map((i) => i.id))
+  })
+  it("gives every id-less row its own id", () => {
+    const s = normalizeBudget([
+      { label: "Mad", amount: 2000, categoryId: "mad" },
+      { label: "Transport", amount: 900, categoryId: "transport" },
+    ])
+    const ids = s.sharedItems.map((i) => i.id)
+    expect(ids.every(Boolean)).toBe(true)
+    expect(new Set(ids).size).toBe(2)
   })
 })
 
