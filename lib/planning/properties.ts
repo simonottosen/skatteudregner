@@ -90,14 +90,16 @@ export function propertySummary(
 }
 
 /**
- * What the list understates, in the user's words — or null when it understates
- * nothing.
+ * What the projection understates, in the user's words — or null when it
+ * understates nothing.
  *
- * Ejendomsskattelovens § 25 grants the pensionistnedslag per boligenhed, but to
- * the helårsbolig the pensioner lives in and the fritidsbolig they use: a second
- * of either kind has none to claim, and the projection taxes it in full. Worth
- * saying out loud, because a household that owns two flats would otherwise see a
- * number it cannot account for.
+ * The one-per-kind limit is this projection's, not the law's: ejendomsskattelovens
+ * § 25 grants the pensionistnedslag per boligenhed and caps no household at one
+ * of each. The tax engine is handed a single helårsbolig and a single
+ * fritidsbolig (`input.property` / `input.summerHouse`), so a second of either
+ * kind is taxed with no nedslag and the ejendomsskat comes out too high. Say so
+ * as our limitation — a household that owns two flats would otherwise read a
+ * charge it cannot account for as the law's doing.
  */
 export function pensionerNedslagNotice(
   properties: readonly PlannedProperty[]
@@ -110,7 +112,8 @@ export function pensionerNedslagNotice(
   }
   if (homes <= 1 && summers <= 1) return null
   return (
-    "Pensionistnedslaget gives kun til én helårsbolig og ét sommerhus " +
-    "(ejendomsskattelovens § 25). Øvrige boliger beskattes uden nedslag."
+    "Beregningen giver kun pensionistnedslag til én helårsbolig og ét " +
+    "sommerhus. Øvrige boliger beskattes uden nedslag, så den beregnede " +
+    "ejendomsskat er sat lidt for højt."
   )
 }

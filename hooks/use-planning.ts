@@ -21,8 +21,9 @@ import {
   type ScenarioChanges,
 } from "@/lib/planning/types"
 import {
+  applyDerivedDefaults,
   mortgageFromBudget,
-  propertiesFromBudget,
+  type PlanningDerivedDefaults,
 } from "@/lib/planning/from-budget"
 import { newId, normalizePlanning } from "@/lib/planning/normalize"
 import { planningSavingsSplit } from "@/lib/planning/summary"
@@ -72,7 +73,10 @@ export function usePlanning() {
 
   const mortgage = budget.state.mortgage
 
-  const derivedDefaults = useMemo(() => {
+  // Annotated so the returned literal is checked against the plan's own fields:
+  // a key that is not one (`home` and `pension` aside) is a compile error here
+  // rather than a stray property that reaches localStorage.
+  const derivedDefaults = useMemo<PlanningDerivedDefaults>(() => {
     const currentAge =
       ageFromBirthDate(input.birthDate) ?? DEFAULT_PLANNING_STATE.currentAge
     const birthYear = new Date().getFullYear() - currentAge
@@ -191,18 +195,8 @@ export function usePlanning() {
   // While untouched, keep the linked fields mirroring tax/budget.
   useEffect(() => {
     if (!hydrated || touched) return
-    const { pension, ...rest } = derivedDefaults
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setState((p) => ({
-      ...p,
-      ...rest,
-      pension: {
-        ...p.pension,
-        single: pension.single,
-        person1: { ...p.pension.person1, ...pension.person1 },
-        person2: { ...p.pension.person2, ...pension.person2 },
-      },
-    }))
+    setState((p) => applyDerivedDefaults(p, derivedDefaults))
   }, [hydrated, touched, derivedDefaults])
 
   // Persist once the user (or a restore) has taken ownership of the state.
@@ -327,18 +321,7 @@ export function usePlanning() {
   /** Re-pull the linked fields from the current tax/budget data. */
   const pullFromSources = () => {
     setTouched(true)
-    const { pension, home, ...rest } = derivedDefaults
-    setState((prev) => ({
-      ...prev,
-      ...rest,
-      properties: propertiesFromBudget(prev.properties, home),
-      pension: {
-        ...prev.pension,
-        single: pension.single,
-        person1: { ...prev.pension.person1, ...pension.person1 },
-        person2: { ...prev.pension.person2, ...pension.person2 },
-      },
-    }))
+    setState((prev) => applyDerivedDefaults(prev, derivedDefaults))
   }
 
   return {

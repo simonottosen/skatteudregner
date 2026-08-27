@@ -11,7 +11,7 @@
 
 import type { MortgageState } from "@/lib/budget/mortgage"
 import { homeProperty } from "./normalize"
-import type { PlannedProperty, PlanningState } from "./types"
+import type { PensionPerson, PlannedProperty, PlanningState } from "./types"
 
 /**
  * The mortgage fields a plan reads off the budget instead of deriving. Picked
@@ -84,4 +84,56 @@ export function propertiesFromBudget(
     return [{ ...first, value, landValue }, ...current.slice(1)]
   }
   return [homeProperty(value, landValue), ...current]
+}
+
+/**
+ * Everything a plan reads off /skat and /budget rather than asking the user for.
+ *
+ * The linked half is `Partial<PlanningState>` rather than a restatement of the
+ * fields, so a key that is not a plan field cannot be declared here at all. That
+ * is load-bearing: `home` used to travel in this object unannounced and reach
+ * persisted state as a key `PlanningState` never declared. `home` and `pension`
+ * are named separately because neither *is* a plan field — the home is two
+ * amounts that have to be merged into a list the user also edits, and the
+ * pension is only the few person fields the other pages happen to know.
+ */
+export type PlanningDerivedDefaults = Partial<
+  Omit<PlanningState, "properties" | "pension">
+> & {
+  /** The household's own home as /skat and /budget describe it. */
+  home: { value: number; landValue: number }
+  pension: {
+    single: boolean
+    person1: Partial<PensionPerson>
+    person2: Partial<PensionPerson>
+  }
+}
+
+/**
+ * Fold the derived defaults into a plan.
+ *
+ * One function because there are two callers — the untouched-state effect and
+ * the explicit "hent igen" — and when they were two copies of this merge they
+ * drifted: the effect spread the defaults wholesale, so `home` landed as a stray
+ * key while `properties` was never set at all. Every fresh visit takes that
+ * path, which left a homeowner carrying the mortgage with neither the home nor
+ * its ejendomsskat. Whether the plan counts as touched afterwards is the
+ * caller's business and stays there; the merge itself is the same either way.
+ */
+export function applyDerivedDefaults(
+  prev: PlanningState,
+  defaults: PlanningDerivedDefaults
+): PlanningState {
+  const { home, pension, ...linked } = defaults
+  return {
+    ...prev,
+    ...linked,
+    properties: propertiesFromBudget(prev.properties, home),
+    pension: {
+      ...prev.pension,
+      single: pension.single,
+      person1: { ...prev.pension.person1, ...pension.person1 },
+      person2: { ...prev.pension.person2, ...pension.person2 },
+    },
+  }
 }

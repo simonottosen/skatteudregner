@@ -110,24 +110,38 @@ describe("pensionerNedslagNotice", () => {
   const home = () => at({ kind: "helaarsbolig" })
   const summer = () => at({ kind: "fritidsbolig" })
 
-  it("says nothing about the portfolios § 25 covers in full", () => {
-    // One of each kind is exactly what § 25 grants a nedslag to, so there is
-    // nothing being understated to warn about.
+  /** Every portfolio the projection has to admit something about. */
+  const understated = [
+    [home(), home()],
+    [summer(), summer()],
+    [home(), summer(), summer()],
+  ]
+
+  it("says nothing about the portfolios it models in full", () => {
+    // One of each kind is what the two engine slots hold, so nothing is being
+    // understated and there is no limitation to admit.
     expect(pensionerNedslagNotice([])).toBeNull()
     expect(pensionerNedslagNotice([home()])).toBeNull()
     expect(pensionerNedslagNotice([summer()])).toBeNull()
     expect(pensionerNedslagNotice([home(), summer()])).toBeNull()
   })
 
-  it("warns when a second dwelling of a kind has no nedslag to claim", () => {
-    // The known limitation, said out loud: a household that owns two flats
-    // would otherwise see a charge it cannot account for.
-    for (const list of [
-      [home(), home()],
-      [summer(), summer()],
-      [home(), summer(), summer()],
-    ]) {
-      expect(pensionerNedslagNotice(list)).toContain("§ 25")
+  it("warns when a second dwelling of a kind is taxed without nedslag", () => {
+    for (const list of understated) {
+      const notice = pensionerNedslagNotice(list)
+      expect(notice).toContain("Beregningen")
+      expect(notice).toContain("uden nedslag")
+    }
+  })
+
+  it("blames the projection, never the statute", () => {
+    // § 25 grants the nedslag per boligenhed and caps no household at one of
+    // each kind. The limit is ours — the engine has two property slots — so
+    // citing the law for it tells the user it says something it does not.
+    for (const list of understated) {
+      const notice = pensionerNedslagNotice(list) ?? ""
+      expect(notice).not.toMatch(/§/)
+      expect(notice).not.toMatch(/ejendomsskattelov/i)
     }
   })
 })
