@@ -131,4 +131,133 @@ describe("normalizePlanning", () => {
       expect(DEFAULT_PLANNING_STATE.mortgageBidragssats).toBe(0)
     })
   })
+
+  describe("properties", () => {
+    it("migrates a version-1 plan's single home into the list", () => {
+      // Everything saved before this field existed is a household with one
+      // owner-occupied home, and it has to come back owning it: both amounts,
+      // held from today, never sold.
+      const migrated = normalizePlanning({
+        version: 1,
+        homeValue: 3_500_000,
+        landValue: 1_200_000,
+      })
+      expect(migrated.version).toBe(2)
+      expect(migrated.properties).toHaveLength(1)
+      expect(migrated.properties[0]).toMatchObject({
+        kind: "helaarsbolig",
+        value: 3_500_000,
+        landValue: 1_200_000,
+        acquisitionAge: 0,
+        disposalAge: null,
+      })
+      expect(migrated.properties[0].id).toBeTruthy()
+      expect(migrated.properties[0].label).toBe("Bolig")
+    })
+
+    it("migrates a home with no grundværdi behind it", () => {
+      // /skat can describe an ejendom without a separate grundværdi, and a plan
+      // saved from one still owns a house.
+      const migrated = normalizePlanning({ version: 1, homeValue: 2_000_000 })
+      expect(migrated.properties).toEqual([
+        expect.objectContaining({ value: 2_000_000, landValue: 0 }),
+      ])
+    })
+
+    it("leaves a version-1 plan with no home owning nothing", () => {
+      // A renter's plan, not a plan missing its house — inventing a property
+      // here would charge them a tax they never owed.
+      expect(normalizePlanning({ version: 1, homeValue: 0 }).properties).toEqual(
+        []
+      )
+      expect(normalizePlanning({ version: 1 }).properties).toEqual([])
+    })
+
+    it("keeps the list a version-2 plan already has", () => {
+      const saved = normalizePlanning({
+        version: 2,
+        properties: [
+          {
+            id: "prop-a",
+            label: "Rækkehuset",
+            kind: "helaarsbolig",
+            value: 4_000_000,
+            landValue: 1_500_000,
+            acquisitionAge: 0,
+            disposalAge: 80,
+          },
+          {
+            id: "prop-b",
+            label: "Sommerhuset",
+            kind: "fritidsbolig",
+            value: 1_800_000,
+            landValue: 900_000,
+            acquisitionAge: 55,
+            disposalAge: null,
+          },
+        ],
+      })
+      expect(saved.properties).toEqual([
+        {
+          id: "prop-a",
+          label: "Rækkehuset",
+          kind: "helaarsbolig",
+          value: 4_000_000,
+          landValue: 1_500_000,
+          acquisitionAge: 0,
+          disposalAge: 80,
+        },
+        {
+          id: "prop-b",
+          label: "Sommerhuset",
+          kind: "fritidsbolig",
+          value: 1_800_000,
+          landValue: 900_000,
+          acquisitionAge: 55,
+          disposalAge: null,
+        },
+      ])
+    })
+
+    it("ignores the legacy amounts once a list is present", () => {
+      // The migration is keyed on the shape rather than on `version`, because a
+      // blob reaches this from localStorage, Supabase or an MCP client with any
+      // version field it likes. A list present is a list already migrated.
+      const both = normalizePlanning({
+        version: 1,
+        homeValue: 9_000_000,
+        properties: [{ kind: "fritidsbolig", value: 1_000_000 }],
+      })
+      expect(both.properties).toHaveLength(1)
+      expect(both.properties[0]).toMatchObject({
+        kind: "fritidsbolig",
+        value: 1_000_000,
+      })
+    })
+
+    it("reads a disposal before the purchase as a sale in the year of it", () => {
+      // A typo rather than a plan: a property owned for no year at all. The
+      // floor keeps the half-open interval well-formed for `propertySchedule`.
+      const [p] = normalizePlanning({
+        properties: [{ value: 1_000_000, acquisitionAge: 60, disposalAge: 40 }],
+      }).properties
+      expect(p.acquisitionAge).toBe(60)
+      expect(p.disposalAge).toBe(60)
+    })
+
+    it("drops entries that describe no property at all", () => {
+      expect(
+        normalizePlanning({ properties: [null, "hus", 3, {}] }).properties
+      ).toHaveLength(1) // only the object survives, defaulted to a 0 kr. home
+      expect(normalizePlanning({ properties: "hus" }).properties).toEqual([])
+    })
+
+    it("never carries a negative amount into the tax", () => {
+      const [p] = normalizePlanning({
+        properties: [{ value: -1, landValue: -1 }],
+      }).properties
+      expect(p.value).toBe(0)
+      expect(p.landValue).toBe(0)
+    })
+  })
 })
