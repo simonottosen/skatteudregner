@@ -2454,7 +2454,7 @@ describe("simulatePlanning", () => {
         married: false,
       })
 
-      const drawing = (properties: PlannedProperty[]) =>
+      const path = (properties: PlannedProperty[]) =>
         simulatePlanning(
           makeState({
             currentAge: 69,
@@ -2476,7 +2476,9 @@ describe("simulatePlanning", () => {
               person2: { ...DEFAULT_PENSION_PERSON },
             },
           })
-        ).points.find((p) => p.age === 70)!
+        ).points
+      const drawing = (properties: PlannedProperty[]) =>
+        path(properties).find((p) => p.age === 70)!
 
       it("reaches a charge the sale that funds it agrees with", () => {
         const year = drawing([HOME, SUMMER])
@@ -2499,12 +2501,22 @@ describe("simulatePlanning", () => {
       })
 
       it("funds the whole year with one sale, not one per property", () => {
-        const year = drawing([HOME, SUMMER])
-        // The pot is sold down once, for the settled need — spending plus the
-        // charge the settlement landed on. Were `fundShortfall` reached twice
-        // against the real state, this would come out at roughly double.
+        const points = path([HOME, SUMMER])
+        const opening = points.find((p) => p.age === 69)!.investments
+        const year = points.find((p) => p.age === 70)!
+        // The sale reported is the settled need — spending plus the charge the
+        // settlement landed on — grossed up for the tax on its gain.
         expect(year.investmentsSold).toBeCloseTo(
           grossUpStockSale(SPENDING + year.propertyTax, GAIN_FRACTION, ctxAt(1)),
+          4
+        )
+        // And the pot fell by that one sale and no more. Asserted against the
+        // balance rather than against `investmentsSold` alone, because a second
+        // `fundShortfall` against the real state drains the pot twice while
+        // still *reporting* one sale: the proportional cost basis makes both
+        // calls gross up to the same figure, so only the balance shows it.
+        expect(year.investments).toBeCloseTo(
+          opening * (1 + RETURN) - year.investmentsSold,
           4
         )
         expect(year.borrowed).toBe(0)
