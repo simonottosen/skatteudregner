@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest"
 import {
   ASSESSMENT_FACTOR,
+  createPropertyHoldingTax,
   grossUpStockSale,
+  nedslagRespondsToStockIncome,
   pensionIncomeTax,
   propertyHoldingTax,
+  qualifiesForPensionerNedslag,
   stockGainTax,
   type PensionerIncomeYear,
   type TaxContext,
@@ -240,5 +243,129 @@ describe("propertyHoldingTax progression", () => {
         personalIncome: gradedBy(0.5),
       }), 0)
     })
+
+    /**
+     * `simulate.ts` iterates the § 26 base and the drawdown that produces it
+     * onto each other, and skips the whole thing whenever it can prove the
+     * answer cannot move. Both proofs are checked below against the engine
+     * itself rather than against a restatement of the rules.
+     */
+    const ctxFor = (year: 2025 | 2026): TaxContext => ({
+      t: 0,
+      inflation: 0,
+      profile: { ...DEFAULT_TAX_PROFILE, year },
+      married: false,
+    })
+    /** Whether the engine has a nedslag to grade at this age at all. */
+    const engineGrantsNedslag = (age: number, year: 2025 | 2026) =>
+      at(year, 11_500_000, age, NO_INCOME) <
+      at(year, 11_500_000, age, {
+        personalIncome: 100_000_000,
+        positiveStockIncome: 0,
+      })
+
+    it("is asked of the same age the engine asks of itself", () => {
+      // `propertyHoldingTax` synthesises a June birth date, and
+      // `calculateRetirementAge` reads the birth month — so the qualifying age
+      // steps on a finer schedule than folkepensionsalderen does. A predicate
+      // written against anything but that same date would disagree here.
+      let qualified = 0
+      let tooYoung = 0
+      for (const year of [2025, 2026] as const) {
+        for (let age = 60; age <= 80; age++) {
+          const answer = engineGrantsNedslag(age, year)
+          expect(qualifiesForPensionerNedslag(age, ctxFor(year))).toBe(answer)
+          if (answer) qualified++
+          else tooYoung++
+        }
+      }
+      // The sweep has to cross the boundary, or it agrees about nothing.
+      expect(qualified).toBeGreaterThan(0)
+      expect(tooYoung).toBeGreaterThan(0)
+    })
+
+    /**
+     * The response test is what lets the settlement charge nothing in the common
+     * case, so it has to be a *bound*, not a guess: whenever it says no, no gain
+     * the feedback could still reach may move the charge. The feedback can add at
+     * most the whole nedslag to the charge, and a krone of charge sells at most
+     * 1/(1 − 42 %) kroner of gain once the sale is grossed up for its own tax.
+     */
+    it("never says no while a reachable gain could still move the charge", () => {
+      const headroom = nedslag / (1 - r.stockTaxHighRate)
+      const charge = (personalIncome: number, positiveStockIncome: number) =>
+        at(2025, 11_500_000, 70, { personalIncome, positiveStockIncome })
+      let saidNo = 0
+      let saidYes = 0
+      for (const personal of [0, threshold - 50_000, gradedBy(0.5), gradedBy(2)]) {
+        for (const gain of [0, 20_000, 60_000, 200_000]) {
+          if (nedslagRespondsToStockIncome(ctxFor(2025), personal, gain)) {
+            saidYes++
+            continue
+          }
+          saidNo++
+          // The settlement stops at its gain-0 seed, so that seed must already
+          // be the answer for every gain still in reach.
+          expect(charge(personal, gain + headroom)).toBe(charge(personal, 0))
+        }
+      }
+      // Neither branch is vacuous — the sweep exercises both answers.
+      expect(saidNo).toBeGreaterThan(0)
+      expect(saidYes).toBeGreaterThan(0)
+    })
+
+    it("says yes inside the graduation band and no outside it", () => {
+      const ctx2025 = ctxFor(2025)
+      expect(nedslagRespondsToStockIncome(ctx2025, gradedBy(0.5), 0)).toBe(true)
+      // Personal income alone has already taken the whole nedslag.
+      expect(nedslagRespondsToStockIncome(ctx2025, gradedBy(2), 0)).toBe(false)
+      // Far below the grundbeløb, with no gain in sight to close the distance.
+      expect(nedslagRespondsToStockIncome(ctx2025, 0, 0)).toBe(false)
+    })
+  })
+})
+
+describe("createPropertyHoldingTax", () => {
+  const NO_INCOME: PensionerIncomeYear = {
+    personalIncome: 0,
+    positiveStockIncome: 0,
+  }
+  const profile = { ...DEFAULT_TAX_PROFILE, year: 2025 as const }
+  const at = (t: number): TaxContext => ({
+    t,
+    inflation: 0.02,
+    profile,
+    married: false,
+  })
+
+  it("answers exactly as the one-shot does, call after call", () => {
+    // The binding reuses one mutable input object across calls, so a field left
+    // behind by one call would show up in the next. The arguments below vary in
+    // every dimension and are run twice in opposite orders to catch that.
+    const cases: Array<
+      [number, number, number, TaxContext, PensionerIncomeYear]
+    > = [
+      [11_500_000, 0, 40, at(0), NO_INCOME],
+      [
+        4_000_000,
+        2_000_000,
+        70,
+        at(0),
+        { personalIncome: 300_000, positiveStockIncome: 50_000 },
+      ],
+      [0, 0, 70, at(0), NO_INCOME], // no home → no charge
+      [
+        12_000_000 * 1.02 ** 15,
+        0,
+        75,
+        at(15),
+        { personalIncome: 0, positiveStockIncome: 900_000 },
+      ],
+      [4_000_000, 2_000_000, 70, at(0), NO_INCOME],
+    ]
+    const bound = createPropertyHoldingTax(profile, false)
+    for (const c of [...cases, ...[...cases].reverse()]) {
+      expect(bound(...c)).toBe(propertyHoldingTax(...c))
+    }
   })
 })

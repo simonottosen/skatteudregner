@@ -61,10 +61,13 @@ import {
 } from "./pension"
 import {
   annualInvestmentTax,
+  createPropertyHoldingTax,
   grossUpStockSale,
+  nedslagRespondsToStockIncome,
   pensionIncomeTax,
-  propertyHoldingTax,
+  qualifiesForPensionerNedslag,
   stockGainTax,
+  type PropertyHoldingTax,
   type TaxContext,
 } from "./taxation"
 
@@ -154,14 +157,26 @@ interface PathResult {
  * each step produced. Shared by both halves of the projection: a property tax
  * that outruns the monthly saving is funded exactly the way retirement spending
  * is.
+ *
+ * `gain` is the part of `sold` that is a realised gain, i.e. the year's positive
+ * aktieindkomst under realisationsbeskatning. Reported rather than left implicit
+ * because callers cannot recompute it: the gain fraction it is measured at is
+ * the one from *before* the sale, and the sale moves it.
  */
 function fundShortfall(
   s: SimState,
   shortfall: number,
   taxCtx: TaxContext
-): { tax: number; sold: number; borrowed: number; unfunded: number } {
+): {
+  tax: number
+  sold: number
+  gain: number
+  borrowed: number
+  unfunded: number
+} {
   let tax = 0
   let sold = 0
+  let gain = 0
   let borrowed = 0
 
   if (s.cash > 0) {
@@ -174,7 +189,8 @@ function fundShortfall(
     // Sell exactly enough to net the shortfall after gains tax, so a sufficient
     // pot covers the need without spurious borrowing.
     sold = Math.min(s.investments, grossUpStockSale(shortfall, g, taxCtx))
-    tax = stockGainTax(sold * g, taxCtx)
+    gain = sold * g
+    tax = stockGainTax(gain, taxCtx)
     s.investmentBasis = Math.max(0, s.investmentBasis - sold * (1 - g))
     s.investments -= sold
     shortfall -= sold - tax // net proceeds of this sale
@@ -189,7 +205,7 @@ function fundShortfall(
     s.borrowedForSpending += borrowed
     shortfall -= borrowed
   }
-  return { tax, sold, borrowed, unfunded: Math.max(0, shortfall) }
+  return { tax, sold, gain, borrowed, unfunded: Math.max(0, shortfall) }
 }
 
 /**
@@ -308,6 +324,77 @@ function mortgageCost(state: PlanningState, years: number): MortgageCost {
 
 const MC_RUNS = 400
 const MC_SEED = 0x9e3779b9
+
+/**
+ * Passes used by {@link settleAgainstDrawdown} — a fixed count, never a
+ * tolerance loop. See there for why three is enough and why a loop is the
+ * wrong shape.
+ */
+const PROPERTY_TAX_REFINEMENT_PASSES = 3
+
+/**
+ * Settle a year's property tax against the drawdown that pays for it, and
+ * return the charge the two agree on.
+ *
+ * Under realisationsbeskatning the two define each other: the charge sizes the
+ * withdrawal, the withdrawal realises a gain, § 26 grades the pensionistnedslag
+ * on that aktieindkomst — and the nedslag sets the charge. `shortfallGiven`
+ * closes the loop by rebuilding the year's funding gap from a candidate charge,
+ * which is why each half of the projection supplies its own.
+ *
+ * Every pass predicts the sale on a **throwaway copy** of the state.
+ * `fundShortfall` mutates, so iterating over the real one would sell the pot
+ * several times over; `SimState` is a flat bag of numbers, so the spread is an
+ * exact snapshot. The real sale happens once, after this returns — which makes
+ * double-selling structurally impossible rather than merely avoided. Funding
+ * only the incremental difference with a second real call would not: it would
+ * re-derive the gain fraction from an already-reduced pot, and the 1-krone
+ * borrow floor and the ruin test would then fire on a partial delta.
+ *
+ * A fixed three passes, never a tolerance loop. Each pass shrinks the error by
+ * at most 5 % × g/(1 − 42 % × g) ≤ 0,087, and the whole nedslag is only
+ * 6.000 kr., so three passes leave under 4 kr. even for a pot that is all gain
+ * — and under an øre at a realistic gain fraction. That is finer than the
+ * engine's own resolution, since `calculatePropertyTax` rounds to whole real
+ * kroner. The same rounding is what makes a tolerance loop the wrong shape: it
+ * turns the map into a step function that can cycle between two adjacent
+ * integers forever. Repeating a value exactly *is* a fixed point, so the early
+ * return below both stops that and settles the year exactly — the real sale is
+ * then funded at the very charge it was predicted from.
+ *
+ * Lives out here rather than inside {@link runPath} because a body this size
+ * nested in the year loop measurably slows every path that never reaches it.
+ */
+function settleAgainstDrawdown(
+  s: SimState,
+  taxCtx: TaxContext,
+  /** The § 26 base's personal-income half — the same figure `chargeGiven` uses. */
+  personalIncome: number,
+  initialCharge: number,
+  chargeGiven: (realisedGain: number) => number,
+  shortfallGiven: (propertyTax: number) => number
+): number {
+  let charge = initialCharge
+  for (let pass = 0; pass < PROPERTY_TAX_REFINEMENT_PASSES; pass++) {
+    const shortfall = shortfallGiven(charge)
+    if (shortfall <= 0) return charge
+    const realised = fundShortfall({ ...s }, shortfall, taxCtx).gain
+    // The first prediction is also what bounds the answer: the fixed point's
+    // aktieindkomst is at least this and at most a known step above it, so a
+    // band test on it says whether the engine needs asking at all. The
+    // prediction costs a fraction of the tax call it saves.
+    if (
+      pass === 0 &&
+      !nedslagRespondsToStockIncome(taxCtx, personalIncome, realised)
+    ) {
+      return charge
+    }
+    const settled = chargeGiven(realised)
+    if (settled === charge) return charge
+    charge = settled
+  }
+  return charge
+}
 
 /** Mulberry32 — tiny, fast, deterministic PRNG seeded by an integer. */
 function mulberry32(seed: number): () => number {
@@ -540,11 +627,25 @@ function runPath(
   pension: PensionIncome,
   /** What the mortgage costs, modelled and as the budget already saw it. */
   mortgage: MortgageCost,
+  /** The household's property tax, bound to its kommune and rules year. */
+  holdingTax: PropertyHoldingTax,
   /** Per-year home-price shock (0 for the deterministic path). */
   housingShockFor: (yearIndex: number) => number = () => 0
 ): PathResult {
   const years = Math.max(0, Math.round(state.endAge - state.currentAge))
   const byAge = eventsByAge(state.events)
+  /**
+   * Realisation is the only mode where the year's aktieindkomst depends on the
+   * property tax being computed, because the drawdown that funds the charge is
+   * what realises the gain. Under lager the gain accrues whether or not anything
+   * is sold, and an ASK gain is not aktieindkomst at all — aktiesparekontoloven
+   * taxes it separately, and the basis resets each year so a drawdown realises
+   * nothing anyway. Both are already right without any of this.
+   */
+  const nedslagFollowsDrawdown =
+    state.includePropertyTax &&
+    !state.propertyTaxInBudget &&
+    state.investmentTaxMode === "realisation"
   const s: SimState = {
     investments: state.startInvestments,
     investmentBasis: state.startInvestments,
@@ -665,28 +766,35 @@ function runPath(
     // Ejendomsværdiskat + grundskyld fall due in every year the house is owned,
     // working or retired — but both the contribution and `annualSpending` derive
     // from the budget, so a budget that already lists the tax would count it twice.
-    if (state.includePropertyTax && s.homeValue > 0 && !state.propertyTaxInBudget) {
-      propertyTaxThisYear = propertyHoldingTax(
-        s.homeValue,
-        s.homeValue * landFraction,
-        age,
-        taxCtx,
-        {
-          // Zero before retirement: the plan models a contribution (the budget's
-          // surplus), never a salary, so there is no working-year income to give.
-          // Harmless while retirement starts at or after folkepensionsalderen,
-          // which is the only time the nedslag this grades is granted at all.
+    const chargesPropertyTax =
+      state.includePropertyTax && s.homeValue > 0 && !state.propertyTaxInBudget
+    /**
+     * The year's charge as a function of the aktieindkomst a drawdown realises —
+     * but only in a year where the two define each other, and null in every
+     * other year. That null *is* the guard: most years of most plans owe no
+     * settlement, and this is reached once per year per Monte Carlo path.
+     */
+    let chargeGivenDrawdown: ((realisedGain: number) => number) | null = null
+    if (chargesPropertyTax) {
+      const chargeGiven = (realisedGain: number) =>
+        holdingTax(s.homeValue, s.homeValue * landFraction, age, taxCtx, {
+          // Pension income only. A household still working carries a salary the
+          // plan never sees — it models a contribution, the budget's surplus —
+          // so that part of the § 26 base is missing and needs an input this
+          // model does not have. Tracked as issue #39; not what this fixes.
           personalIncome: pension.taxable[y],
-          // The aktieindkomst the year has produced by this point. Under lager
-          // that is the whole of it — the gain is taxed as it accrues, sold or
-          // not. An ASK gain is not aktieindkomst at all (aktiesparekontoloven
-          // taxes it on its own), and a realisation-mode drawdown is realised
-          // below, sized by the very charge being computed here, so folding it
-          // in would make the two mutually recursive.
-          positiveStockIncome:
-            state.investmentTaxMode === "lager" ? Math.max(0, gain) : 0,
-        }
+          positiveStockIncome: realisedGain,
+        })
+      // Under lager the year's whole gain is aktieindkomst, sold or not, because
+      // it is taxed as it accrues. Under realisation nothing is income until
+      // something is sold — which is what the settlement works out — and an ASK
+      // gain is never aktieindkomst.
+      propertyTaxThisYear = chargeGiven(
+        state.investmentTaxMode === "lager" ? Math.max(0, gain) : 0
       )
+      if (nedslagFollowsDrawdown && qualifiesForPensionerNedslag(age, taxCtx)) {
+        chargeGivenDrawdown = chargeGiven
+      }
     }
     if (!retired) {
       // Paid out of salary, so it comes off what is left to invest. A tax that
@@ -701,12 +809,26 @@ function runPath(
       // invested instead of being paid to a lender that no longer exists. A
       // budget that deducted nothing hands back nothing, so the whole modelled
       // payment falls on the saving — see `mortgageBudgetedMonthly`.
-      const net =
+      const beforePropertyTax =
         contribution +
         mortgage.budgeted -
         mortgage.byYear[y] -
-        propertyTaxThisYear -
         borrowedInterestThisYear
+      // `retirementAge` and folkepensionsalderen are separate inputs, so a
+      // household can be old enough for the nedslag while the plan still counts
+      // it as working — and the tax that outruns its saving is funded by selling,
+      // exactly as retirement spending is. The guard makes this free otherwise.
+      if (chargeGivenDrawdown) {
+        propertyTaxThisYear = settleAgainstDrawdown(
+          s,
+          taxCtx,
+          pension.taxable[y],
+          propertyTaxThisYear,
+          chargeGivenDrawdown,
+          (tax) => tax - beforePropertyTax
+        )
+      }
+      const net = beforePropertyTax - propertyTaxThisYear
       contribThisYear = Math.max(0, net)
       s.investments += contribThisYear
       s.investmentBasis += contribThisYear
@@ -723,12 +845,22 @@ function runPath(
       // it has nothing netted out to hand back. Same shape as the other-debt
       // line above — absorbed by salary while working, an explicit outflow
       // after.
-      const need =
+      const beforePropertyTax =
         inflatedSpending +
         mortgage.byYear[y] +
         debtServiceThisYear +
-        propertyTaxThisYear +
         borrowedInterestThisYear
+      if (chargeGivenDrawdown) {
+        propertyTaxThisYear = settleAgainstDrawdown(
+          s,
+          taxCtx,
+          pension.taxable[y],
+          propertyTaxThisYear,
+          chargeGivenDrawdown,
+          (tax) => beforePropertyTax + tax - pension.net[y]
+        )
+      }
+      const need = beforePropertyTax + propertyTaxThisYear
       const surplus = pension.net[y] - need
       if (surplus >= 0) {
         // A surplus first repays any equity borrowed earlier for spending
@@ -830,8 +962,19 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
   // Also deterministic: the loan schedule doesn't care about return draws.
   const mortgage = mortgageCost(state, years)
 
+  // Bound once for the whole run rather than per path: the kommune lookup and
+  // the default input behind each call are fixed for the household, and the
+  // paths below ask tens of thousands of times between them.
+  const holdingTax = createPropertyHoldingTax(state.tax, !state.pension.single)
+
   // Deterministic path (median + growth sources).
-  const deterministic = runPath(state, () => meanReturn, pension, mortgage)
+  const deterministic = runPath(
+    state,
+    () => meanReturn,
+    pension,
+    mortgage,
+    holdingTax
+  )
 
   // Monte Carlo paths for the bands (only investment return is randomised).
   const mcNetWorthByYear: number[][] = Array.from({ length: years + 1 }, () => [])
@@ -847,6 +990,7 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
       () => meanReturn + volatility * nextNormal(rng),
       pension,
       mortgage,
+      holdingTax,
       () => housingVolatility * nextNormal(rng)
     )
     if (path.ruinAge !== null) mcFailures++

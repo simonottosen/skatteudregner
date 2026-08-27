@@ -21,8 +21,18 @@ import {
   type MortgageState,
 } from "@/lib/budget/mortgage"
 import { applyScenario } from "../scenario"
-import { pensionIncomeTax, type TaxContext } from "../taxation"
-import { afterPalReturn } from "../pension"
+import {
+  grossUpStockSale,
+  pensionIncomeTax,
+  propertyHoldingTax,
+  stockGainTax,
+  type TaxContext,
+} from "../taxation"
+import {
+  afterPalReturn,
+  annuityPayment,
+  folkepensionAfterModregning,
+} from "../pension"
 
 // Income tax on a year's gross pension income, real terms (inflation 0 in the
 // tests that use this), matching what the engine applies internally.
@@ -1786,6 +1796,316 @@ describe("simulatePlanning", () => {
       expect(
         gains("lager").propertyTax - gains("realisation").propertyTax
       ).toBe(6_000)
+    })
+  })
+
+  /**
+   * Under realisationsbeskatning the year's property tax and the drawdown that
+   * pays for it define each other: the charge sizes the withdrawal, the
+   * withdrawal realises a gain, § 26 grades the § 25 nedslag on that
+   * aktieindkomst — and the nedslag sets the charge. The model used to hand § 26
+   * a flat zero here, so a retired household selling an appreciated portfolio to
+   * live on kept a nedslag the law had already graded away.
+   *
+   * The household below is built so the loop is *visible*: its pension income
+   * sits just under the grundbeløb, and the gain the drawdown realises is what
+   * carries it into the graduation band — an interior fixed point rather than
+   * either saturated end.
+   */
+  describe("§ 26 counts the gain a realisation drawdown makes", () => {
+    const ctxAt = (t: number): TaxContext => ({
+      t,
+      inflation: 0,
+      profile: DEFAULT_TAX_PROFILE,
+      married: false,
+    })
+
+    /** No return, no fees, no inflation — so every figure below is derivable. */
+    const flat = {
+      ...DEFAULT_PLANNING_STATE.assumptions,
+      investmentFee: 0,
+      housingReturn: 0,
+      inflation: 0,
+      volatility: 0,
+      housingVolatility: 0,
+    }
+
+    /**
+     * A pot with one year of growth behind it and nothing sold from it yet has a
+     * gain fraction that follows from the return alone: value (1+r), basis 1.
+     */
+    const RETURN = 0.1
+    const GAIN_FRACTION = RETURN / (1 + RETURN)
+    const START_INVESTMENTS = 12_000_000
+
+    it("sells the grossed-up amount and taxes the gain the pre-sale basis implies", () => {
+      // No home and no pension, so the year's whole shortfall is the spending:
+      // the sale can be derived from the inputs rather than from the engine.
+      const res = simulatePlanning(
+        makeState({
+          currentAge: 69,
+          endAge: 71,
+          retirementAge: 70,
+          startInvestments: START_INVESTMENTS,
+          monthlyContribution: 0,
+          annualSpending: 400_000,
+          homeValue: 0,
+          landValue: 0,
+          mortgageBalance: 0,
+          includePropertyTax: false,
+          assumptions: { ...flat, investmentReturn: RETURN },
+          pension: {
+            ...DEFAULT_PLANNING_STATE.pension,
+            single: true,
+            includeFolkepension: false,
+            person1: { ...DEFAULT_PENSION_PERSON },
+            person2: { ...DEFAULT_PENSION_PERSON },
+          },
+        })
+      )
+
+      const sold = grossUpStockSale(400_000, GAIN_FRACTION, ctxAt(1))
+      const first = res.points.find((p) => p.age === 70)!
+      expect(first.investmentsSold).toBeCloseTo(sold, 4)
+      expect(first.borrowed).toBe(0) // the pot covered it — nothing was borrowed
+      // The only tax in this year is the one on the realised gain, and the gain
+      // is measured at the fraction from *before* the sale — which is exactly
+      // the quantity § 26 is handed below.
+      expect(first.taxPaid).toBeCloseTo(
+        stockGainTax(sold * GAIN_FRACTION, ctxAt(1)),
+        4
+      )
+
+      // The following year re-derives from the basis this sale left behind, i.e.
+      // from `sold × (1 − g)` — the complement of the gain it realised.
+      const basis = START_INVESTMENTS - sold * (1 - GAIN_FRACTION)
+      const value = (START_INVESTMENTS * (1 + RETURN) - sold) * (1 + RETURN)
+      expect(res.points.find((p) => p.age === 71)!.investmentsSold).toBeCloseTo(
+        grossUpStockSale(400_000, (value - basis) / value, ctxAt(2)),
+        4
+      )
+    })
+
+    /**
+     * Ratepension over ten flat years pays a tenth of the balance; folkepension
+     * is untouched by modregning at that size. Derived rather than written down,
+     * so § 26's income base here is the pension module's own arithmetic.
+     */
+    const RATEPENSION_BALANCE = 600_000
+    const RATEPENSION_YEARS = 10
+    const RATEPENSION_PAYOUT = annuityPayment(
+      RATEPENSION_BALANCE,
+      afterPalReturn(0),
+      RATEPENSION_YEARS
+    )
+    const PERSONAL_INCOME =
+      RATEPENSION_PAYOUT + folkepensionAfterModregning(RATEPENSION_PAYOUT, true)
+
+    const HOME_VALUE = 4_000_000
+    const LAND_VALUE = 2_000_000
+
+    const inTheBand = (overrides: Partial<PlanningState> = {}) =>
+      makeState({
+        currentAge: 69,
+        endAge: 75,
+        retirementAge: 70,
+        startInvestments: START_INVESTMENTS,
+        monthlyContribution: 0,
+        annualSpending: 590_000,
+        homeValue: HOME_VALUE,
+        landValue: LAND_VALUE,
+        mortgageBalance: 0,
+        includePropertyTax: true,
+        propertyTaxInBudget: false,
+        assumptions: { ...flat, investmentReturn: RETURN },
+        pension: {
+          ...DEFAULT_PLANNING_STATE.pension,
+          single: true,
+          includeFolkepension: true,
+          pensionReturn: 0,
+          ratepensionYears: RATEPENSION_YEARS,
+          person1: {
+            ...DEFAULT_PENSION_PERSON,
+            folkepensionAge: 70,
+            ratepensionBalance: RATEPENSION_BALANCE,
+          },
+          person2: { ...DEFAULT_PENSION_PERSON },
+        },
+        ...overrides,
+      })
+
+    it("settles the charge and the drawdown that funds it on each other", () => {
+      const first = simulatePlanning(inTheBand()).points.find(
+        (p) => p.age === 70
+      )!
+      const charge = (positiveStockIncome: number) =>
+        propertyHoldingTax(HOME_VALUE, LAND_VALUE, 70, ctxAt(1), {
+          personalIncome: PERSONAL_INCOME,
+          positiveStockIncome,
+        })
+
+      // Reconstruct the aktieindkomst from what the year reports selling, and
+      // put it back through § 26. A self-consistent year answers with the very
+      // charge the sale was sized for.
+      const realisedGain = first.investmentsSold * GAIN_FRACTION
+      expect(Math.abs(first.propertyTax - charge(realisedGain))).toBeLessThan(1)
+
+      // And it is an interior point of the graduation band: ignoring the gain
+      // charges materially less (what the model used to do), while the household
+      // has not yet lost the whole nedslag either.
+      const ignoringTheGain = charge(0)
+      const nedslagGoneEntirely = charge(1_000_000)
+      expect(first.propertyTax).toBeGreaterThan(ignoringTheGain + 1_000)
+      expect(first.propertyTax).toBeLessThan(nedslagGoneEntirely)
+    })
+
+    /**
+     * The same pot value funding the same spending, differing only in how much of
+     * it is gain. More embedded gain is more aktieindkomst when it is sold, and
+     * § 26 only ever grades the nedslag *down* — so the charge can never fall.
+     */
+    describe("a larger embedded gain never lowers the charge", () => {
+      const expectMonotone = (
+        allBasis: PlanningResult,
+        appreciated: PlanningResult
+      ) => {
+        let strictlyHigherSomewhere = false
+        for (const a of allBasis.points) {
+          const b = appreciated.points.find((p) => p.age === a.age)!
+          expect(b.propertyTax).toBeGreaterThanOrEqual(a.propertyTax)
+          if (b.propertyTax > a.propertyTax) strictlyHigherSomewhere = true
+        }
+        expect(strictlyHigherSomewhere).toBe(true)
+      }
+
+      it("in retirement", () => {
+        // Both pots are worth 13,2 mio. kr. in the first drawdown year; only one
+        // of them has a gain inside it. (A literally zero-basis pot is not an
+        // expressible input — the basis starts at `startInvestments`.)
+        expectMonotone(
+          simulatePlanning(
+            inTheBand({
+              startInvestments: START_INVESTMENTS * (1 + RETURN),
+              assumptions: { ...flat, investmentReturn: 0 },
+            })
+          ),
+          simulatePlanning(inTheBand())
+        )
+      })
+
+      it("while the plan still counts the household as working", () => {
+        // `retirementAge` and folkepensionsalderen are separate inputs, so a
+        // household can be old enough for the nedslag while the plan still has
+        // it saving — and a tax that outruns the saving is funded by selling,
+        // exactly as retirement spending is.
+        const stillWorking = (investmentReturn: number) =>
+          simulatePlanning(
+            makeState({
+              currentAge: 69,
+              endAge: 79,
+              retirementAge: 95,
+              startInvestments: 20_000_000,
+              monthlyContribution: 0,
+              annualSpending: 0,
+              homeValue: 30_000_000,
+              landValue: 15_000_000,
+              mortgageBalance: 0,
+              includePropertyTax: true,
+              propertyTaxInBudget: false,
+              assumptions: { ...flat, investmentReturn },
+              pension: {
+                ...DEFAULT_PLANNING_STATE.pension,
+                single: true,
+                includeFolkepension: true,
+                pensionReturn: 0,
+                person1: { ...DEFAULT_PENSION_PERSON, folkepensionAge: 70 },
+                person2: { ...DEFAULT_PENSION_PERSON },
+              },
+            })
+          )
+        const allBasis = stillWorking(0)
+        const appreciated = stillWorking(RETURN)
+        expectMonotone(allBasis, appreciated)
+        // Partly graded in at least one year — so this branch grades the nedslag
+        // rather than merely switching it off.
+        const flatCharge = allBasis.points.at(-1)!.propertyTax
+        expect(
+          appreciated.points.some(
+            (p) => p.propertyTax > flatCharge && p.propertyTax < flatCharge + 6_000
+          )
+        ).toBe(true)
+      })
+    })
+
+    /**
+     * The settlement must be inert everywhere it does not belong. Under lager the
+     * gain is aktieindkomst whether or not anything is sold, so the year already
+     * knew it; an ASK gain is not aktieindkomst at all; and a household below
+     * folkepensionsalderen has no § 25 nedslag to grade. The figures below were
+     * taken from the pre-fix engine, so an accidental change shows up as a
+     * failure rather than as a quietly different projection.
+     */
+    describe("leaves the cases it does not apply to untouched", () => {
+      const inert = (overrides: Partial<PlanningState>) =>
+        simulatePlanning(inTheBand({ endAge: 73, ...overrides }))
+
+      it("under lagerbeskatning", () => {
+        const r = inert({ investmentTaxMode: "lager" })
+        expect(r.points.map((p) => p.propertyTax)).toEqual([
+          0, 24_480, 24_480, 24_480, 24_480,
+        ])
+        expect(r.points.map((p) => p.investmentsSold)).toEqual([
+          0, 436_203, 436_203, 436_203, 436_203,
+        ])
+        expect(r.points.at(-1)!.netWorth).toBe(17_185_091.167)
+      })
+
+      it("on an aktiesparekonto", () => {
+        const r = inert({ investmentTaxMode: "ask" })
+        expect(r.points.map((p) => p.propertyTax)).toEqual([
+          0, 18_806, 18_806, 18_806, 18_806,
+        ])
+        expect(r.points.map((p) => p.investmentsSold)).toEqual([
+          0, 430_529, 430_529, 430_529, 430_529,
+        ])
+        expect(r.points.at(-1)!.netWorth).toBe(18_559_394.00584268)
+      })
+
+      it("for a household below folkepensionsalderen", () => {
+        // Saving nothing and owning an expensive home, so the charge is funded by
+        // selling — the coupled path — but there is no nedslag to grade.
+        const r = simulatePlanning(
+          makeState({
+            currentAge: 40,
+            endAge: 44,
+            retirementAge: 65,
+            startInvestments: 2_000_000,
+            monthlyContribution: 0,
+            annualSpending: 0,
+            homeValue: 8_000_000,
+            landValue: 4_000_000,
+            mortgageBalance: 0,
+            includePropertyTax: true,
+            propertyTaxInBudget: false,
+            assumptions: { ...flat, investmentReturn: RETURN },
+            pension: {
+              ...DEFAULT_PLANNING_STATE.pension,
+              single: true,
+              includeFolkepension: false,
+              person1: { ...DEFAULT_PENSION_PERSON },
+              person2: { ...DEFAULT_PENSION_PERSON },
+            },
+          })
+        )
+        expect(r.points.map((p) => p.propertyTax)).toEqual([
+          0, 48_960, 48_960, 48_960, 48_960,
+        ])
+        expect(r.points.map((p) => p.investmentsSold)).toEqual([
+          0, 50_191.985088536814, 51_367.033729298535, 52_484.0411394699,
+          53_542.508812041895,
+        ])
+        expect(r.points.at(-1)!.netWorth).toBe(10_687_965.402969249)
+      })
     })
   })
 
