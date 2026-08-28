@@ -45,6 +45,26 @@ function hasBasis(
   return !!property && property.assessmentBasis > 0
 }
 
+/**
+ * Whether §§ 23-24's "erhvervet senest den 1. juli 1998" is met for a dwelling.
+ *
+ * § 23, stk. 1 asks it of *den skattepligtige*, but stk. 3 gives the nedslag
+ * "tilsvarende" to a længstlevende ægtefælle who does not meet that condition
+ * themselves and who keeps rådigheden over a property that belonged to the other
+ * spouse; § 24, stk. 3 applies stk. 3 to the second nedslag as well. So for a
+ * survivor the date that counts is the deceased's, not their own — the point Den
+ * juridiske vejledning C.H.4.2.5.1 makes in prose.
+ *
+ * Unlike § 25, stk. 3, neither § 23, stk. 3 nor § 24, stk. 3 carries a
+ * remarriage clause, so a new marriage leaves these two nedslag standing.
+ */
+function acquiredBefore19980701(property: PropertyInput): boolean {
+  return (
+    property.purchasedBefore19980701 ||
+    !!(property.retainedFromSpouse && property.spouseAcquiredBefore19980701)
+  )
+}
+
 function calculateEjendomsvaerdiSkat(
   property: PropertyInput | undefined,
   rates: TaxRates,
@@ -63,7 +83,7 @@ function calculateEjendomsvaerdiSkat(
     tax += rates.ejendomsvaerdiSkatHighRate * (basis - progressionLimit)
   }
 
-  if (property.purchasedBefore19980701) {
+  if (acquiredBefore19980701(property)) {
     // § 23, stk. 1: 1,0 promille of the basis, uncapped and open to every
     // property type. SKAT states the effect as paying 4,1 ‰ / 13,0 ‰ instead
     // of 5,1 ‰ / 14,0 ‰.
@@ -129,39 +149,92 @@ function graduationBase(
 }
 
 /**
- * The share of the § 25 pensioner nedslag that survives § 26's income
- * graduation.
+ * § 25, stk. 1: the taxpayer's household has reached folkepensionsalderen.
  *
- * § 26 reduces "nedslaget efter § 25" — one amount belonging to the person — by
- * 5 % of income above the grundbeløb. Someone who owns both a helårsbolig and a
- * fritidsbolig meets that clawback once, against the combined 6.000 + 2.000 kr.,
- * so it cannot be recomputed against each property's own maximum. Expressing it
- * as a factor spends the graduation exactly once while leaving each property
- * with its own statutory amount.
+ * The stykke asks whether "den skattepligtige eller dennes samlevende ægtefælle"
+ * has reached it, so a younger owner qualifies on the spouse's age alone. Enlig
+ * forsørger earns relief under ligningslovens § 9 J and in grøn check, neither
+ * of which reaches ejendomsværdiskatten. The only other group § 25 reaches is
+ * the længstlevende ægtefælle of stk. 3, handled per dwelling below.
  */
-function pensionerNedslagFactor(
+function pensionerAgeQualifies(input: TaxInput): boolean {
+  const age = calculateAge(input.birthDate, input.year)
+  if (age >= calculateRetirementAge(input.birthDate)) return true
+  return input.married && !!input.spouseOverRetirementAge
+}
+
+/**
+ * Whether a længstlevende ægtefælle may still succeed under § 25, stk. 3.
+ *
+ * 3. pkt. ends the right "med virkning fra og med det indkomstår, hvori
+ * ægteskabet indgås", so a later remarriage leaves earlier income years intact.
+ * The year is read off the ISO date's first four characters rather than through
+ * `Date`, which resolves a date-only string as UTC midnight and would report the
+ * previous year for a 1 January marriage west of Greenwich.
+ */
+function survivorSuccessionIsLive(input: TaxInput): boolean {
+  const remarriageYear = Number(input.remarriageDate?.slice(0, 4))
+  // An absent or unparsable date is no evidence that a remarriage happened.
+  if (!remarriageYear) return true
+  return input.year < remarriageYear
+}
+
+/** The § 25 nedslag each dwelling is due, after § 26's graduation. */
+interface PensionerNedslag {
+  primary: number
+  summer: number
+}
+
+/**
+ * The § 25 pensioner nedslag per dwelling, net of § 26's income graduation.
+ *
+ * The amounts are *per boligenhed* — up to 6.000 kr. for a helårsbolig and
+ * 2.000 kr. for a fritidsbolig — but § 26 reduces "nedslaget efter § 25", one
+ * amount belonging to the person, by 5 % of income above the grundbeløb. Someone
+ * who owns both meets that clawback once, against the combined 6.000 + 2.000 kr.,
+ * so it cannot be recomputed against each dwelling's own maximum. Grading the sum
+ * and scaling both slots by the surviving share spends the graduation exactly
+ * once while leaving each dwelling its own statutory amount.
+ *
+ * Eligibility, unlike the graduation, is per dwelling: stk. 1 is a fact about the
+ * person and so reaches both slots, while stk. 3 grants the nedslag
+ * "tilsvarende" to a survivor "der ikke opfylder betingelserne for nedsættelse"
+ * for the dwelling they keep rådigheden over. A survivor who succeeded to the
+ * house but bought the sommerhus themselves is therefore graded on 6.000 kr.,
+ * not on 8.000.
+ */
+function pensionerNedslag(
   input: TaxInput,
   rates: TaxRates,
   income: PensionerIncomeBasis,
-): number {
-  const age = calculateAge(input.birthDate, input.year)
-  const ownerQualifies = age >= calculateRetirementAge(input.birthDate)
-  // § 25, stk. 1 asks whether "den skattepligtige eller dennes samlevende
-  // ægtefælle" has reached folkepensionsalderen, so a younger owner qualifies on
-  // the spouse's age alone. Age is the whole test: the only other group § 25
-  // reaches is the længstlevende ægtefælle of stk. 3, which TaxInput does not
-  // model. Enlig forsørger earns relief under ligningslovens § 9 J and in grøn
-  // check, neither of which reaches ejendomsværdiskatten.
-  const spouseQualifies = input.married && !!input.spouseOverRetirementAge
-  if (!ownerQualifies && !spouseQualifies) return 0
+): PensionerNedslag {
+  const ageQualifies = pensionerAgeQualifies(input)
+  const successionIsLive = survivorSuccessionIsLive(input)
+  const amountFor = (
+    property: PropertyInput | undefined,
+    amount: number,
+  ): number => {
+    if (!hasBasis(property)) return 0
+    if (ageQualifies) return amount
+    return successionIsLive && !!property.retainedFromSpouse ? amount : 0
+  }
 
-  const fullNedslag =
-    (hasBasis(input.property) ? rates.ejendomsvaerdiSkatPensionerReduction : 0) +
-    (hasBasis(input.summerHouse)
-      ? rates.ejendomsvaerdiSkatPensionerReductionSummer
-      : 0)
-  if (fullNedslag === 0) return 0
+  const primary = amountFor(
+    input.property,
+    rates.ejendomsvaerdiSkatPensionerReduction,
+  )
+  const summer = amountFor(
+    input.summerHouse,
+    rates.ejendomsvaerdiSkatPensionerReductionSummer,
+  )
+  const fullNedslag = primary + summer
+  if (fullNedslag === 0) return { primary: 0, summer: 0 }
 
+  // § 26, stk. 1 puts the couple's wider grundbeløb and their combined income
+  // behind "Er den skattepligtige gift og samlevende med ægtefællen ved udgangen
+  // af indkomståret". A længstlevende ægtefælle is neither at the end of the year
+  // their spouse died, so they are graded alone against the single grundbeløb —
+  // which `input.married` already says, since it is the same year-end test.
   const threshold = input.married
     ? rates.ejendomsvaerdiSkatPensionerIncomeThresholdMarried
     : rates.ejendomsvaerdiSkatPensionerIncomeThresholdSingle
@@ -170,8 +243,9 @@ function pensionerNedslagFactor(
     (graduationBase(input, income) - threshold) *
       rates.ejendomsvaerdiSkatPensionerIncomeRate,
   )
+  const surviving = Math.max(0, fullNedslag - graduation) / fullNedslag
 
-  return Math.max(0, fullNedslag - graduation) / fullNedslag
+  return { primary: primary * surviving, summer: summer * surviving }
 }
 
 export function calculatePropertyTax(
@@ -182,22 +256,14 @@ export function calculatePropertyTax(
   summerMunicipality?: MunicipalityData,
 ): PropertyTaxResult {
   // Ejendomsværdiskat
-  const nedslagFactor = pensionerNedslagFactor(input, rates, income)
+  const nedslag = pensionerNedslag(input, rates, income)
 
   const ejendomsvaerdiSkatPrimary = Math.round(
-    calculateEjendomsvaerdiSkat(
-      input.property,
-      rates,
-      rates.ejendomsvaerdiSkatPensionerReduction * nedslagFactor,
-    ),
+    calculateEjendomsvaerdiSkat(input.property, rates, nedslag.primary),
   )
 
   const ejendomsvaerdiSkatSummer = Math.round(
-    calculateEjendomsvaerdiSkat(
-      input.summerHouse,
-      rates,
-      rates.ejendomsvaerdiSkatPensionerReductionSummer * nedslagFactor,
-    ),
+    calculateEjendomsvaerdiSkat(input.summerHouse, rates, nedslag.summer),
   )
 
   const totalEjendomsvaerdiSkat =
