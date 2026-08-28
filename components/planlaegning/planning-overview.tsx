@@ -750,6 +750,18 @@ export function PlanningOverview() {
               subtitle="Tallene er hentet fra dine skat- og budgetsider. Ret dem frit — så holder de op med at opdatere automatisk."
             />
           )}
+          {planning.budgetAllocatedSavings > 0 && (
+            <InlineNotification
+              className="max-w-full"
+              kind="info"
+              lowContrast
+              hideCloseButton
+              title="Budgetteret opsparing tæller som opsparing"
+              subtitle={`De ${formatDKK(
+                planning.budgetAllocatedSavings
+              )}/md., du har budgetteret i en opsparingskategori, indgår i din månedlige opsparing og ikke i dit forbrug. Tidligere talte de begge steder, så både opsparingen og målet for økonomisk uafhængighed blev misvisende — din fremskrivning kan derfor se anderledes ud end før.`}
+            />
+          )}
           {planning.budgetRemaining < 0 && (
             <InlineNotification
               className="max-w-full"

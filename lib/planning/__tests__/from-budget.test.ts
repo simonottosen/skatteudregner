@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest"
 import {
   applyDerivedDefaults,
+  homeFromSources,
   mortgageFromBudget,
+  planFiguresFromBudget,
   propertiesFromBudget,
   type PlanningDerivedDefaults,
 } from "../from-budget"
+import { ASSESSMENT_FACTOR } from "../taxation"
 import { DEFAULT_PLANNING_STATE, type PlannedProperty } from "../types"
 import {
   DEFAULT_MORTGAGE,
@@ -12,6 +15,13 @@ import {
   mortgageMonthlyTotal,
   type MortgageState,
 } from "@/lib/budget/mortgage"
+import {
+  computeBudgetSummary,
+  defaultBudgetState,
+  type BudgetCategory,
+  type BudgetItem,
+  type BudgetState,
+} from "@/lib/budget/state"
 
 const enabled: MortgageState = {
   ...DEFAULT_MORTGAGE,
@@ -59,6 +69,214 @@ describe("mortgageFromBudget", () => {
     // A hand-back below zero would be a payment the household received; the
     // simulation would add it to the saving every year.
     expect(mortgageFromBudget(enabled, -5_000).mortgageBudgetedMonthly).toBe(0)
+  })
+})
+
+/**
+ * The issue-#36 household, summarised the way /budget summarises it: 50.000
+ * kr./md. in, and whatever lines are handed in. Built through
+ * `computeBudgetSummary` rather than by hand so the figures under test are the
+ * ones the page actually produces, tags and all.
+ */
+function summaryOf(
+  lines: [amount: number, categoryId: string][],
+  mortgage: Partial<MortgageState> = {}
+) {
+  const base = defaultBudgetState()
+  const categories: BudgetCategory[] = [
+    { id: "bolig", name: "Bolig" },
+    { id: "opsparing", name: "Opsparing", kind: "savings" },
+    { id: "tag", name: "Nyt tag", kind: "sinking" },
+    { id: "uncategorized", name: "Øvrigt" },
+  ]
+  const sharedItems: BudgetItem[] = lines.map(([amount, categoryId], i) => ({
+    id: `b-${i}`,
+    label: categoryId,
+    amount,
+    categoryId,
+  }))
+  const state: BudgetState = {
+    ...base,
+    mode: "single",
+    person1: { ...base.person1, incomeSource: "manual", manualIncome: 50_000 },
+    sharedItems,
+    categories,
+    mortgage: { ...base.mortgage, ...mortgage },
+  }
+  return computeBudgetSummary(state, 0, 0)
+}
+
+describe("planFiguresFromBudget", () => {
+  it("credits a savings line to the contribution instead of the forbrug", () => {
+    // The repro in issue #36, line for line. Tagging 4.000 kr. as savings
+    // changes nothing about what the household consumes or puts away, so
+    // neither figure may move — before the fix the contribution fell by 4.000
+    // and the spending rose by the same 4.000, charging it twice.
+    const without = planFiguresFromBudget(summaryOf([[24_000, "bolig"]]))
+    const with_ = planFiguresFromBudget(
+      summaryOf([
+        [24_000, "bolig"],
+        [4_000, "opsparing"],
+      ])
+    )
+    expect(without).toEqual({ monthlyContribution: 26_000, annualSpending: 288_000 })
+    expect(with_).toEqual(without)
+  })
+
+  it("leaves the 25× FI target where it was", () => {
+    // The second half of the double count: the target is 25× the spending, so
+    // an inflated forbrug pushed the FI date out on top of the smaller saving.
+    const target = (lines: [number, string][]) =>
+      planFiguresFromBudget(summaryOf(lines)).annualSpending * 25
+    expect(
+      target([
+        [24_000, "bolig"],
+        [4_000, "opsparing"],
+      ])
+    ).toBe(target([[24_000, "bolig"]]))
+  })
+
+  it("reconciles with the household's income, whatever it tags", () => {
+    // Nothing lost and nothing counted twice: every krone of income is either
+    // saved, consumed, or paid to the lender. Both figures are whole kroner —
+    // the plan's inputs are — so they reconcile to within that rounding and no
+    // further, which is a smaller gap than any tagging mistake could open.
+    const lines: [number, string][] = [
+      [18_000, "bolig"],
+      [4_500, "opsparing"],
+      [1_500, "tag"],
+      [3_000, "uncategorized"],
+    ]
+    for (const mortgage of [{}, { enabled: true, homeValue: 2_000_000 }]) {
+      const summary = summaryOf(lines, mortgage)
+      const { monthlyContribution, annualSpending } =
+        planFiguresFromBudget(summary)
+      const accountedFor =
+        monthlyContribution + annualSpending / 12 + summary.mortgageMonthly
+      expect(Math.abs(accountedFor - summary.budgetIncome)).toBeLessThan(1)
+    }
+  })
+
+  it("keeps a sinking fund in the forbrug rather than in the saving", () => {
+    // The judgement call, pinned. A sinking fund is deferred consumption — the
+    // money for a new roof is money that will be spent — so netting it out of
+    // the FI denominator (`consumptionExpenses`) would price the household's
+    // whole retirement on the roof never being replaced. Only `kind: "savings"`
+    // moves; that is also what makes the contribution `totalSavings` rather
+    // than `surplus`, which is this same figure with the sinking fund added.
+    const figures = planFiguresFromBudget(
+      summaryOf([
+        [24_000, "bolig"],
+        [2_000, "tag"],
+      ])
+    )
+    expect(figures.monthlyContribution).toBe(24_000)
+    expect(figures.annualSpending).toBe(26_000 * 12)
+  })
+
+  it("still floors an overspending household at a saving of zero", () => {
+    // Unchanged behaviour, and the reason the deficit survives on `remaining`
+    // for the page to warn about instead of becoming a negative contribution.
+    const figures = planFiguresFromBudget(summaryOf([[60_000, "bolig"]]))
+    expect(figures.monthlyContribution).toBe(0)
+    expect(figures.annualSpending).toBe(720_000)
+  })
+
+  it("never reports a negative forbrug", () => {
+    // A 25× target below zero would report a household already independent.
+    expect(
+      planFiguresFromBudget({
+        budgetExpenses: 1_000,
+        allocatedSavings: 5_000,
+        totalSavings: 10_000,
+      }).annualSpending
+    ).toBe(0)
+  })
+})
+
+const taxBases = { assessmentBasis: 2_400_000, landAssessmentBasis: 800_000 }
+const noMortgage = { enabled: false, homeValue: 0 }
+
+describe("homeFromSources", () => {
+  it("recovers the home from the beskatningsgrundlag entered on /skat", () => {
+    // Issue #50: the Bolig tab collects only the ~80 % grundlag, so reading
+    // `propertyValue`/`landValue` — literal 0 everywhere in the app — meant a
+    // home reached a plan solely through /budget's realkredit module.
+    expect(homeFromSources(noMortgage, taxBases)).toEqual({
+      value: 3_000_000,
+      landValue: 1_000_000,
+    })
+  })
+
+  it("hands the tax back exactly the grundlag the user typed", () => {
+    // The round trip that makes converting sound rather than merely convenient:
+    // `createPropertyPortfolioTax` multiplies the plan's value by this same
+    // factor, so the projection taxes the entered number and not a re-estimate.
+    const home = homeFromSources(noMortgage, taxBases)
+    expect(home.value * ASSESSMENT_FACTOR).toBe(taxBases.assessmentBasis)
+    expect(home.landValue * ASSESSMENT_FACTOR).toBe(
+      taxBases.landAssessmentBasis
+    )
+  })
+
+  it("uses an entered grundværdi even when the mortgage module is on", () => {
+    // The half of #50 that is a wrong number rather than a missing one: with
+    // `landValue` structurally 0 the heuristic always won, so grundskyld was
+    // charged on 40 % of the home value however carefully the user had typed
+    // their real grundværdi. 40 % of 3 mio. would be 1,2 mio.
+    const home = homeFromSources(
+      { enabled: true, homeValue: 3_000_000 },
+      taxBases
+    )
+    expect(home).toEqual({ value: 3_000_000, landValue: 1_000_000 })
+  })
+
+  it("falls back to the 40 % heuristic only when no grundværdi was entered", () => {
+    // Still a guess, but now a last resort rather than the only outcome.
+    expect(
+      homeFromSources({ enabled: true, homeValue: 3_000_000 }, undefined)
+        .landValue
+    ).toBe(1_200_000)
+    expect(
+      homeFromSources(noMortgage, { assessmentBasis: 2_400_000 }).landValue
+    ).toBe(1_200_000)
+  })
+
+  it("prefers the market value the mortgage module was given outright", () => {
+    // There the user stated the value itself; here it has to be recovered from
+    // a basis, so the direct answer wins when the module has one.
+    expect(
+      homeFromSources({ enabled: true, homeValue: 4_100_000 }, taxBases).value
+    ).toBe(4_100_000)
+  })
+
+  it("falls back to /skat when the mortgage module states no value", () => {
+    // `homeValue` is 0 until the module is filled in, and a home worth nothing
+    // is dropped downstream — so an empty module must not shadow the Bolig tab.
+    expect(
+      homeFromSources({ enabled: true, homeValue: 0 }, taxBases).value
+    ).toBe(3_000_000)
+  })
+
+  it("describes no home when neither page has one", () => {
+    expect(homeFromSources(noMortgage, undefined)).toEqual({
+      value: 0,
+      landValue: 0,
+    })
+    expect(
+      homeFromSources(noMortgage, {
+        assessmentBasis: 0,
+        landAssessmentBasis: 0,
+      })
+    ).toEqual({ value: 0, landValue: 0 })
+  })
+
+  it("ignores a disabled module that still remembers a value", () => {
+    // Turning the realkredit section off is a statement about the budget, not
+    // about the home; /skat is then the only page still describing one.
+    expect(
+      homeFromSources({ enabled: false, homeValue: 9_000_000 }, taxBases).value
+    ).toBe(3_000_000)
   })
 })
 
@@ -235,6 +453,23 @@ describe("applyDerivedDefaults", () => {
     expect(Object.keys(next).sort()).toEqual(
       Object.keys(DEFAULT_PLANNING_STATE).sort()
     )
+  })
+
+  it("lands a /skat-only home in the plan with the mortgage module off", () => {
+    // The whole of #50's first consequence in one call: fill in the Bolig tab,
+    // never touch /budget's realkredit section, and the plan has to come out
+    // owning the house — otherwise the projection carries neither the asset nor
+    // its ejendomsskat, which is what every renter's plan looks like.
+    const next = applyDerivedDefaults(
+      DEFAULT_PLANNING_STATE,
+      defaults({ home: homeFromSources(noMortgage, taxBases) })
+    )
+    expect(next.properties).toHaveLength(1)
+    expect(next.properties[0]).toMatchObject({
+      kind: "helaarsbolig",
+      value: 3_000_000,
+      landValue: 1_000_000,
+    })
   })
 
   it("seeds the pension without emptying the pots already in the plan", () => {
