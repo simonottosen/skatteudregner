@@ -9,6 +9,17 @@ export interface TaxInput {
   spousePersonalIncome?: number
   spouseStockIncome?: number
   spouseOverRetirementAge?: boolean
+  /**
+   * The date on which a længstlevende ægtefælle entered a new marriage, as
+   * `YYYY-MM-DD`.
+   *
+   * Ejendomsskatteloven § 25, stk. 3, 3. pkt. ends the right to succeed to the
+   * pensionistnedslag "med virkning fra og med det indkomstår, hvori ægteskabet
+   * indgås", so the rule turns on the year rather than on the bare fact — a
+   * remarriage in 2026 must leave 2024 and 2025 alone. Absent for everyone who
+   * has not remarried, which is what an old saved row means too.
+   */
+  remarriageDate?: string
   singleParent: boolean
   childrenUnder18: number
   commuteDistanceKm: number
@@ -109,6 +120,29 @@ export interface PropertyInput {
   isCondo: boolean
   ownershipShare: number
   personalTaxDiscount: number
+  /**
+   * The taxpayer is a længstlevende ægtefælle who keeps rådigheden over this
+   * dwelling after the other spouse's death or move to a plejehjem, the dwelling
+   * belonged to that spouse, and the two were not separated at the time.
+   *
+   * Both § 23, stk. 3 and § 25, stk. 3 hang succession on the dwelling rather
+   * than on the person, so a survivor who succeeded to one and bought another
+   * themselves is covered only on the first. The two differ in reach — § 25,
+   * stk. 3 says "en ejendom, som har tilhørt *en af* ægtefællerne" where § 23,
+   * stk. 3 needs "den anden ægtefælle" — and this flag is drawn to the narrower
+   * of the two so that one answer can safely serve both.
+   *
+   * Optional: absent reads as false, which is what every saved row predating the
+   * field means. The same holds for `spouseAcquiredBefore19980701`.
+   */
+  retainedFromSpouse?: boolean
+  /**
+   * The spouse this dwelling was retained from acquired it no later than
+   * 1 July 1998. Only meaningful together with `retainedFromSpouse`: §§ 23-24
+   * succession runs on *their* acquisition, so a survivor who owned nothing on
+   * that date still inherits the nedslag.
+   */
+  spouseAcquiredBefore19980701?: boolean
 }
 
 export interface SummerHouseInput extends PropertyInput {
