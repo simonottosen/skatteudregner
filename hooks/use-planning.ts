@@ -6,7 +6,6 @@ import { useTax } from "@/components/tax-provider"
 import { useBudget } from "@/components/budget-provider"
 import { estimateMortgage } from "@/lib/budget/generate-budget"
 import { computeMortgage } from "@/lib/budget/mortgage"
-import { planningContribution } from "@/lib/budget/state"
 import {
   DEFAULT_PLANNING_STATE,
   DEFAULT_TAX_PROFILE,
@@ -22,7 +21,9 @@ import {
 } from "@/lib/planning/types"
 import {
   applyDerivedDefaults,
+  homeFromSources,
   mortgageFromBudget,
+  planFiguresFromBudget,
   type PlanningDerivedDefaults,
 } from "@/lib/planning/from-budget"
 import { newId, normalizePlanning } from "@/lib/planning/normalize"
@@ -60,12 +61,14 @@ export function usePlanning() {
   const [hydrated, setHydrated] = useState(false)
   const [touched, setTouched] = useState(false)
 
-  // Values inferred from the tax + budget pages. The surplus and the expense
-  // total come off the shared budget summary rather than being derived a second
-  // time here — /resultat reads that same object, and re-deriving it is how the
-  // two pages came to disagree in the first place (issue #2).
+  // Values inferred from the tax + budget pages. The savings and expense figures
+  // come off the shared budget summary rather than being derived a second time
+  // here — /resultat reads that same object, and re-deriving it is how the two
+  // pages came to disagree in the first place (issue #2).
   const {
     budgetExpenses,
+    allocatedSavings,
+    totalSavings,
     remaining: budgetRemaining,
     savingsAttribution,
     mortgageMonthly,
@@ -81,23 +84,17 @@ export function usePlanning() {
       ageFromBirthDate(input.birthDate) ?? DEFAULT_PLANNING_STATE.currentAge
     const birthYear = new Date().getFullYear() - currentAge
 
-    // Prefer the precise mortgage from the budget page when enabled.
-    const homeValue = mortgage.enabled
-      ? Math.round(mortgage.homeValue)
-      : Math.round(input.property?.propertyValue ?? 0)
     const mortgageBalance = mortgage.enabled
       ? Math.round(computeMortgage(mortgage).loan)
       : Math.round(estimateMortgage(input.mortgageInterest || 0).principal)
 
-    // Land value (grundværdi) for grundskyld; default to ~40 % of home value.
-    const landValue = Math.round(
-      input.property?.landValue || homeValue * 0.4
-    )
-
     return {
-      monthlyContribution: planningContribution(budgetRemaining),
-      annualSpending: Math.round(budgetExpenses * 12),
-      home: { value: homeValue, landValue },
+      ...planFiguresFromBudget({
+        budgetExpenses,
+        allocatedSavings,
+        totalSavings,
+      }),
+      home: homeFromSources(mortgage, input.property),
       mortgageBalance,
       mortgageRate: mortgage.enabled
         ? mortgage.interestRate
@@ -132,12 +129,13 @@ export function usePlanning() {
       },
     }
   }, [
-    budgetRemaining,
     budgetExpenses,
+    allocatedSavings,
+    totalSavings,
     mortgageMonthly,
     mortgage,
-    input.property?.propertyValue,
-    input.property?.landValue,
+    input.property?.assessmentBasis,
+    input.property?.landAssessmentBasis,
     input.mortgageInterest,
     input.birthDate,
     input.privatePensionRatepension,
@@ -337,6 +335,13 @@ export function usePlanning() {
      * built on a saving of zero and no hint that the premise is impossible.
      */
     budgetRemaining,
+    /**
+     * What the budget puts in `kind: "savings"` categories. Surfaced only so the
+     * page can tell the households it concerns that these kroner are now part of
+     * the contribution instead of the forbrug (issue #36) — a shift in every
+     * affected projection, and one they cannot see from the figures alone.
+     */
+    budgetAllocatedSavings: allocatedSavings,
     /** The joint/personal savings breakdown; null when there is none to show. */
     savingsSplit,
     patch,

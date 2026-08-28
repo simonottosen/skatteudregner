@@ -9,8 +9,11 @@
  * had never made.
  */
 
+import type { BudgetSummary } from "@/lib/budget/state"
+import { planningContribution } from "@/lib/budget/state"
 import type { MortgageState } from "@/lib/budget/mortgage"
 import { homeProperty } from "./normalize"
+import { ASSESSMENT_FACTOR } from "./taxation"
 import type { PensionPerson, PlannedProperty, PlanningState } from "./types"
 
 /**
@@ -52,6 +55,102 @@ export function mortgageFromBudget(
   return {
     mortgageBidragssats: mortgage.bidragssats,
     mortgageBudgetedMonthly: Math.max(0, budgetedMonthly),
+  }
+}
+
+/**
+ * The parts of the budget summary the two plan figures below are read off.
+ * Picked from {@link BudgetSummary} so they keep whatever meaning that file
+ * gives them; re-deriving any of them here is how /planlaegning and /resultat
+ * came to disagree before (issue #2).
+ */
+export type BudgetPlanFigureSource = Pick<
+  BudgetSummary,
+  "budgetExpenses" | "allocatedSavings" | "totalSavings"
+>
+
+/**
+ * What the household puts away each month and what it lives on each year, as
+ * its budget states them.
+ *
+ * A line in a `kind: "savings"` category is money the household saves, so the
+ * budget has already taken it out of `remaining`. Reading the contribution off
+ * `remaining` and the spending off `budgetExpenses` therefore charged the same
+ * kroner twice — once as a saving the plan refused to credit, once as
+ * consumption it did — and since the FI target is 25× the spending, the date
+ * moved out from both ends at once (issue #36).
+ *
+ * Sinking funds (`kind: "sinking"`) deliberately stay in the spending. They are
+ * deferred consumption: money set aside for a new roof is money that will be
+ * spent, so netting them out — which is what `consumptionExpenses` does — would
+ * price the household's whole retirement on the assumption that the roof is
+ * never replaced. That is also why the contribution is `totalSavings` and not
+ * `surplus`, the same figure with the sinking funds added back in.
+ *
+ * The pair reconciles by construction: contribution + spending/12 + the
+ * mortgage is the household's income, whatever it tags its categories.
+ */
+export function planFiguresFromBudget(
+  summary: BudgetPlanFigureSource
+): Pick<PlanningState, "monthlyContribution" | "annualSpending"> {
+  return {
+    monthlyContribution: planningContribution(summary.totalSavings),
+    // Floored for the same reason the contribution is: a negative spending would
+    // put the 25× FI target below zero and report a household already there.
+    annualSpending: Math.max(
+      0,
+      Math.round((summary.budgetExpenses - summary.allocatedSavings) * 12)
+    ),
+  }
+}
+
+/** Grundværdi assumed for a home /skat states no land value for. */
+const LAND_VALUE_SHARE = 0.4
+
+/** The two beskatningsgrundlag /skat's Bolig tab collects for a dwelling. */
+export interface TaxPropertyBases {
+  assessmentBasis?: number
+  landAssessmentBasis?: number
+}
+
+/**
+ * The market value behind a beskatningsgrundlag, or 0 for a blank one.
+ *
+ * The inverse of what the projection does with the number it is given:
+ * `createPropertyPortfolioTax` multiplies a plan's value by
+ * {@link ASSESSMENT_FACTOR} to get a basis, so dividing here hands the tax back
+ * exactly the grundlag the user typed on /skat rather than a re-estimate of it.
+ */
+function valueFromBasis(basis: number | undefined): number {
+  return basis && basis > 0 ? basis / ASSESSMENT_FACTOR : 0
+}
+
+/**
+ * The household's home as /skat and /budget between them describe it.
+ *
+ * /skat's Bolig tab collects the ~80 % beskatningsgrundlag and nothing else —
+ * `PropertyInput.propertyValue` and `.landValue` are written as a literal 0
+ * everywhere and were the only things this used to read, so a home reached a
+ * plan solely through /budget's realkredit module and its grundværdi was always
+ * the {@link LAND_VALUE_SHARE} guess (issue #50). Converting the basis back is
+ * what makes the Bolig tab reach the plan without asking for the value twice.
+ *
+ * The mortgage module still wins when it states a value, because there the user
+ * gave the market value outright instead of a basis it has to be recovered from.
+ * The whole dwelling is carried either way: `ownershipShare` scales the tax on
+ * /skat, but a plan's property is the house, not a stake in one, and the
+ * mortgage branch has always carried the undivided `homeValue`.
+ */
+export function homeFromSources(
+  mortgage: Pick<MortgageState, "enabled" | "homeValue">,
+  property: TaxPropertyBases | undefined
+): { value: number; landValue: number } {
+  const fromMortgage = mortgage.enabled ? Math.max(0, mortgage.homeValue) : 0
+  const value = fromMortgage || valueFromBasis(property?.assessmentBasis)
+  const landFromTax = valueFromBasis(property?.landAssessmentBasis)
+  return {
+    value: Math.round(value),
+    landValue: Math.round(landFromTax || value * LAND_VALUE_SHARE),
   }
 }
 
