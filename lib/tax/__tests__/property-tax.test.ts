@@ -419,4 +419,174 @@ describe("Pensionistnedslag (ejendomsskatteloven §§ 25-26)", () => {
     expect(gross * (1 - rates2025.amBidragRate)).toBeLessThan(threshold)
     expect(nedslag({ workIncome: gross })).toBe(8_000)
   })
+
+  it("ignores a remarriage date on a household claiming under stk. 1", () => {
+    // § 25, stk. 3, 3. pkt. ends the *succession*, not the age-based nedslag, so
+    // a flag left behind from an earlier answer must not cost a pensioner
+    // anything.
+    expect(nedslag({ remarriageDate: "2020-01-01" })).toBe(8_000)
+  })
+})
+
+/**
+ * Ejendomsskatteloven § 25, stk. 3 gives the § 25 nedslag "tilsvarende til en
+ * længstlevende ægtefælle, der ikke opfylder betingelserne for nedsættelse, hvis
+ * denne efter ægtefællens død eller flytning på plejehjem bevarer rådigheden
+ * over en ejendom, som har tilhørt en af ægtefællerne" (1. pkt.), on condition
+ * that the spouses were not separated at the death or the move (2. pkt.), and
+ * ends the right "med virkning fra og med det indkomstår, hvori ægteskabet
+ * indgås" if the survivor remarries (3. pkt.).
+ *
+ * § 23, stk. 3 does the same for the pre-1998 nedslag — for "en ejendom, der har
+ * tilhørt den anden ægtefælle" — and § 24, stk. 3 applies it to the second one.
+ * Neither of those carries the remarriage clause, so it is only § 25 a new
+ * marriage reaches.
+ */
+describe("Længstlevende ægtefælle (§ 23, stk. 3, § 24, stk. 3, § 25, stk. 3)", () => {
+  // Born 1980, so folkepensionsalderen is 71 and none of these households can
+  // qualify under § 25, stk. 1. Every krone of nedslag below is stk. 3's doing.
+  const survivor = { birthDate: "1980-01-01", married: false }
+
+  const evsIn = (year: TaxYear, input: Partial<TaxInput>) =>
+    calculateTax(makeInput({ year, ...survivor, ...input }))
+      .totalEjendomsvaerdiSkat
+
+  const house = (overrides: Partial<PropertyInput> = {}) =>
+    dwelling(3_000_000, overrides)
+  const summer = (overrides: Partial<PropertyInput> = {}) =>
+    sommerhus(1_500_000, overrides)
+
+  /** Both dwellings taxed in full, so a nedslag shows up as a difference. */
+  const fullTax = (year: TaxYear, input: Partial<TaxInput> = {}) =>
+    evsIn(year, { property: house(), summerHouse: summer(), ...input })
+
+  it("grants the nedslag per kept dwelling, and only per kept dwelling", () => {
+    // § 25's amounts are per boligenhed, and stk. 3's condition is met by the
+    // dwelling rather than by the person: a survivor who kept the house but
+    // bought the sommerhus themselves is due 6.000 kr., not 8.000.
+    const kept = (input: Partial<TaxInput>) => fullTax(2025) - evsIn(2025, input)
+
+    expect(
+      kept({ property: house({ retainedFromSpouse: true }), summerHouse: summer() }),
+    ).toBe(6_000)
+    expect(
+      kept({ property: house(), summerHouse: summer({ retainedFromSpouse: true }) }),
+    ).toBe(2_000)
+    expect(
+      kept({
+        property: house({ retainedFromSpouse: true }),
+        summerHouse: summer({ retainedFromSpouse: true }),
+      }),
+    ).toBe(8_000)
+  })
+
+  it("leaves a household that kept nothing exactly where it was", () => {
+    // The two new flags are inert on their own: without the succession there is
+    // no ejendom "der har tilhørt den anden ægtefælle" for either to attach to.
+    expect(
+      fullTax(2025, {
+        property: house({ spouseAcquiredBefore19980701: true }),
+        remarriageDate: "2024-05-01",
+      }),
+    ).toBe(fullTax(2025))
+  })
+
+  const both = {
+    property: house({ retainedFromSpouse: true }),
+    summerHouse: summer({ retainedFromSpouse: true }),
+  }
+  const nedslagIn = (year: TaxYear, input: Partial<TaxInput> = {}) =>
+    fullTax(year) - evsIn(year, { ...both, ...input })
+
+  it("ends the nedslag from and including the year of a new marriage", () => {
+    expect(nedslagIn(2024, { remarriageDate: "2025-06-01" })).toBe(8_000)
+    expect(nedslagIn(2025, { remarriageDate: "2025-06-01" })).toBe(0)
+    expect(nedslagIn(2026, { remarriageDate: "2025-06-01" })).toBe(0)
+  })
+
+  it("reads the marriage year off the date, not off a UTC timestamp", () => {
+    // A 1 January date parsed as UTC midnight and read back in local time falls
+    // into the previous year west of Greenwich, which would leave the nedslag
+    // standing for a year it is gone.
+    expect(nedslagIn(2024, { remarriageDate: "2025-01-01" })).toBe(8_000)
+    expect(nedslagIn(2025, { remarriageDate: "2025-01-01" })).toBe(0)
+  })
+
+  it("lets a remarried survivor still qualify on the new spouse's age", () => {
+    // 3. pkt. ends the right to *succeed*; it says nothing about stk. 1, which
+    // the new marriage can satisfy on its own.
+    expect(
+      nedslagIn(2026, {
+        remarriageDate: "2025-06-01",
+        married: true,
+        spouseOverRetirementAge: true,
+      }),
+    ).toBe(8_000)
+  })
+
+  it("runs §§ 23-24 on the deceased spouse's acquisition date", () => {
+    // § 23's 1,0 ‰ of 3.000.000 kr. plus § 24's 2,1 ‰ capped at 1.200 kr.,
+    // isolated from § 25 by holding the succession fixed on both sides.
+    const succeeded = evsIn(2025, {
+      property: house({ retainedFromSpouse: true }),
+    })
+    const pre1998 = evsIn(2025, {
+      property: house({
+        retainedFromSpouse: true,
+        spouseAcquiredBefore19980701: true,
+      }),
+    })
+    expect(succeeded - pre1998).toBe(3_000 + 1_200)
+
+    // And it is the same nedslag the survivor's own acquisition would buy.
+    expect(pre1998).toBe(
+      evsIn(2025, {
+        property: house({
+          retainedFromSpouse: true,
+          purchasedBefore19980701: true,
+        }),
+      }),
+    )
+  })
+
+  it("keeps §§ 23-24 after a remarriage, unlike § 25", () => {
+    // Neither § 23, stk. 3 nor § 24, stk. 3 carries the remarriage clause, so a
+    // new marriage costs the pensionistnedslag and leaves these two alone.
+    const remarried = evsIn(2025, {
+      property: house({
+        retainedFromSpouse: true,
+        spouseAcquiredBefore19980701: true,
+      }),
+      remarriageDate: "2024-01-01",
+    })
+    expect(evsIn(2025, { property: house() }) - remarried).toBe(3_000 + 1_200)
+  })
+
+  const single = rates2025.ejendomsvaerdiSkatPensionerIncomeThresholdSingle
+  const married = rates2025.ejendomsvaerdiSkatPensionerIncomeThresholdMarried
+
+  it("spends the § 26 graduation once, against the amounts actually due", () => {
+    const income = { transferIncome: single + 40_000 }
+    const kept = (input: Partial<TaxInput>) =>
+      fullTax(2025, income) - evsIn(2025, { ...income, ...input })
+
+    // One 2.000 kr. clawback for the person: measured against the 6.000 kr. the
+    // survivor is actually due, not against a per-dwelling maximum and not
+    // against the 8.000 kr. a household that kept both would have.
+    expect(
+      kept({ property: house({ retainedFromSpouse: true }), summerHouse: summer() }),
+    ).toBe(6_000 - 2_000)
+    expect(kept(both)).toBe(8_000 - 2_000)
+  })
+
+  it("grades the survivor against the single grundbeløb", () => {
+    // § 26, stk. 1 puts the couple's wider grundbeløb and their combined income
+    // behind "Er den skattepligtige gift og samlevende med ægtefællen ved
+    // udgangen af indkomståret". A længstlevende ægtefælle is neither at the end
+    // of the year their spouse died, so the single figure binds — at an income
+    // still well short of the married grundbeløb, the clawback must bite.
+    const income = single + 40_000
+    expect(income).toBeLessThan(married)
+    expect(nedslagIn(2025, { transferIncome: income })).toBe(8_000 - 2_000)
+  })
 })
