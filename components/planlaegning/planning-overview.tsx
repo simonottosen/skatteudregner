@@ -758,7 +758,7 @@ export function PlanningOverview() {
               hideCloseButton
               title="Budgetteret opsparing tæller som opsparing"
               subtitle={`De ${formatDKK(
-                Math.round(planning.budgetAllocatedSavings)
+                planning.budgetAllocatedSavings
               )}/md., du har budgetteret i en opsparingskategori, indgår i din månedlige opsparing og ikke i dit forbrug. Tidligere talte de begge steder, så både opsparingen og målet for økonomisk uafhængighed blev misvisende — din fremskrivning kan derfor se anderledes ud end før.`}
             />
           )}

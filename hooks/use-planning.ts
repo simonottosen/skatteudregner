@@ -94,7 +94,13 @@ export function usePlanning() {
         allocatedSavings,
         totalSavings,
       }),
-      home: homeFromSources(mortgage, input.property),
+      // The two beskatningsgrundlag by name rather than the whole
+      // `input.property`: the rest of it is the /skat form's own business, and
+      // depending on the object would re-derive the plan on every edit to it.
+      home: homeFromSources(mortgage, {
+        assessmentBasis: input.property?.assessmentBasis,
+        landAssessmentBasis: input.property?.landAssessmentBasis,
+      }),
       mortgageBalance,
       mortgageRate: mortgage.enabled
         ? mortgage.interestRate

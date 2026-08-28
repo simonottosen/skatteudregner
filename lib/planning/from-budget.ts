@@ -114,6 +114,16 @@ export interface TaxPropertyBases {
 }
 
 /**
+ * A dwelling as market values: what the whole property is worth and what the
+ * land under it is worth. Both are the ~100 % figures a plan's property carries,
+ * not the ~80 % grundlag they may have been recovered from.
+ */
+export interface HomeAmounts {
+  value: number
+  landValue: number
+}
+
+/**
  * The market value behind a beskatningsgrundlag, or 0 for a blank one.
  *
  * The inverse of what the projection does with the number it is given:
@@ -144,7 +154,7 @@ function valueFromBasis(basis: number | undefined): number {
 export function homeFromSources(
   mortgage: Pick<MortgageState, "enabled" | "homeValue">,
   property: TaxPropertyBases | undefined
-): { value: number; landValue: number } {
+): HomeAmounts {
   const fromMortgage = mortgage.enabled ? Math.max(0, mortgage.homeValue) : 0
   const value = fromMortgage || valueFromBasis(property?.assessmentBasis)
   const landFromTax = valueFromBasis(property?.landAssessmentBasis)
@@ -173,7 +183,7 @@ export function homeFromSources(
  */
 export function propertiesFromBudget(
   current: readonly PlannedProperty[],
-  home: { value: number; landValue: number }
+  home: HomeAmounts
 ): PlannedProperty[] {
   if (home.value <= 0) return [...current]
   const value = Math.max(0, Math.round(home.value))
@@ -200,7 +210,7 @@ export type PlanningDerivedDefaults = Partial<
   Omit<PlanningState, "properties" | "pension">
 > & {
   /** The household's own home as /skat and /budget describe it. */
-  home: { value: number; landValue: number }
+  home: HomeAmounts
   pension: {
     single: boolean
     person1: Partial<PensionPerson>
