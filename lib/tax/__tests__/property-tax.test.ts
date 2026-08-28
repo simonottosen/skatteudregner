@@ -504,10 +504,12 @@ describe("Længstlevende ægtefælle (§ 23, stk. 3, § 24, stk. 3, § 25, stk. 
     expect(nedslagIn(2026, { remarriageDate: "2025-06-01" })).toBe(0)
   })
 
-  it("reads the marriage year off the date, not off a UTC timestamp", () => {
-    // A 1 January date parsed as UTC midnight and read back in local time falls
-    // into the previous year west of Greenwich, which would leave the nedslag
-    // standing for a year it is gone.
+  it("ends the nedslag for a 1 January marriage in that same year", () => {
+    // The date that is easiest to misread: parsed through `Date`, a date-only
+    // string is UTC midnight, and reading its year back in local time lands in
+    // the previous year west of Greenwich. Reading the ISO prefix instead makes
+    // that impossible — though this assertion can only witness it on a runner
+    // whose timezone is behind UTC, so it stands here as a boundary case.
     expect(nedslagIn(2024, { remarriageDate: "2025-01-01" })).toBe(8_000)
     expect(nedslagIn(2025, { remarriageDate: "2025-01-01" })).toBe(0)
   })

@@ -186,6 +186,26 @@ interface PensionerNedslag {
 }
 
 /**
+ * The § 25 amount one dwelling is due, before § 26's graduation.
+ *
+ * Eligibility is per dwelling where the graduation is not: stk. 1 is a fact
+ * about the person and so reaches both, while stk. 3 grants the nedslag
+ * "tilsvarende" to a survivor "der ikke opfylder betingelserne for nedsættelse"
+ * for the dwelling they keep rådigheden over. A survivor who succeeded to the
+ * house but bought the sommerhus themselves is due 6.000 kr., not 8.000.
+ */
+function nedslagSlot(
+  property: PropertyInput | undefined,
+  amount: number,
+  ageQualifies: boolean,
+  successionIsLive: boolean,
+): number {
+  if (!hasBasis(property)) return 0
+  if (ageQualifies) return amount
+  return successionIsLive && property.retainedFromSpouse ? amount : 0
+}
+
+/**
  * The § 25 pensioner nedslag per dwelling, net of § 26's income graduation.
  *
  * The amounts are *per boligenhed* — up to 6.000 kr. for a helårsbolig and
@@ -195,13 +215,6 @@ interface PensionerNedslag {
  * so it cannot be recomputed against each dwelling's own maximum. Grading the sum
  * and scaling both slots by the surviving share spends the graduation exactly
  * once while leaving each dwelling its own statutory amount.
- *
- * Eligibility, unlike the graduation, is per dwelling: stk. 1 is a fact about the
- * person and so reaches both slots, while stk. 3 grants the nedslag
- * "tilsvarende" to a survivor "der ikke opfylder betingelserne for nedsættelse"
- * for the dwelling they keep rådigheden over. A survivor who succeeded to the
- * house but bought the sommerhus themselves is therefore graded on 6.000 kr.,
- * not on 8.000.
  */
 function pensionerNedslag(
   input: TaxInput,
@@ -210,22 +223,18 @@ function pensionerNedslag(
 ): PensionerNedslag {
   const ageQualifies = pensionerAgeQualifies(input)
   const successionIsLive = survivorSuccessionIsLive(input)
-  const amountFor = (
-    property: PropertyInput | undefined,
-    amount: number,
-  ): number => {
-    if (!hasBasis(property)) return 0
-    if (ageQualifies) return amount
-    return successionIsLive && !!property.retainedFromSpouse ? amount : 0
-  }
 
-  const primary = amountFor(
+  const primary = nedslagSlot(
     input.property,
     rates.ejendomsvaerdiSkatPensionerReduction,
+    ageQualifies,
+    successionIsLive,
   )
-  const summer = amountFor(
+  const summer = nedslagSlot(
     input.summerHouse,
     rates.ejendomsvaerdiSkatPensionerReductionSummer,
+    ageQualifies,
+    successionIsLive,
   )
   const fullNedslag = primary + summer
   if (fullNedslag === 0) return { primary: 0, summer: 0 }

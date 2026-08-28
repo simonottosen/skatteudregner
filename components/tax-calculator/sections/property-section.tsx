@@ -1,6 +1,6 @@
 "use client"
 
-import { useId, useRef } from "react"
+import { useRef } from "react"
 import { TextInput, Toggle } from "@carbon/react"
 import { NumberInput } from "../number-input"
 import { MunicipalitySelect } from "../municipality-select"
@@ -145,7 +145,6 @@ export function PropertySection({
 }: PropertySectionProps) {
   const propertySwitchRef = useRef<HTMLDivElement>(null)
   const summerSwitchRef = useRef<HTMLDivElement>(null)
-  const remarriageId = useId()
 
   // Remarriage belongs to the person, not to any one dwelling, but it only
   // changes an answer once something has been succeeded to, so it is asked here
@@ -212,7 +211,7 @@ export function PropertySection({
       {hasSuccession && (
         <div className="space-y-1">
           <TextInput
-            id={remarriageId}
+            id="remarriageDate"
             type="date"
             size="md"
             labelText="Dato for nyt ægteskab"
