@@ -1017,10 +1017,23 @@ function pensionNetIncomeByYear(
    * clamp instead, so `relief ≤ tax[y]` holds by construction; `runPath` relies
    * on that when it nets the relief off the tax it reports.
    *
-   * The measured cost of being exact, on a 60-year plan that borrows equity in
-   * most of its retirement years: 23 ms → 35 ms for a whole 400-path
-   * simulation. `pensionIncomeTax` is ~1.4 µs, and only a retired year that has
-   * actually borrowed reaches this, so the plans that never borrow pay nothing.
+   * Being exact costs ~13-16 ms per simulation on a plan that borrows through
+   * retirement — measured twice on different fixtures, which agreed on the
+   * milliseconds added and disagreed only on what to divide them by: +52 % of a
+   * heavy 400-path plan, but ~8× a lean one that borrows every retired year
+   * (2.4 ms → 18 ms). Quote the absolute figure, not the ratio.
+   *
+   * The cost tracks paths × years that actually borrow, not the plan's headline
+   * settings, so a household whose *deterministic* path never borrows still pays
+   * for the Monte Carlo draws that do (22.5 ms → 32.3 ms on such a plan). Only a
+   * plan where no path ever borrows is free.
+   *
+   * That is affordable here — `simulatePlanning` runs in a `useMemo`, and the
+   * >1 s figure is the contribution solver, which sits behind an explicit
+   * button. If it ever stops being affordable, the fix is to price the
+   * breakpoints once per year and interpolate, not to go back to extrapolating
+   * one rate: the relief is piecewise linear in `extra`, so a few probes would
+   * be exact within each segment.
    */
   const reliefOnExtraInterest = (y: number, extra: number): number => {
     if (extra <= 0) return 0
