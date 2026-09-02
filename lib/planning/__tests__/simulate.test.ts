@@ -3169,7 +3169,7 @@ describe("simulatePlanning", () => {
    * question it answers is "did anything move?", and the field it names is where
    * to start looking; the tests above are what say whether the movement is right.
    */
-  describe("regression fingerprint", () => {
+  describe("regression lock", () => {
     /**
      * How far a value may sit from its reference before this counts as a change,
      * as a fraction of the largest value in the same series.
@@ -3180,28 +3180,33 @@ describe("simulatePlanning", () => {
      * has since run down to a few kroner. A per-value relative tolerance would
      * hold those tail values to a precision the arithmetic never had.
      *
-     * 1e-9 sits in the gap between two measured quantities:
+     * 1e-9 sits in the gap between two measured quantities.
      *
-     * - Below it, ~1e-12 relative, is the disagreement between JavaScript
-     *   runtimes. The engine leans on `Math.pow` in the annuity formula and on
-     *   `Math.log`/`Math.cos` in the Box–Muller draw, none of which ECMAScript
-     *   requires to be correctly rounded, so two V8 builds can differ in the
-     *   last bits and half a century of compounding amplifies the difference.
-     * - Above it, 1e-7 relative, is the smallest change we would call a
-     *   regression: a nudge of that size to the mortgage balance is 0,24 kr on
-     *   this fixture's 2,4 mio. and fails here by two orders of magnitude,
-     *   before it has propagated into anything else.
+     * Under it is the disagreement between JavaScript runtimes. The engine
+     * compounds with `Math.pow` — inflation in `taxation.ts`, the annuity in
+     * `amortisation.ts` — and draws with `Math.log`/`Math.cos`, none of which
+     * ECMAScript requires to be correctly rounded, so two V8 builds differ in
+     * the last bits and half a century of compounding amplifies the difference.
+     * That is why the deterministic series drift too and not just the bands.
+     * These references were recorded on macOS/node 26; run against CI's
+     * ubuntu/node 22, no series moved by as much as 1e-11 of its scale, so the
+     * tolerance clears the observed drift by two orders of magnitude.
+     *
+     * Over it is the smallest change worth calling a regression. Perturbing the
+     * modelled mortgage balance by 1e-7 — 0,24 kr on this fixture's 2,4 mio. —
+     * moves fifteen of the series here, most of them by 1e-7 to 1e-6 of scale,
+     * i.e. two to three orders of magnitude past the tolerance.
      *
      * This replaces a hash of the float64 bits. Bit-equality is the strictest
      * lock available and needs no tolerance at all, but it locks the runtime as
      * well as the behaviour: it made CI red for a difference no user could
-     * observe, and a digest can only say *that* something moved, never how far
-     * — which is exactly the question a cross-runtime failure turns on.
-     * Quantising to a fixed precision and hashing that would keep the digests
-     * compact, but a value landing within an ULP of a quantisation boundary
-     * would still round to different buckets on different runtimes, trading a
-     * reproducible failure for an occasional one. Comparing numbers has no
-     * boundary to land on.
+     * observe, and a digest can only say *that* something moved, never how far —
+     * which is exactly the question a cross-runtime failure turns on. Quantising
+     * to a fixed precision and hashing that would keep the fixtures down to a
+     * few hex strings, but a value sitting within an ULP of a quantisation
+     * boundary would still fall into different buckets on different runtimes,
+     * which trades a reproducible failure for an occasional one. Numbers have no
+     * boundary to land on; the price is that the references below are long.
      */
     const TOLERANCE = 1e-9
 
@@ -3232,9 +3237,8 @@ describe("simulatePlanning", () => {
         investmentsSold: of((p) => p.investmentsSold),
         borrowed: of((p) => p.borrowed),
         propertyTax: of((p) => p.propertyTax),
-        // The result's scalars, and the length the series above are taken over
-        // — without which a shorter projection could still match everywhere it
-        // overlapped the reference.
+        // The figures the result reports once rather than per point, which the
+        // series above cannot carry and nothing else here would notice.
         scalars: [
           r.points.length,
           r.fiAge ?? -1,
@@ -3253,7 +3257,9 @@ describe("simulatePlanning", () => {
       let at = 0
       let off = 0
       for (const [i, w] of want.entries()) {
-        const d = Math.abs(got[i] - w) / scale
+        // A NaN would compare false against every threshold and slip through as
+        // "unchanged", which is the one regression a lock must not miss.
+        const d = Number.isNaN(got[i]) ? Infinity : Math.abs(got[i] - w) / scale
         if (d > off) {
           off = d
           at = i
@@ -3287,7 +3293,6 @@ describe("simulatePlanning", () => {
           continue
         }
         const { at, off } = worstDeviation(got, want)
-        OBSERVED.push([field, off])
         if (off > TOLERANCE) {
           moved.push(
             `${field}[${at}]: ${want[at]} -> ${got[at]}` +
@@ -3297,8 +3302,6 @@ describe("simulatePlanning", () => {
       }
       expect(moved).toEqual([])
     }
-
-    const OBSERVED: Array<[string, number]> = []
 
     /**
      * One household exercising every branch the loan touches: afdragsfrihed, a
@@ -3461,11 +3464,6 @@ describe("simulatePlanning", () => {
         })
       )
       expectMatchesReference(r, CHAINED_MOVES)
-    })
-
-    it("PROBE", () => {
-      const over = OBSERVED.filter(([, off]) => off > 1e-11)
-      expect(over.map(([f, off]) => `${f}: ${off.toExponential(2)}`)).toEqual([])
     })
 
     // The two references, kept below the fixtures that produce them so the
