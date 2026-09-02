@@ -428,6 +428,13 @@ const MC_SEED = 0x9e3779b9
 const PROPERTY_TAX_REFINEMENT_PASSES = 3
 
 /**
+ * Kroner of extra interest used to measure a year's marginal rentefradrag — see
+ * `reliefOnExtraInterest`. Large enough that a rounding step inside the tax
+ * engine cannot dominate the difference, small enough to stay inside one bracket.
+ */
+const MARGINAL_RELIEF_PROBE = 10_000
+
+/**
  * Settle a year's property tax against the drawdown that pays for it, and
  * return the charge the two agree on.
  *
@@ -993,13 +1000,15 @@ function pensionNetIncomeByYear(
    * already spent its cash and its portfolio and is living off its house.
    */
   const reliefRate = new Array<number>(years + 1).fill(-1)
-  const PROBE = 10_000
   const reliefOnExtraInterest = (y: number, extra: number): number => {
-    if (extra <= 0 || y < 0 || y > years) return 0
+    if (extra <= 0) return 0
     let rate = reliefRate[y]
     if (rate < 0) {
       const claimed = claimableIn(y)
-      const probe = PROBE * Math.pow(1 + inflation, y)
+      // Real-terms probe, inflated to the year it is measured in, so the rate a
+      // late year reports is read off the same part of the brackets the year's
+      // own income sits in rather than off a shrinking sliver of them.
+      const probe = MARGINAL_RELIEF_PROBE * Math.pow(1 + inflation, y)
       let saved = 0
       for (let i = 0; i < incomes.length; i++) {
         saved += taxIn(y, i, claimed) - taxIn(y, i, claimed + probe)
