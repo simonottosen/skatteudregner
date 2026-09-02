@@ -3137,69 +3137,68 @@ describe("simulatePlanning", () => {
      * retirement long enough to eat the portfolio and start borrowing against the
      * house.
      */
-    const kitchenSink = () =>
-      makeState({
-        currentAge: 40,
-        endAge: 90,
-        retirementAge: 66,
-        startInvestments: 900_000,
-        cashBuffer: 120_000,
-        monthlyContribution: 9_000,
-        annualSpending: 700_000,
-        properties: [
-          property({
-            value: 3_600_000,
-            landValue: 1_100_000,
-            acquisitionAge: 0,
-            disposalAge: 78,
-          }),
-          property({
-            value: 1_400_000,
-            landValue: 500_000,
-            kind: "fritidsbolig",
-            acquisitionAge: 58,
-          }),
-        ],
-        includePropertyTax: true,
-        mortgageBalance: 2_400_000,
-        mortgageRate: 0.042,
-        mortgageBidragssats: 0.0085,
-        mortgageTermYears: 28,
-        mortgageInterestOnlyYears: 6,
-        mortgageBudgetedMonthly: 11_500,
-        otherDebtBalance: 420_000,
-        otherDebtRate: 0.069,
-        otherDebtTermYears: 9,
-        events: [
-          { id: "e1", type: "expense", label: "Bil", age: 47, amount: 250_000 },
-          {
-            id: "e2",
-            type: "property",
-            label: "Nyt hus",
-            age: 52,
-            newValue: 5_200_000,
-            mortgageLtv: 0.78,
-            housingReturnOverride: 0.03,
-          },
-          { id: "e3", type: "recurring", label: "Lønhop", age: 55, monthlyDelta: 2_500 },
-          { id: "e4", type: "windfall", label: "Arv", age: 61, amount: 400_000 },
-        ],
-        pension: {
-          ...DEFAULT_PLANNING_STATE.pension,
-          person1: {
-            ...DEFAULT_PENSION_PERSON,
-            ratepensionBalance: 1_800_000,
-            livrenteBalance: 900_000,
-            aldersopsparingBalance: 300_000,
-            ratepensionAnnual: 40_000,
-            folkepensionAge: 69,
-          },
-          ratepensionYears: 12,
-        },
-      })
-
     it("reproduces the whole projection of a plan that uses every loan branch", () => {
-      const r = simulatePlanning(kitchenSink())
+      const r = simulatePlanning(
+        makeState({
+          currentAge: 40,
+          endAge: 90,
+          retirementAge: 66,
+          startInvestments: 900_000,
+          cashBuffer: 120_000,
+          monthlyContribution: 9_000,
+          annualSpending: 700_000,
+          properties: [
+            property({
+              value: 3_600_000,
+              landValue: 1_100_000,
+              acquisitionAge: 0,
+              disposalAge: 78,
+            }),
+            property({
+              value: 1_400_000,
+              landValue: 500_000,
+              kind: "fritidsbolig",
+              acquisitionAge: 58,
+            }),
+          ],
+          includePropertyTax: true,
+          mortgageBalance: 2_400_000,
+          mortgageRate: 0.042,
+          mortgageBidragssats: 0.0085,
+          mortgageTermYears: 28,
+          mortgageInterestOnlyYears: 6,
+          mortgageBudgetedMonthly: 11_500,
+          otherDebtBalance: 420_000,
+          otherDebtRate: 0.069,
+          otherDebtTermYears: 9,
+          events: [
+            { id: "e1", type: "expense", label: "Bil", age: 47, amount: 250_000 },
+            {
+              id: "e2",
+              type: "property",
+              label: "Nyt hus",
+              age: 52,
+              newValue: 5_200_000,
+              mortgageLtv: 0.78,
+              housingReturnOverride: 0.03,
+            },
+            { id: "e3", type: "recurring", label: "Lønhop", age: 55, monthlyDelta: 2_500 },
+            { id: "e4", type: "windfall", label: "Arv", age: 61, amount: 400_000 },
+          ],
+          pension: {
+            ...DEFAULT_PLANNING_STATE.pension,
+            person1: {
+              ...DEFAULT_PENSION_PERSON,
+              ratepensionBalance: 1_800_000,
+              livrenteBalance: 900_000,
+              aldersopsparingBalance: 300_000,
+              ratepensionAnnual: 40_000,
+              folkepensionAge: 69,
+            },
+            ratepensionYears: 12,
+          },
+        })
+      )
       // The fixture is only worth its size while it still reaches the branches
       // it was built for, and nothing else here would notice if it stopped.
       const borrowingAges = r.points.filter((p) => p.borrowed > 0).map((p) => p.age)
@@ -3240,6 +3239,10 @@ describe("simulatePlanning", () => {
      * leaves behind is read again before the year is out: the second sale
      * realises the equity in the home the first one bought, so it has to see the
      * first move's loan and not the one the household woke up with.
+     *
+     * Paired at the starting age as well as mid-plan, because those are two
+     * different loops — events at `currentAge` fire before year 1 — and the
+     * first of them is the only reader of today's balance.
      */
     it("chains a second move at the same age onto the first one's loan", () => {
       const r = simulatePlanning(
@@ -3253,6 +3256,22 @@ describe("simulatePlanning", () => {
           mortgageRate: 0.04,
           mortgageBidragssats: 0.008,
           events: [
+            {
+              id: "m0a",
+              type: "property",
+              label: "Straks-flytning",
+              age: 40,
+              newValue: 2_600_000,
+              mortgageLtv: 0.7,
+            },
+            {
+              id: "m0b",
+              type: "property",
+              label: "Straks-flytning igen",
+              age: 40,
+              newValue: 2_100_000,
+              mortgageLtv: 0.5,
+            },
             {
               id: "m1",
               type: "property",
@@ -3274,28 +3293,28 @@ describe("simulatePlanning", () => {
       )
       expect(fingerprint(r)).toEqual({
         age: "022642b4",
-        bandHigh: "47fe594d",
-        bandLow: "95e25704",
-        borrowed: "eeb30fbd",
+        bandHigh: "f61293a6",
+        bandLow: "ea20f3e4",
+        borrowed: "5b35f41d",
         cash: "87bdc1a5",
         contributionYoY: "87bdc1a5",
         contributionsTotal: "87bdc1a5",
-        homeEquity: "86eaf16a",
-        housingGainYoY: "415352b5",
-        housingGainsTotal: "f5f1fa28",
-        investmentGainYoY: "040426c4",
-        investmentGainsTotal: "7478b4d1",
-        investments: "ce863710",
-        investmentsBandHigh: "23d85c15",
-        investmentsBandLow: "a8b4f22c",
-        investmentsSold: "cf66fec9",
-        netWorth: "786431fd",
+        homeEquity: "32991f10",
+        housingGainYoY: "85a082b9",
+        housingGainsTotal: "ccd1326c",
+        investmentGainYoY: "33196972",
+        investmentGainsTotal: "1a0bbd59",
+        investments: "41d4486b",
+        investmentsBandHigh: "6857e9fa",
+        investmentsBandLow: "7db5372d",
+        investmentsSold: "ae75ed57",
+        netWorth: "b2b04b34",
         otherDebt: "87bdc1a5",
         propertyTax: "87bdc1a5",
         retirementIncome: "87bdc1a5",
-        scalars: "2a34017a",
+        scalars: "3ba5b10e",
         spending: "87bdc1a5",
-        taxPaid: "3203ec9b",
+        taxPaid: "611551c8",
       })
     })
   })
