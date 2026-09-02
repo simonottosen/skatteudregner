@@ -2568,6 +2568,10 @@ describe("simulatePlanning", () => {
         mortgageBalance,
         mortgageRate: 0.04,
         mortgageTermYears: 30,
+        // A real bidragssats, so the expectations below — all built from
+        // `amortizeYear`'s interest alone — would break if the lender's fee ever
+        // started earning a fradrag it is not entitled to.
+        mortgageBidragssats: 0.008,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           inflation: 0,
@@ -2637,37 +2641,54 @@ describe("simulatePlanning", () => {
     })
 
     it("gives a couple two § 11 beløbsgrænser, not one", () => {
-      // Personskattelovens § 11 grants the 8 % nedslag per person, and stk. 3
-      // transfers a spouse's unused grænse — so 100.000 kr. of interest between
-      // two comparable pensions is relieved in full. One household-wide call
-      // would cap it at 50.000. Split pension, same household total, so the only
-      // difference is how many bands the interest can reach.
-      const single = retiredWithLoan(2_500_000)
-      const couple = simulatePlanning({
-        ...single,
+      // Personskattelovens § 11 grants the 8 % nedslag per person on up to
+      // 50.000 kr. of negative nettokapitalindkomst, so 120.000 kr. of interest
+      // reaches both partners' bands only if each is assessed with their own
+      // share. Deducting the household's whole interest in one assessment would
+      // spill over a single 50.000 band and silently throw the 8 % away.
+      // Pensions large enough that even the partner carrying the whole interest
+      // still has skattepligtig indkomst left, so the ordinary kommune- and
+      // kirkeskat relief is identical either way and § 11's band is the only
+      // thing the split changes.
+      const twoEqualPensions = (state: PlanningState) => ({
+        ...state,
+        homeValue: 6_000_000,
         pension: {
-          ...single.pension,
+          ...state.pension,
           single: false,
-          person1: { ...single.pension.person1, ratepensionBalance: 2_000_000 },
-          person2: {
-            ...single.pension.person1,
-            ratepensionBalance: 2_000_000,
-          },
+          person1: { ...state.pension.person1, ratepensionBalance: 5_000_000 },
+          person2: { ...state.pension.person1, ratepensionBalance: 5_000_000 },
         },
       })
-      const oneEarner = simulatePlanning({
-        ...single,
-        pension: {
-          ...single.pension,
-          single: false,
-          person2: { ...DEFAULT_PENSION_PERSON, folkepensionAge: 67 },
-        },
-      })
-      // Same household pension and same loan; the couple that can spread the
-      // interest over two grænser pays less tax than the one that cannot.
-      expect(at(couple, INTEREST_YEAR).taxPaid).toBeLessThan(
-        at(oneEarner, INTEREST_YEAR).taxPaid
+      const withLoan = simulatePlanning(
+        twoEqualPensions(retiredWithLoan(3_000_000))
       )
+      const debtFree = simulatePlanning(twoEqualPensions(retiredWithLoan(0)))
+
+      const interest = amortizeYear(3_000_000, 0.04, 30 * 12).interest
+      expect(interest).toBeGreaterThan(100_000) // must overflow one band
+      const clear = at(debtFree, INTEREST_YEAR)
+      const each = (clear.retirementIncome + clear.taxPaid) / 2
+      const ctx: TaxContext = {
+        t: 0,
+        inflation: 0,
+        profile: DEFAULT_TAX_PROFILE,
+        married: true,
+      }
+      const perPartner = 2 * pensionIncomeTax(each, ctx, each, interest / 2)
+      const allOnOne =
+        pensionIncomeTax(each, ctx, each, interest) +
+        pensionIncomeTax(each, ctx, each, 0)
+      // Each half still fills a whole band, so concentrating the interest costs
+      // the household the second band outright — 8 % of 50.000 kr. (to the
+      // krone; the engine rounds the nedslag).
+      const rates = getRates(DEFAULT_TAX_PROFILE.year)
+      expect(interest / 2).toBeGreaterThan(rates.ekstraRentefradragThreshold)
+      expect(allOnOne - perPartner).toBeCloseTo(
+        rates.ekstraRentefradragRate * rates.ekstraRentefradragThreshold,
+        -1
+      )
+      expect(at(withLoan, INTEREST_YEAR).taxPaid).toBeCloseTo(perPartner, 6)
     })
 
     it("relieves other debt's interest as well as the mortgage's", () => {
@@ -2739,6 +2760,47 @@ describe("simulatePlanning", () => {
       const reliefRate = 1 - netInterest / grossInterest
       expect(reliefRate).toBeGreaterThan(0.25)
       expect(reliefRate).toBeLessThan(0.45)
+    })
+
+    it("grants no deduction to a working household already on folkepension", () => {
+      // `retirementAge` and folkepensionsalderen are separate inputs, so a
+      // household can draw a taxed folkepension while the plan still counts it
+      // as working — the one window where the retirement gate is observable.
+      // It stays shut: the plan is still charging only the *excess* over the
+      // budget's mortgage line, so the budget still holds the fradrag.
+      const stillWorking = (mortgageBalance: number) =>
+        simulatePlanning(
+          makeState({
+            currentAge: 66,
+            endAge: 72,
+            retirementAge: 75, // never retires inside the horizon
+            startInvestments: 0,
+            monthlyContribution: 30_000,
+            homeValue: 4_000_000,
+            mortgageBalance,
+            mortgageRate: 0.04,
+            mortgageTermYears: 30,
+            assumptions: {
+              ...DEFAULT_PLANNING_STATE.assumptions,
+              investmentReturn: 0,
+              investmentFee: 0,
+              inflation: 0,
+              housingReturn: 0,
+              contributionGrowth: 0,
+              volatility: 0,
+            },
+            pension: {
+              ...DEFAULT_PLANNING_STATE.pension,
+              person1: { ...DEFAULT_PENSION_PERSON, folkepensionAge: 67 },
+              pensionReturn: 0,
+            },
+          })
+        )
+      const withLoan = at(stillWorking(2_000_000), 68)
+      const noLoan = at(stillWorking(0), 68)
+      expect(noLoan.taxPaid).toBeGreaterThan(0) // folkepension is being taxed
+      expect(withLoan.taxPaid).toBe(noLoan.taxPaid)
+      expect(withLoan.retirementIncome).toBe(noLoan.retirementIncome)
     })
 
     it("grants no deduction before retirement, where the budget already has", () => {
