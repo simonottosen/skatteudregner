@@ -2670,24 +2670,75 @@ describe("simulatePlanning", () => {
       )
     })
 
+    it("relieves other debt's interest as well as the mortgage's", () => {
+      // Both streams are kapitalindkomst and both are charged in full after
+      // retirement, so passing only the mortgage's would leave half the fix
+      // undone — and § 11's band is shared, so they have to arrive together.
+      const noDebt = simulatePlanning(retiredWithLoan(0))
+      const withDebt = simulatePlanning({
+        ...retiredWithLoan(0),
+        otherDebtBalance: 500_000,
+        otherDebtRate: 0.08,
+        otherDebtTermYears: 10,
+      })
+      const interest = amortizeYear(500_000, 0.08, 10 * 12).interest
+      const gross = at(noDebt, INTEREST_YEAR).retirementIncome + at(noDebt, INTEREST_YEAR).taxPaid
+      const ctx: TaxContext = {
+        t: 0,
+        inflation: 0,
+        profile: DEFAULT_TAX_PROFILE,
+        married: false,
+      }
+      const relief = pTax(gross) - pensionIncomeTax(gross, ctx, undefined, interest)
+      expect(relief).toBeGreaterThan(10_000)
+      expect(
+        at(withDebt, INTEREST_YEAR).retirementIncome -
+          at(noDebt, INTEREST_YEAR).retirementIncome
+      ).toBeCloseTo(relief, 6)
+    })
+
     it("relieves interest on equity borrowed to fund spending", () => {
       // A household that has eaten its portfolio keeps borrowing against the
       // house, and that balance accrues real, deductible interest that no
-      // schedule can predict — it differs from Monte Carlo path to path.
-      const broke = (annualSpending: number) =>
-        simulatePlanning({
-          ...retiredWithLoan(0),
-          startInvestments: 0,
-          annualSpending,
-        })
-      const modest = broke(200_000)
-      const heavy = broke(600_000)
-      // The heavy spender borrows, so its equity falls faster; the relief shows
-      // up as the borrowed balance growing more slowly than gross interest would
-      // make it. Compare the same plan against itself at two spending levels so
-      // the only difference is how much was borrowed.
-      expect(at(heavy, 80).homeEquity).toBeLessThan(at(modest, 80).homeEquity)
-      expect(at(heavy, 75).borrowed).toBeGreaterThan(0)
+      // schedule can predict — it is path state, so `pension.tax` cannot have
+      // carried it and `runPath` has to relieve it itself.
+      //
+      // With no portfolio, no scheduled loan, no returns and no property tax,
+      // a year in deficit borrows exactly its spending plus the borrowed
+      // balance's interest, less the pension it lives on. Rearranging that
+      // identity recovers the *net* interest the year was charged, and the first
+      // year's borrowing is the balance it accrued on.
+      const SPENDING = 400_000
+      const RATE = 0.04
+      const r = simulatePlanning({
+        ...retiredWithLoan(0),
+        startInvestments: 0,
+        annualSpending: SPENDING,
+        mortgageRate: RATE,
+        pension: {
+          ...retiredWithLoan(0).pension,
+          person1: {
+            ...DEFAULT_PENSION_PERSON,
+            ratepensionBalance: 3_000_000,
+            folkepensionAge: 67,
+          },
+          pensionReturn: 0,
+          ratepensionYears: 15,
+        },
+      })
+      const first = at(r, 66)
+      const second = at(r, 67)
+      expect(first.borrowed).toBeGreaterThan(0) // year 1 has no balance yet
+      const grossInterest = first.borrowed * RATE
+      const netInterest =
+        second.borrowed - SPENDING + second.retirementIncome
+      expect(netInterest).toBeGreaterThan(0)
+      expect(netInterest).toBeLessThan(grossInterest)
+      // The share kept back is a plausible Danish marginal relief rate: kommune
+      // and kirke plus § 11's 8 %, nowhere near a topskat-sized number.
+      const reliefRate = 1 - netInterest / grossInterest
+      expect(reliefRate).toBeGreaterThan(0.25)
+      expect(reliefRate).toBeLessThan(0.45)
     })
 
     it("grants no deduction before retirement, where the budget already has", () => {
