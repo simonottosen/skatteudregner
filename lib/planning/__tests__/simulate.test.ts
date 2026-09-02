@@ -2555,6 +2555,17 @@ describe("simulatePlanning", () => {
    */
   describe("rentefradrag", () => {
     const INTEREST_YEAR = 66
+    const BIDRAGSSATS = 0.008
+    /**
+     * The year's deductible cost of a realkreditlån opening at `balance`:
+     * interest plus bidrag, afdraget excluded. Bidrag is in here because
+     * ligningslovens § 15 J, stk. 1 lets an owner-occupier deduct exactly two
+     * things — prioritetsrenterne and "reservefonds- og administrationsbidrag
+     * til realkreditinstitutter" — the latter as a løbende provision under
+     * § 8, stk. 3, litra a.
+     */
+    const deductibleOf = (balance: number, months = 30 * 12) =>
+      amortizeYear(balance, 0.04, months).interest + balance * BIDRAGSSATS
     /** Retired, drawing a real pension, and still carrying a real loan. */
     const retiredWithLoan = (mortgageBalance: number) =>
       makeState({
@@ -2569,9 +2580,9 @@ describe("simulatePlanning", () => {
         mortgageRate: 0.04,
         mortgageTermYears: 30,
         // A real bidragssats, so the expectations below — all built from
-        // `amortizeYear`'s interest alone — would break if the lender's fee ever
-        // started earning a fradrag it is not entitled to.
-        mortgageBidragssats: 0.008,
+        // `deductibleOf` — pin that the lender's fee earns the fradrag the
+        // statute grants it, and that it does so without leaving the cash flow.
+        mortgageBidragssats: BIDRAGSSATS,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           inflation: 0,
@@ -2606,10 +2617,10 @@ describe("simulatePlanning", () => {
       expect(year.taxPaid).toBeLessThan(clear.taxPaid)
       expect(year.retirementIncome).toBeGreaterThan(clear.retirementIncome)
 
-      // And by the right amount: the first year's interest off the opening
-      // balance (the schedule starts billing at year 1), priced through the same
-      // engine the /skat page uses rather than restated here.
-      const interest = amortizeYear(2_000_000, 0.04, 30 * 12).interest
+      // And by the right amount: the first year's interest and bidrag off the
+      // opening balance (the schedule starts billing at year 1), priced through
+      // the same engine the /skat page uses rather than restated here.
+      const deductible = deductibleOf(2_000_000)
       const gross = clear.retirementIncome + clear.taxPaid
       const ctx: TaxContext = {
         t: 0,
@@ -2617,10 +2628,81 @@ describe("simulatePlanning", () => {
         profile: DEFAULT_TAX_PROFILE,
         married: false,
       }
-      const relief = pTax(gross) - pensionIncomeTax(gross, ctx, undefined, interest)
+      const relief =
+        pTax(gross) - pensionIncomeTax(gross, ctx, undefined, deductible)
       expect(relief).toBeGreaterThan(20_000)
       expect(clear.taxPaid - year.taxPaid).toBeCloseTo(relief, 6)
       expect(year.retirementIncome - clear.retirementIncome).toBeCloseTo(relief, 6)
+    })
+
+    it("deducts the realkredit bidrag as well as the interest", () => {
+      // Ligningslovens § 15 J, stk. 1 lets an owner-occupier deduct
+      // "reservefonds- og administrationsbidrag til realkreditinstitutter"
+      // alongside prioritetsrenterne, and personskattelovens § 4, stk. 1, nr. 2
+      // puts the provisions of § 8, stk. 3 in kapitalindkomst with them. So the
+      // fee reaches the household's tax return, and the projection understated
+      // every bidrag-bearing retirement year until it did.
+      const withBidrag = at(simulatePlanning(retiredWithLoan(2_000_000)), INTEREST_YEAR)
+      const noBidrag = at(
+        simulatePlanning({
+          ...retiredWithLoan(2_000_000),
+          mortgageBidragssats: 0,
+        }),
+        INTEREST_YEAR
+      )
+      const gross = noBidrag.retirementIncome + noBidrag.taxPaid
+      const ctx: TaxContext = {
+        t: 0,
+        inflation: 0,
+        profile: DEFAULT_TAX_PROFILE,
+        married: false,
+      }
+      const bidrag = 2_000_000 * BIDRAGSSATS
+      const interest = amortizeYear(2_000_000, 0.04, 30 * 12).interest
+      const extra =
+        pensionIncomeTax(gross, ctx, undefined, interest) -
+        pensionIncomeTax(gross, ctx, undefined, interest + bidrag)
+      // ~a quarter of a 16.000 kr. fee: the interest has already spent § 11's
+      // band, so the fee earns the kommune- and kirkeskat relief alone.
+      expect(extra).toBeGreaterThan(3_000)
+      expect(noBidrag.taxPaid - withBidrag.taxPaid).toBeCloseTo(extra, 6)
+    })
+
+    it("leaves the cash flow's bidrag alone while deducting it", () => {
+      // The fee is an expense *and* a fradrag, and the two arrive by different
+      // routes. Making it deductible must not also stop it being paid: the
+      // service is what `modelledMortgageMonthly` and `mortgageBudgetNotice`
+      // quote, so a krone moved here would move the notice too. The working
+      // years are where that is visible to the krone — they take the whole
+      // modelled service off the contribution and grant no fradrag at all.
+      const service = serviceOf(2_000_000, 0.04, 30 * 12, false, BIDRAGSSATS)
+      const bidrag = 2_000_000 * BIDRAGSSATS
+      expect(service - serviceOf(2_000_000, 0.04, 30 * 12)).toBeCloseTo(bidrag, 6)
+      const working = simulatePlanning(
+        makeState({
+          currentAge: 40,
+          endAge: 50,
+          retirementAge: 100,
+          startInvestments: 0,
+          monthlyContribution: 30_000,
+          homeValue: 4_000_000,
+          mortgageBalance: 2_000_000,
+          mortgageRate: 0.04,
+          mortgageTermYears: 30,
+          mortgageBidragssats: BIDRAGSSATS,
+          mortgageBudgetedMonthly: 0,
+          assumptions: {
+            ...DEFAULT_PLANNING_STATE.assumptions,
+            investmentReturn: 0,
+            investmentFee: 0,
+            inflation: 0,
+            housingReturn: 0,
+            contributionGrowth: 0,
+            volatility: 0,
+          },
+        })
+      )
+      expect(at(working, 41).contributionYoY).toBeCloseTo(360_000 - service, 6)
     })
 
     it("relieves every year the loan runs, not just the first", () => {
@@ -2665,8 +2747,8 @@ describe("simulatePlanning", () => {
       )
       const debtFree = simulatePlanning(twoEqualPensions(retiredWithLoan(0)))
 
-      const interest = amortizeYear(3_000_000, 0.04, 30 * 12).interest
-      expect(interest).toBeGreaterThan(100_000) // must overflow one band
+      const deductible = deductibleOf(3_000_000)
+      expect(deductible).toBeGreaterThan(100_000) // must overflow one band
       const clear = at(debtFree, INTEREST_YEAR)
       const each = (clear.retirementIncome + clear.taxPaid) / 2
       const ctx: TaxContext = {
@@ -2675,15 +2757,15 @@ describe("simulatePlanning", () => {
         profile: DEFAULT_TAX_PROFILE,
         married: true,
       }
-      const perPartner = 2 * pensionIncomeTax(each, ctx, each, interest / 2)
+      const perPartner = 2 * pensionIncomeTax(each, ctx, each, deductible / 2)
       const allOnOne =
-        pensionIncomeTax(each, ctx, each, interest) +
+        pensionIncomeTax(each, ctx, each, deductible) +
         pensionIncomeTax(each, ctx, each, 0)
       // Each half still fills a whole band, so concentrating the interest costs
       // the household the second band outright — 8 % of 50.000 kr. (to the
       // krone; the engine rounds the nedslag).
       const rates = getRates(DEFAULT_TAX_PROFILE.year)
-      expect(interest / 2).toBeGreaterThan(rates.ekstraRentefradragThreshold)
+      expect(deductible / 2).toBeGreaterThan(rates.ekstraRentefradragThreshold)
       expect(allOnOne - perPartner).toBeCloseTo(
         rates.ekstraRentefradragRate * rates.ekstraRentefradragThreshold,
         -1
@@ -2718,48 +2800,143 @@ describe("simulatePlanning", () => {
       ).toBeCloseTo(relief, 6)
     })
 
-    it("relieves interest on equity borrowed to fund spending", () => {
-      // A household that has eaten its portfolio keeps borrowing against the
-      // house, and that balance accrues real, deductible interest that no
-      // schedule can predict — it is path state, so `pension.tax` cannot have
-      // carried it and `runPath` has to relieve it itself.
-      //
-      // With no portfolio, no scheduled loan, no returns and no property tax,
-      // a year in deficit borrows exactly its spending plus the borrowed
-      // balance's interest, less the pension it lives on. Rearranging that
-      // identity recovers the *net* interest the year was charged, and the first
-      // year's borrowing is the balance it accrued on.
-      const SPENDING = 400_000
-      const RATE = 0.04
-      const r = simulatePlanning({
-        ...retiredWithLoan(0),
-        startInvestments: 0,
-        annualSpending: SPENDING,
-        mortgageRate: RATE,
-        pension: {
-          ...retiredWithLoan(0).pension,
-          person1: {
-            ...DEFAULT_PENSION_PERSON,
-            ratepensionBalance: 3_000_000,
-            folkepensionAge: 67,
+    /**
+     * A household that has eaten its portfolio keeps borrowing against the
+     * house, and that balance accrues real, deductible interest that no schedule
+     * can predict — it is path state, so `pension.tax` cannot have carried it
+     * and `runPath` has to relieve it itself.
+     *
+     * No portfolio, no scheduled loan, no returns and no property tax, so the
+     * only tax in `taxPaid` is the pension's and the only unfunded krone is the
+     * one the year borrows. `spending` is the free parameter: raise it and the
+     * household borrows, lower it and it lives off its pension and borrows
+     * nothing. The two runs share a pension, so the second is the same household
+     * assessed without the borrowed-equity fradrag — the reference the first is
+     * measured against.
+     */
+    const equityBorrower = (annualSpending: number, homeValue = 4_000_000) =>
+      simulatePlanning(
+        makeState({
+          ...retiredWithLoan(0),
+          homeValue,
+          startInvestments: 0,
+          annualSpending,
+          mortgageRate: 0.04,
+          pension: {
+            ...retiredWithLoan(0).pension,
+            person1: {
+              ...DEFAULT_PENSION_PERSON,
+              ratepensionBalance: 3_000_000,
+              folkepensionAge: 67,
+            },
+            pensionReturn: 0,
+            ratepensionYears: 15,
           },
-          pensionReturn: 0,
-          ratepensionYears: 15,
-        },
-      })
-      const first = at(r, 66)
-      const second = at(r, 67)
+        })
+      )
+
+    it("relieves interest on equity borrowed to fund spending", () => {
+      const RATE = 0.04
+      const borrowing = equityBorrower(400_000)
+      const solvent = equityBorrower(100_000) // funded by the pension alone
+      const first = at(borrowing, 66)
+      const second = at(borrowing, 67)
       expect(first.borrowed).toBeGreaterThan(0) // year 1 has no balance yet
+      expect(at(solvent, 67).borrowed).toBe(0)
+
+      // The relief is what the reported tax fell by against the household that
+      // borrowed nothing — same pension, same assessment, one fradrag apart.
+      const relief = at(solvent, 67).taxPaid - second.taxPaid
       const grossInterest = first.borrowed * RATE
-      const netInterest =
-        second.borrowed - SPENDING + second.retirementIncome
-      expect(netInterest).toBeGreaterThan(0)
-      expect(netInterest).toBeLessThan(grossInterest)
-      // The share kept back is a plausible Danish marginal relief rate: kommune
-      // and kirke plus § 11's 8 %, nowhere near a topskat-sized number.
-      const reliefRate = 1 - netInterest / grossInterest
-      expect(reliefRate).toBeGreaterThan(0.25)
-      expect(reliefRate).toBeLessThan(0.45)
+      expect(relief).toBeGreaterThan(0)
+      expect(relief).toBeLessThan(grossInterest)
+      // A plausible Danish marginal relief rate: kommune and kirke plus § 11's
+      // 8 %, nowhere near a topskat-sized number.
+      expect(relief / grossInterest).toBeGreaterThan(0.25)
+      expect(relief / grossInterest).toBeLessThan(0.45)
+
+      // And it is the same krone the cash flow kept. With nothing else to draw
+      // on, the year borrows its spending plus the *net* interest, less the
+      // pension it lives on — and the reported income is that pension plus the
+      // relief, so the two rearrange to the gross interest exactly.
+      expect(second.borrowed - 400_000 + second.retirementIncome).toBeCloseTo(
+        grossInterest,
+        6
+      )
+    })
+
+    it("reports the borrowed-equity relief, not just spends it", () => {
+      // The relief is realised as a smaller outflow, so nothing forces it into
+      // the figures the UI reads — and while it was missing from them, an
+      // equity-borrowing year showed the corrected wealth alongside a tax bill
+      // and a net income that both still assumed no fradrag at all.
+      const borrowing = equityBorrower(400_000)
+      const solvent = equityBorrower(100_000)
+      let relieved = 0
+      for (const p of borrowing.points.filter((p) => p.age >= 67)) {
+        const reference = at(solvent, p.age)
+        const relief = reference.taxPaid - p.taxPaid
+        expect(relief).toBeGreaterThan(0)
+        // The mirror image: a krone off the tax is a krone onto the net income.
+        expect(p.retirementIncome - reference.retirementIncome).toBeCloseTo(
+          relief,
+          6
+        )
+        relieved += relief
+      }
+      expect(relieved).toBeGreaterThan(50_000)
+    })
+
+    it("never relieves more than the household had tax to reduce", () => {
+      // The relief saturates: past § 11's beløbsgrænse the 8 % stops, and once
+      // the deduction has eaten the skattepligtige indkomst the kommune- and
+      // kirkeskat go with it. A household deep enough in borrowed equity asks
+      // about an `extra` several times its whole pension, and the answer has to
+      // be the tax it actually owed — a marginal rate measured on a small probe
+      // and multiplied out sails past every one of those breakpoints and refunds
+      // tax nobody paid.
+      const HOME = 40_000_000 // deep enough to keep lending for the whole horizon
+      const r = equityBorrower(2_000_000, HOME)
+      const solvent = equityBorrower(100_000, HOME)
+      // Housing return and inflation are 0 here, so what the house has lost in
+      // equity is exactly the balance the borrowing has run up.
+      const balanceEnteringYear = (age: number) =>
+        HOME - at(r, age - 1).homeEquity
+      const ctx: TaxContext = {
+        t: 0,
+        inflation: 0,
+        profile: DEFAULT_TAX_PROFILE,
+        married: false,
+      }
+
+      const late = r.points.filter((p) => p.age >= 72)
+      expect(late.length).toBeGreaterThan(5)
+      for (const p of late) {
+        const reference = at(solvent, p.age)
+        const gross = reference.retirementIncome + reference.taxPaid
+        const extra = balanceEnteringYear(p.age) * 0.04
+        expect(extra).toBeGreaterThan(gross) // more deduction than income
+        // What the discarded linear approximation would have paid out: a rate
+        // read off a 10.000 kr. probe, multiplied across the whole `extra`.
+        const probe = 10_000
+        const rate =
+          (pTax(gross) - pensionIncomeTax(gross, ctx, undefined, probe)) / probe
+        // It exceeds the household's entire tax bill, so the reported figure it
+        // is subtracted from would have gone negative.
+        expect(rate * extra).toBeGreaterThan(reference.taxPaid)
+
+        const relief = reference.taxPaid - p.taxPaid
+        expect(relief).toBeGreaterThan(0)
+        expect(relief).toBeLessThanOrEqual(reference.taxPaid + 1e-9)
+        expect(p.taxPaid).toBeGreaterThanOrEqual(0)
+        // And the gap is not a rounding one: the linear figure is half again
+        // what the brackets actually had left to give.
+        expect(rate * extra).toBeGreaterThan(1.5 * relief)
+      }
+      // The tax that survives is bundskat, which is levied on personlig
+      // indkomst — negative kapitalindkomst never reaches it, so the relief
+      // saturates strictly above zero rather than wiping the bill out.
+      expect(Math.min(...late.map((p) => p.taxPaid))).toBeGreaterThan(0)
     })
 
     it("grants no deduction to a working household already on folkepension", () => {

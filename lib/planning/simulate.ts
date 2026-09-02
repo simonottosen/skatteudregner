@@ -178,6 +178,14 @@ interface PathResult {
   borrowed: number[]
   /** Per-year property tax (ejendomsværdiskat + grundskyld). */
   propertyTax: number[]
+  /**
+   * Per-year tax relief on the interest of equity borrowed for spending — the
+   * one fradrag {@link PensionIncome.tax} cannot carry, because the balance it
+   * accrues on is path state. Reported separately because it is realised as a
+   * smaller cash outflow rather than as a smaller tax bill, so the figures the
+   * UI shows have to be corrected by it; see `simulatePlanning`.
+   */
+  extraInterestRelief: number[]
   /** First age where spending could not be funded (insolvent); null if never. */
   ruinAge: number | null
 }
@@ -248,10 +256,17 @@ function fundShortfall(
  * loan is the budget's loan reconciles to zero in year one instead of to a
  * rounding-sized residue.
  *
- * The interest is reported separately as well as being part of `service`: it is
- * the only deductible component of the three, and the household's tax needs it
- * apart from the cash it leaves with. Bidrag is a fee the lender charges, not
- * interest on a debt, so it earns no fradrag.
+ * The deductible part is reported separately as well as being part of `service`,
+ * because the household's tax needs it apart from the cash it leaves with. It is
+ * interest *and* bidrag, and only the afdrag is excluded: realkreditbidrag is a
+ * løbende provision for a lån under ligningslovens § 8, stk. 3, litra a, and
+ * § 15 J, stk. 1 — which otherwise bars an owner-occupier from deducting the
+ * costs of the dwelling — names "reservefonds- og administrationsbidrag til
+ * realkreditinstitutter" alongside prioritetsrenterne as one of the two things
+ * that stay deductible. Personskattelovens § 4, stk. 1, nr. 2 puts the same
+ * provisions in kapitalindkomst, so it belongs in the very assessment the
+ * interest goes into and shares § 11's beløbsgrænse with it. That is also why it
+ * shows up on the årsopgørelse next to renteudgifterne.
  *
  * A repaid loan leaves a sub-krone floating-point residue, which needs no floor
  * here: the residue's service is a residue too, so a paid-off loan costs ~0 a
@@ -263,12 +278,13 @@ function serviceYear(
   monthsLeft: number,
   interestOnly: boolean,
   bidragssats: number
-): { service: number; interest: number; balance: number } {
-  if (balance <= 0) return { service: 0, interest: 0, balance: 0 }
+): { service: number; deductible: number; balance: number } {
+  if (balance <= 0) return { service: 0, deductible: 0, balance: 0 }
   const step = amortizeYear(balance, rate, monthsLeft, interestOnly)
+  const bidrag = balance * bidragssats
   return {
-    service: balance - step.balance + step.interest + balance * bidragssats,
-    interest: step.interest,
+    service: balance - step.balance + step.interest + bidrag,
+    deductible: step.interest + bidrag,
     balance: step.balance,
   }
 }
@@ -305,10 +321,11 @@ interface MortgageCost {
    */
   byYear: number[]
   /**
-   * The deductible part of that service — the interest alone, without principal
-   * or bidrag. Same schedule, same loan swaps, same year the sale settles it.
+   * The deductible part of that service — interest plus bidrag, without the
+   * afdrag. Same schedule, same loan swaps, same year the sale settles it. See
+   * {@link serviceYear} for why the lender's bidrag is in here.
    */
-  interestByYear: number[]
+  deductibleByYear: number[]
   /**
    * The payment the household's budget already deducted, per year — a reading of
    * `state.mortgageBudgetedMonthly` and never of the loan above. The working
@@ -338,7 +355,7 @@ function mortgageCost(
   schedule: PropertySchedule
 ): MortgageCost {
   const byYear = new Array<number>(Math.max(0, years) + 1).fill(0)
-  const interestByYear = new Array<number>(byYear.length).fill(0)
+  const deductibleByYear = new Array<number>(byYear.length).fill(0)
   const byAge = eventsByAge(state.events)
   let balance = state.mortgageBalance
   let monthsLeft = mortgageTermMonths(state)
@@ -368,14 +385,14 @@ function mortgageCost(
       state.mortgageBidragssats
     )
     byYear[y] = year.service
-    interestByYear[y] = year.interest
+    deductibleByYear[y] = year.deductible
     balance = year.balance
     monthsLeft = Math.max(0, monthsLeft - 12)
     swapLoanAt(state.currentAge + y)
   }
   return {
     byYear,
-    interestByYear,
+    deductibleByYear,
     budgeted: state.mortgageBudgetedMonthly * 12,
   }
 }
@@ -394,7 +411,12 @@ interface OtherDebtCost {
   balanceByYear: number[]
   /** Principal repaid in each year (element 0 unused). */
   principalByYear: number[]
-  /** Deductible interest accrued in each year (element 0 unused). */
+  /**
+   * Deductible interest accrued in each year (element 0 unused). Interest and
+   * nothing else — unlike {@link MortgageCost.deductibleByYear}, which also
+   * carries bidrag: a bank loan charges no reservefonds- og administrationsbidrag
+   * for ligningslovens § 8, stk. 3 to make deductible.
+   */
   interestByYear: number[]
 }
 
@@ -427,12 +449,6 @@ const MC_SEED = 0x9e3779b9
  */
 const PROPERTY_TAX_REFINEMENT_PASSES = 3
 
-/**
- * Kroner of extra interest used to measure a year's marginal rentefradrag — see
- * `reliefOnExtraInterest`. Large enough that a rounding step inside the tax
- * engine cannot dominate the difference, small enough to stay inside one bracket.
- */
-const MARGINAL_RELIEF_PROBE = 10_000
 
 /**
  * Settle a year's property tax against the drawdown that pays for it, and
@@ -873,7 +889,7 @@ interface PensionIncome {
  *
  * ## Why the deduction is a retirement-only figure
  *
- * `scheduledInterest` is supplied for every year of the plan, but only the
+ * `scheduledDeductible` is supplied for every year of the plan, but only the
  * retirement years claim it. That mirrors where the projection *charges* the
  * debt. In retirement it charges the whole service — mortgage, other debt and
  * borrowed-equity interest are all explicit outflows — because `annualSpending`
@@ -909,8 +925,12 @@ interface PensionIncome {
  */
 function pensionNetIncomeByYear(
   state: PlanningState,
-  /** The year's interest on the household's scheduled debt, nominal. */
-  scheduledInterest: readonly number[]
+  /**
+   * The year's deductible cost of the household's scheduled debt, nominal:
+   * interest on every loan plus the realkreditlån's bidrag (see
+   * {@link MortgageCost.deductibleByYear}).
+   */
+  scheduledDeductible: readonly number[]
 ): PensionIncome {
   const years = Math.max(0, Math.round(state.endAge - state.currentAge))
   const married = !state.pension.single
@@ -929,7 +949,7 @@ function pensionNetIncomeByYear(
   })
   const claimableIn = (y: number) =>
     state.currentAge + y >= state.retirementAge
-      ? Math.max(0, scheduledInterest[y] ?? 0)
+      ? Math.max(0, scheduledDeductible[y] ?? 0)
       : 0
 
   /**
@@ -983,40 +1003,34 @@ function pensionNetIncomeByYear(
   }
 
   /**
-   * The marginal relief a krone of further interest earns in year `y`, measured
-   * once against the scheduled interest already claimed and then reused.
+   * The relief `extra` further kroner of deductible interest earn in year `y`:
+   * the year's assessment redone with the extra on top of what the schedule
+   * already claims, differenced against the assessment {@link tax} came from.
    *
-   * Linear rather than a second full assessment because the amount asked about
-   * is path state, and the loop asking is 400 paths deep: a `calculateTax` call
-   * costs ~3 µs against a ~9 ms whole simulation, so pricing every path's
-   * borrowing exactly would cost more than the rest of the projection. The rate
-   * is a function of the year alone — both pension incomes and the scheduled
-   * interest are — so one measurement serves every path, and it is taken lazily
-   * because the plans that ever borrow against their home are the minority.
+   * A second full assessment rather than a marginal rate applied linearly,
+   * because the relief is not linear in `extra` and the households that ask are
+   * exactly the ones far out along the curve. It flattens at § 11's
+   * beløbsgrænse, again when the deduction exhausts the skattepligtige indkomst
+   * that kommune- and kirkeskat are levied on, and it is zero beyond the point
+   * where there is no tax left to reduce — which a rate measured on a small
+   * probe and multiplied out would sail straight past, handing back more than
+   * the household ever paid. Differencing inherits `pensionIncomeTax`'s own
+   * clamp instead, so `relief ≤ tax[y]` holds by construction; `runPath` relies
+   * on that when it nets the relief off the tax it reports.
    *
-   * Exact until the extra interest carries the household over § 11's
-   * beløbsgrænse, past which the 8 % is credited on interest that has used the
-   * band up; the overstatement is 8 % of the excess, in a household that has
-   * already spent its cash and its portfolio and is living off its house.
+   * The measured cost of being exact, on a 60-year plan that borrows equity in
+   * most of its retirement years: 23 ms → 35 ms for a whole 400-path
+   * simulation. `pensionIncomeTax` is ~1.4 µs, and only a retired year that has
+   * actually borrowed reaches this, so the plans that never borrow pay nothing.
    */
-  const reliefRate = new Array<number>(years + 1).fill(-1)
   const reliefOnExtraInterest = (y: number, extra: number): number => {
     if (extra <= 0) return 0
-    let rate = reliefRate[y]
-    if (rate < 0) {
-      const claimed = claimableIn(y)
-      // Real-terms probe, inflated to the year it is measured in, so the rate a
-      // late year reports is read off the same part of the brackets the year's
-      // own income sits in rather than off a shrinking sliver of them.
-      const probe = MARGINAL_RELIEF_PROBE * Math.pow(1 + inflation, y)
-      let saved = 0
-      for (let i = 0; i < incomes.length; i++) {
-        saved += taxIn(y, i, claimed) - taxIn(y, i, claimed + probe)
-      }
-      rate = Math.max(0, saved / probe)
-      reliefRate[y] = rate
+    const claimed = claimableIn(y)
+    let taxWithExtra = 0
+    for (let i = 0; i < incomes.length; i++) {
+      taxWithExtra += taxIn(y, i, claimed + extra)
     }
-    return rate * extra
+    return Math.max(0, tax[y] - taxWithExtra)
   }
 
   return {
@@ -1112,6 +1126,7 @@ function runPath(
   const investmentsSoldSeries: number[] = [0]
   const borrowedSeries: number[] = [0]
   const propertyTaxSeries: number[] = [0]
+  const extraInterestReliefSeries: number[] = [0]
 
   // Refilled with the year's owned properties and handed straight to the tax,
   // which reads it synchronously and keeps no reference. One array for the whole
@@ -1130,6 +1145,7 @@ function runPath(
     let investmentsSoldThisYear = 0
     let borrowedThisYear = 0
     let propertyTaxThisYear = 0
+    let extraInterestReliefThisYear = 0
     const taxCtx: TaxContext = {
       t: y,
       inflation: state.assumptions.inflation,
@@ -1353,9 +1369,15 @@ function runPath(
       // the balance is path state, so `pension.tax[y]` — one figure shared by
       // every path — cannot have deducted it. Relieved here instead, against the
       // interest already claimed there so the two do not both spend § 11's band.
+      // Kept as well as spent: it is a real reduction in the household's tax,
+      // and the reported figures still quote the shared `pension.tax[y]`, so
+      // they have to be told about it (see `simulatePlanning`).
+      extraInterestReliefThisYear = pension.reliefOnExtraInterest(
+        y,
+        borrowedInterestThisYear
+      )
       const borrowedInterestNet =
-        borrowedInterestThisYear -
-        pension.reliefOnExtraInterest(y, borrowedInterestThisYear)
+        borrowedInterestThisYear - extraInterestReliefThisYear
       const beforePropertyTax =
         inflatedSpending +
         mortgage.byYear[y] +
@@ -1425,6 +1447,7 @@ function runPath(
     investmentsSoldSeries.push(investmentsSoldThisYear)
     borrowedSeries.push(borrowedThisYear)
     propertyTaxSeries.push(propertyTaxThisYear)
+    extraInterestReliefSeries.push(extraInterestReliefThisYear)
   }
 
   return {
@@ -1442,6 +1465,7 @@ function runPath(
     investmentsSold: investmentsSoldSeries,
     borrowed: borrowedSeries,
     propertyTax: propertyTaxSeries,
+    extraInterestRelief: extraInterestReliefSeries,
     ruinAge,
   }
 }
@@ -1488,7 +1512,7 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
   // per person rather than one per debt.
   const pension = pensionNetIncomeByYear(
     state,
-    mortgage.interestByYear.map((i, y) => i + otherDebt.interestByYear[y])
+    mortgage.deductibleByYear.map((d, y) => d + otherDebt.interestByYear[y])
   )
 
   // Bound once for the whole run rather than per path: the kommune lookup and
@@ -1591,9 +1615,17 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
       contributionYoY: deterministic.contributions[y],
       housingGainYoY: deterministic.housingGains[y],
       investmentGainYoY: deterministic.investmentGains[y],
-      retirementIncome: pension.net[y],
+      // `pension.net`/`pension.tax` are the schedules' assessment, shared by
+      // every path, so the relief on this path's borrowed-equity interest is
+      // missing from both. Added back here and nowhere else: the cash flow spent
+      // it on a smaller outflow, and no reported field carries that outflow —
+      // `spending` is living costs alone and `borrowed` is a loan, not a cost —
+      // so this is the one place it can appear without being counted twice.
+      // Never negative: `reliefOnExtraInterest` cannot exceed `pension.tax[y]`.
+      retirementIncome: pension.net[y] + deterministic.extraInterestRelief[y],
       taxPaid:
-        pension.tax[y] +
+        pension.tax[y] -
+        deterministic.extraInterestRelief[y] +
         deterministic.investmentTax[y] +
         deterministic.propertyTax[y],
       spending: deterministic.spending[y],
