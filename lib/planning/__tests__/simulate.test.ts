@@ -3054,6 +3054,252 @@ describe("simulatePlanning", () => {
     })
   })
 
+  /**
+   * A regression lock on the whole projection, not on any one figure it reports.
+   *
+   * The engine is a long chain of arithmetic whose parts are individually
+   * plausible, so a change to one of them can move a number thirty years later
+   * without failing a single one of the tests above — every one of which asserts
+   * a property rather than the series. These fixtures pin the series itself, so
+   * that a change meant to be behaviour-preserving has to prove it is.
+   *
+   * They are deliberately *not* a description of anything. When one fails, the
+   * question it answers is "did anything move?", and the field it names is where
+   * to start looking; the tests above are what say whether the movement is right.
+   */
+  describe("regression fingerprint", () => {
+    /**
+     * FNV-1a over the exact float64 bits of a series.
+     *
+     * Bit-level rather than rounded to some tolerance: the point is to catch a
+     * refactor moving a number *at all*, and any tolerance is a place a real
+     * change can hide. Digested rather than written out because a fixture this
+     * size is a thousand numbers, and a thousand numbers in the source is
+     * something reviewers skip rather than read.
+     */
+    const digest = (values: number[]): string => {
+      const bytes = new Uint8Array(new Float64Array(values).buffer)
+      let h = 0x811c9dc5
+      for (const b of bytes) {
+        h = Math.imul(h ^ b, 0x01000193)
+      }
+      return (h >>> 0).toString(16).padStart(8, "0")
+    }
+
+    /**
+     * One digest per reported field, rather than one for the whole result: a
+     * failure then names the series that moved, which is most of the way to the
+     * cause.
+     */
+    const fingerprint = (r: PlanningResult): Record<string, string> => {
+      const of = (pick: (p: PlanningResult["points"][number]) => number) =>
+        digest(r.points.map(pick))
+      return {
+        age: of((p) => p.age),
+        investments: of((p) => p.investments),
+        homeEquity: of((p) => p.homeEquity),
+        cash: of((p) => p.cash),
+        otherDebt: of((p) => p.otherDebt),
+        netWorth: of((p) => p.netWorth),
+        bandLow: of((p) => p.band[0]),
+        bandHigh: of((p) => p.band[1]),
+        investmentsBandLow: of((p) => p.investmentsBand[0]),
+        investmentsBandHigh: of((p) => p.investmentsBand[1]),
+        contributionsTotal: of((p) => p.contributionsTotal),
+        housingGainsTotal: of((p) => p.housingGainsTotal),
+        investmentGainsTotal: of((p) => p.investmentGainsTotal),
+        contributionYoY: of((p) => p.contributionYoY),
+        housingGainYoY: of((p) => p.housingGainYoY),
+        investmentGainYoY: of((p) => p.investmentGainYoY),
+        retirementIncome: of((p) => p.retirementIncome),
+        taxPaid: of((p) => p.taxPaid),
+        spending: of((p) => p.spending),
+        investmentsSold: of((p) => p.investmentsSold),
+        borrowed: of((p) => p.borrowed),
+        propertyTax: of((p) => p.propertyTax),
+        // The result's scalars, and the length the digests above are taken over
+        // — without which a shorter series could still digest to the same value.
+        scalars: digest([
+          r.points.length,
+          r.fiAge ?? -1,
+          r.debtFreeAge ?? -1,
+          r.ruinAge ?? -1,
+          r.successProbability,
+        ]),
+      }
+    }
+
+    /**
+     * One household exercising every branch the loan touches: afdragsfrihed, a
+     * move that swaps the loan for a bigger one, a sale that settles what is left
+     * of it out of the proceeds, a second property that outlives the first, bank
+     * debt serviced from the drawdown, property tax settled against it, and a
+     * retirement long enough to eat the portfolio and start borrowing against the
+     * house.
+     */
+    const kitchenSink = () =>
+      makeState({
+        currentAge: 40,
+        endAge: 90,
+        retirementAge: 66,
+        startInvestments: 900_000,
+        cashBuffer: 120_000,
+        monthlyContribution: 9_000,
+        annualSpending: 700_000,
+        properties: [
+          property({
+            value: 3_600_000,
+            landValue: 1_100_000,
+            acquisitionAge: 0,
+            disposalAge: 78,
+          }),
+          property({
+            value: 1_400_000,
+            landValue: 500_000,
+            kind: "fritidsbolig",
+            acquisitionAge: 58,
+          }),
+        ],
+        includePropertyTax: true,
+        mortgageBalance: 2_400_000,
+        mortgageRate: 0.042,
+        mortgageBidragssats: 0.0085,
+        mortgageTermYears: 28,
+        mortgageInterestOnlyYears: 6,
+        mortgageBudgetedMonthly: 11_500,
+        otherDebtBalance: 420_000,
+        otherDebtRate: 0.069,
+        otherDebtTermYears: 9,
+        events: [
+          { id: "e1", type: "expense", label: "Bil", age: 47, amount: 250_000 },
+          {
+            id: "e2",
+            type: "property",
+            label: "Nyt hus",
+            age: 52,
+            newValue: 5_200_000,
+            mortgageLtv: 0.78,
+            housingReturnOverride: 0.03,
+          },
+          { id: "e3", type: "recurring", label: "Lønhop", age: 55, monthlyDelta: 2_500 },
+          { id: "e4", type: "windfall", label: "Arv", age: 61, amount: 400_000 },
+        ],
+        pension: {
+          ...DEFAULT_PLANNING_STATE.pension,
+          person1: {
+            ...DEFAULT_PENSION_PERSON,
+            ratepensionBalance: 1_800_000,
+            livrenteBalance: 900_000,
+            aldersopsparingBalance: 300_000,
+            ratepensionAnnual: 40_000,
+            folkepensionAge: 69,
+          },
+          ratepensionYears: 12,
+        },
+      })
+
+    it("reproduces the whole projection of a plan that uses every loan branch", () => {
+      const r = simulatePlanning(kitchenSink())
+      // The fixture is only worth its size while it still reaches the branches
+      // it was built for, and nothing else here would notice if it stopped.
+      const borrowingAges = r.points.filter((p) => p.borrowed > 0).map((p) => p.age)
+      expect(borrowingAges.some((age) => age < 78)).toBe(true) // loan still live
+      expect(borrowingAges.some((age) => age > 78)).toBe(true) // loan settled
+      expect(r.points.every((p) => p.age === 40 || p.propertyTax > 0)).toBe(true)
+      expect(r.ruinAge).toBe(86)
+
+      expect(fingerprint(r)).toEqual({
+        age: "e6e01043",
+        bandHigh: "d22190bf",
+        bandLow: "5adeaa44",
+        borrowed: "9673cb94",
+        cash: "677110e1",
+        contributionYoY: "ac711f19",
+        contributionsTotal: "f9c773b7",
+        homeEquity: "22dd0f7a",
+        housingGainYoY: "6e9cde48",
+        housingGainsTotal: "067e6064",
+        investmentGainYoY: "625425bc",
+        investmentGainsTotal: "75b811b2",
+        investments: "0a90b259",
+        investmentsBandHigh: "36e489f3",
+        investmentsBandLow: "052c1bc6",
+        investmentsSold: "807ca198",
+        netWorth: "63c5710f",
+        otherDebt: "8c804903",
+        propertyTax: "eb52bee9",
+        retirementIncome: "27ce37c3",
+        scalars: "dad907f5",
+        spending: "220f7e42",
+        taxPaid: "6e09d76f",
+      })
+    })
+
+    /**
+     * Two moves at the same age, which is the one case where the loan a move
+     * leaves behind is read again before the year is out: the second sale
+     * realises the equity in the home the first one bought, so it has to see the
+     * first move's loan and not the one the household woke up with.
+     */
+    it("chains a second move at the same age onto the first one's loan", () => {
+      const r = simulatePlanning(
+        makeState({
+          currentAge: 40,
+          endAge: 50,
+          startInvestments: 300_000,
+          monthlyContribution: 5_000,
+          homeValue: 2_000_000,
+          mortgageBalance: 1_200_000,
+          mortgageRate: 0.04,
+          mortgageBidragssats: 0.008,
+          events: [
+            {
+              id: "m1",
+              type: "property",
+              label: "Første flytning",
+              age: 44,
+              newValue: 3_000_000,
+              mortgageLtv: 0.6,
+            },
+            {
+              id: "m2",
+              type: "property",
+              label: "Anden flytning",
+              age: 44,
+              newValue: 4_500_000,
+              mortgageLtv: 0.85,
+            },
+          ],
+        })
+      )
+      expect(fingerprint(r)).toEqual({
+        age: "022642b4",
+        bandHigh: "47fe594d",
+        bandLow: "95e25704",
+        borrowed: "eeb30fbd",
+        cash: "87bdc1a5",
+        contributionYoY: "87bdc1a5",
+        contributionsTotal: "87bdc1a5",
+        homeEquity: "86eaf16a",
+        housingGainYoY: "415352b5",
+        housingGainsTotal: "f5f1fa28",
+        investmentGainYoY: "040426c4",
+        investmentGainsTotal: "7478b4d1",
+        investments: "ce863710",
+        investmentsBandHigh: "23d85c15",
+        investmentsBandLow: "a8b4f22c",
+        investmentsSold: "cf66fec9",
+        netWorth: "786431fd",
+        otherDebt: "87bdc1a5",
+        propertyTax: "87bdc1a5",
+        retirementIncome: "87bdc1a5",
+        scalars: "2a34017a",
+        spending: "87bdc1a5",
+        taxPaid: "3203ec9b",
+      })
+    })
+  })
+
   it("is deterministic across runs and keeps p10 <= median <= p90", () => {
     const state = makeState({
       currentAge: 30,
