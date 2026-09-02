@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest"
+import { amortizeYear } from "../amortisation"
 import {
   LOAN_TYPE_DEFAULTS,
   loanSummary,
@@ -336,8 +337,9 @@ describe("normalizeLoans", () => {
       expect(short.termMonths).toBe(12)
     })
 
-    it("keeps afdragsfrihed inside the term it was granted on", () => {
-      // Longer than the loan itself describes a loan that is never repaid.
+    it("leaves afdragsfrihed a year to repay in", () => {
+      // Covering every billed year describes a loan nothing ever pays off, so
+      // the last of a 10-year loan's ten years stays an amortizing one.
       const [loan] = normalizeLoans(
         {
           mortgageBalance: 1,
@@ -346,7 +348,7 @@ describe("normalizeLoans", () => {
         },
         [home]
       )
-      expect(loan.interestOnlyYears).toBe(10)
+      expect(loan.interestOnlyYears).toBe(9)
     })
   })
 
@@ -520,5 +522,57 @@ describe("normalizeLoans", () => {
       expect(loan.rate).toBe(LOAN_TYPE_DEFAULTS.bank.rate)
       expect(loan.termMonths).toBe(LOAN_TYPE_DEFAULTS.bank.termMonths)
     })
+  })
+})
+
+describe("a normalized loan against the amortizer", () => {
+  /**
+   * The schedule `mortgageCost` (`../simulate`) already runs: one call a year,
+   * against a maturity clock ticking down twelve months at a time, with the
+   * afdragsfri years taken off the front. Counted in months rather than in the
+   * whole years `amortisation.test.ts` walks, because a term that is not a whole
+   * number of years is the half of the space this bound has to get right.
+   */
+  const balanceAtMaturity = (loan: PlannedLoan): number => {
+    let balance = loan.principal
+    for (let y = 1; y <= Math.ceil(loan.termMonths / 12); y++) {
+      balance = amortizeYear(
+        balance,
+        loan.rate,
+        loan.termMonths - (y - 1) * 12,
+        y <= loan.interestOnlyYears
+      ).balance
+    }
+    return balance
+  }
+
+  /** A loan asking for more afdragsfrihed than any term could carry. */
+  const greedy = (termMonths: number) =>
+    normalizeLoans({ loans: [at({ termMonths, interestOnlyYears: 99 })] }, [])[0]
+
+  // Whole-year terms and part-year ones both: the term is months and
+  // afdragsfrihed is years, and a bound that divides the two carelessly leaves
+  // exactly one of those two shapes owing forever.
+  it.each([480, 360, 342, 125, 120, 24, 18, 13, 12, 1])(
+    "matures a %i-month loan that asks for all the afdragsfrihed it can get",
+    (termMonths) => {
+      const loan = greedy(termMonths)
+      expect(loan.termMonths).toBe(termMonths)
+      // Nothing downstream reads afdragsfrihed as a signed number, so a bound
+      // that undershoots into the negative is no fix either.
+      expect(loan.interestOnlyYears).toBeGreaterThanOrEqual(0)
+      // Sub-krone floating-point residue only — the loan has matured.
+      expect(balanceAtMaturity(loan)).toBeLessThan(1)
+    }
+  )
+
+  it("still grants every afdragsfri year the loan can repay after", () => {
+    // The fix is one year held back, not afdragsfrihed banned: an 18-month loan
+    // is billed over two years, so the first of them may be afdragsfri even
+    // though the term is not two whole years long.
+    expect(greedy(360).interestOnlyYears).toBe(29)
+    expect(greedy(18).interestOnlyYears).toBe(1)
+    expect(greedy(12).interestOnlyYears).toBe(0)
+    expect(greedy(1).interestOnlyYears).toBe(0)
   })
 })

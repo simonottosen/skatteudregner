@@ -221,9 +221,22 @@ function loanFrom(o: Record<string, unknown>): PlannedLoan {
     // that moved with it would rewrite a rate the user never touched.
     rate: clampNum(o.rate, defaults.rate, 0, 0.5),
     termMonths,
-    // Afdragsfrihed sits inside the term; longer than the loan itself describes
-    // a loan that is never repaid.
-    interestOnlyYears: clampNum(o.interestOnlyYears, 0, 0, termMonths / 12),
+    // Afdragsfrihed has to leave a year to repay in. `amortizeYear` stands the
+    // balance still through an interest-only year and again once the term has
+    // run out, so a period covering every billed year describes a loan nothing
+    // ever pays off — not the fixed maturity the rest of this contract promises.
+    // The billed years are counted with `ceil` because the term is months while
+    // this field is years: an 18-month loan is billed over two years, the second
+    // of them six months long, so the first can still be afdragsfri. Flooring
+    // would forbid that, and on the one-month term `termMonths` admits it would
+    // put the max below the min — which `clampNum` settles in the max's favour,
+    // handing back a negative afdragsfrihed.
+    interestOnlyYears: clampNum(
+      o.interestOnlyYears,
+      0,
+      0,
+      Math.ceil(termMonths / 12) - 1
+    ),
     // Bidrag is what a realkreditinstitut charges for lending against property.
     // A banklån carries none, whatever a blob says it carries.
     bidragssats:
