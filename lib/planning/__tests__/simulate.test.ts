@@ -2543,6 +2543,225 @@ describe("simulatePlanning", () => {
     })
   })
 
+  /**
+   * Interest is deductible as kapitalindkomst, and until this the projection
+   * charged every krone of it and reduced no tax by it (#53).
+   *
+   * The retirement side is where it belongs: there the projection charges the
+   * whole loan service, and `pensionIncomeTax` builds the household's tax return
+   * from scratch, so nothing else can be carrying the fradrag. Before retirement
+   * it deliberately grants none — see `pensionNetIncomeByYear` — and the last
+   * two tests here are what stop that from being reversed by accident.
+   */
+  describe("rentefradrag", () => {
+    const INTEREST_YEAR = 66
+    /** Retired, drawing a real pension, and still carrying a real loan. */
+    const retiredWithLoan = (mortgageBalance: number) =>
+      makeState({
+        currentAge: 65,
+        endAge: 80,
+        retirementAge: 65,
+        startInvestments: 2_000_000,
+        monthlyContribution: 0,
+        annualSpending: 250_000,
+        homeValue: 4_000_000,
+        mortgageBalance,
+        mortgageRate: 0.04,
+        mortgageTermYears: 30,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          inflation: 0,
+          housingReturn: 0,
+          volatility: 0,
+          housingVolatility: 0,
+          // No investment gains, so a sale realises nothing and `taxPaid` is the
+          // pension tax alone — the figure these tests are actually about.
+          investmentReturn: 0,
+          investmentFee: 0,
+        },
+        pension: {
+          ...DEFAULT_PLANNING_STATE.pension,
+          person1: {
+            ...DEFAULT_PENSION_PERSON,
+            ratepensionBalance: 4_000_000,
+            folkepensionAge: 67,
+          },
+          pensionReturn: 0,
+          ratepensionYears: 15,
+        },
+      })
+    const at = (r: PlanningResult, age: number) =>
+      r.points.find((p) => p.age === age)!
+
+    it("nets the loan's interest off the household's pension tax", () => {
+      const withLoan = simulatePlanning(retiredWithLoan(2_000_000))
+      const debtFree = simulatePlanning(retiredWithLoan(0))
+      const year = at(withLoan, INTEREST_YEAR)
+      const clear = at(debtFree, INTEREST_YEAR)
+      // Same pension either way — only the tax on it differs.
+      expect(year.taxPaid).toBeLessThan(clear.taxPaid)
+      expect(year.retirementIncome).toBeGreaterThan(clear.retirementIncome)
+
+      // And by the right amount: the first year's interest off the opening
+      // balance (the schedule starts billing at year 1), priced through the same
+      // engine the /skat page uses rather than restated here.
+      const interest = amortizeYear(2_000_000, 0.04, 30 * 12).interest
+      const gross = clear.retirementIncome + clear.taxPaid
+      const ctx: TaxContext = {
+        t: 0,
+        inflation: 0,
+        profile: DEFAULT_TAX_PROFILE,
+        married: false,
+      }
+      const relief = pTax(gross) - pensionIncomeTax(gross, ctx, undefined, interest)
+      expect(relief).toBeGreaterThan(20_000)
+      expect(clear.taxPaid - year.taxPaid).toBeCloseTo(relief, 6)
+      expect(year.retirementIncome - clear.retirementIncome).toBeCloseTo(relief, 6)
+    })
+
+    it("relieves every year the loan runs, not just the first", () => {
+      // The relief is not a one-off. A 30-year loan still accrues interest in
+      // year 15, so a retired borrower was understated by the fradrag in every
+      // single year of the projection — which is what made #53 worth fixing.
+      const withLoan = simulatePlanning(retiredWithLoan(2_000_000))
+      const debtFree = simulatePlanning(retiredWithLoan(0))
+      const retired = withLoan.points.filter((p) => p.age > 65)
+      expect(retired).toHaveLength(15)
+      let total = 0
+      for (const p of retired) {
+        const gap = p.retirementIncome - at(debtFree, p.age).retirementIncome
+        expect(gap).toBeGreaterThan(0)
+        total += gap
+      }
+      expect(total).toBeGreaterThan(250_000)
+    })
+
+    it("gives a couple two § 11 beløbsgrænser, not one", () => {
+      // Personskattelovens § 11 grants the 8 % nedslag per person, and stk. 3
+      // transfers a spouse's unused grænse — so 100.000 kr. of interest between
+      // two comparable pensions is relieved in full. One household-wide call
+      // would cap it at 50.000. Split pension, same household total, so the only
+      // difference is how many bands the interest can reach.
+      const single = retiredWithLoan(2_500_000)
+      const couple = simulatePlanning({
+        ...single,
+        pension: {
+          ...single.pension,
+          single: false,
+          person1: { ...single.pension.person1, ratepensionBalance: 2_000_000 },
+          person2: {
+            ...single.pension.person1,
+            ratepensionBalance: 2_000_000,
+          },
+        },
+      })
+      const oneEarner = simulatePlanning({
+        ...single,
+        pension: {
+          ...single.pension,
+          single: false,
+          person2: { ...DEFAULT_PENSION_PERSON, folkepensionAge: 67 },
+        },
+      })
+      // Same household pension and same loan; the couple that can spread the
+      // interest over two grænser pays less tax than the one that cannot.
+      expect(at(couple, INTEREST_YEAR).taxPaid).toBeLessThan(
+        at(oneEarner, INTEREST_YEAR).taxPaid
+      )
+    })
+
+    it("relieves interest on equity borrowed to fund spending", () => {
+      // A household that has eaten its portfolio keeps borrowing against the
+      // house, and that balance accrues real, deductible interest that no
+      // schedule can predict — it differs from Monte Carlo path to path.
+      const broke = (annualSpending: number) =>
+        simulatePlanning({
+          ...retiredWithLoan(0),
+          startInvestments: 0,
+          annualSpending,
+        })
+      const modest = broke(200_000)
+      const heavy = broke(600_000)
+      // The heavy spender borrows, so its equity falls faster; the relief shows
+      // up as the borrowed balance growing more slowly than gross interest would
+      // make it. Compare the same plan against itself at two spending levels so
+      // the only difference is how much was borrowed.
+      expect(at(heavy, 80).homeEquity).toBeLessThan(at(modest, 80).homeEquity)
+      expect(at(heavy, 75).borrowed).toBeGreaterThan(0)
+    })
+
+    it("grants no deduction before retirement, where the budget already has", () => {
+      // The contribution is a net, post-tax budget surplus, and a Danish
+      // household's take-home is already withheld on a trækprocent that carries
+      // its renteudgifter. Handing the fradrag over again here would count it
+      // twice — so the working year's deposit is the contribution plus what the
+      // budget deducted, less the modelled service, and not a krone more.
+      const service = serviceOf(2_000_000, 0.04, 30 * 12)
+      const working = simulatePlanning(
+        makeState({
+          currentAge: 40,
+          endAge: 50,
+          retirementAge: 100, // never retires inside the horizon
+          startInvestments: 0,
+          monthlyContribution: 30_000, // 360.000/yr, comfortably above the loan
+          homeValue: 4_000_000,
+          mortgageBalance: 2_000_000,
+          mortgageRate: 0.04,
+          mortgageTermYears: 30,
+          mortgageBudgetedMonthly: 0, // budget deducted nothing → charge it all
+          assumptions: {
+            ...DEFAULT_PLANNING_STATE.assumptions,
+            investmentReturn: 0,
+            investmentFee: 0,
+            inflation: 0,
+            housingReturn: 0,
+            contributionGrowth: 0,
+            volatility: 0,
+          },
+        })
+      )
+      expect(service).toBeGreaterThan(100_000)
+      expect(at(working, 41).contributionYoY).toBeCloseTo(360_000 - service, 6)
+    })
+
+    it("does not soften the afdragsfrihed step-up with a fradrag", () => {
+      // The step-up is *principal* falling due, not interest: when interest-only
+      // years end the payment jumps while the interest itself is flat across the
+      // step and declining after it. So there is no missing fradrag hiding in
+      // the cliff, and the contribution has to absorb the whole of it.
+      const IO = 5
+      const base = {
+        currentAge: 40,
+        endAge: 50,
+        retirementAge: 100,
+        startInvestments: 0,
+        monthlyContribution: 30_000,
+        homeValue: 4_000_000,
+        mortgageBalance: 2_000_000,
+        mortgageRate: 0.04,
+        mortgageTermYears: 30,
+        mortgageInterestOnlyYears: IO,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          investmentReturn: 0,
+          investmentFee: 0,
+          inflation: 0,
+          housingReturn: 0,
+          contributionGrowth: 0,
+          volatility: 0,
+        },
+      }
+      const r = simulatePlanning(makeState(base))
+      const stepUp =
+        serviceOf(2_000_000, 0.04, (30 - IO) * 12) -
+        serviceOf(2_000_000, 0.04, 30 * 12, true)
+      expect(stepUp).toBeGreaterThan(0)
+      const before = at(r, 45).contributionYoY
+      const after = at(r, 46).contributionYoY
+      expect(before - after).toBeCloseTo(stepUp, 6)
+    })
+  })
+
   it("is deterministic across runs and keeps p10 <= median <= p90", () => {
     const state = makeState({
       currentAge: 30,
