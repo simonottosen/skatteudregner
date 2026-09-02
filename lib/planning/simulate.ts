@@ -449,7 +449,6 @@ const MC_SEED = 0x9e3779b9
  */
 const PROPERTY_TAX_REFINEMENT_PASSES = 3
 
-
 /**
  * Settle a year's property tax against the drawdown that pays for it, and
  * return the charge the two agree on.

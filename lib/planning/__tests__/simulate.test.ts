@@ -2814,16 +2814,17 @@ describe("simulatePlanning", () => {
      * assessed without the borrowed-equity fradrag — the reference the first is
      * measured against.
      */
-    const equityBorrower = (annualSpending: number, homeValue = 4_000_000) =>
-      simulatePlanning(
+    const equityBorrower = (annualSpending: number, homeValue = 4_000_000) => {
+      const base = retiredWithLoan(0)
+      return simulatePlanning(
         makeState({
-          ...retiredWithLoan(0),
+          ...base,
           homeValue,
           startInvestments: 0,
           annualSpending,
           mortgageRate: 0.04,
           pension: {
-            ...retiredWithLoan(0).pension,
+            ...base.pension,
             person1: {
               ...DEFAULT_PENSION_PERSON,
               ratepensionBalance: 3_000_000,
@@ -2834,6 +2835,7 @@ describe("simulatePlanning", () => {
           },
         })
       )
+    }
 
     it("relieves interest on equity borrowed to fund spending", () => {
       const RATE = 0.04
@@ -2873,7 +2875,7 @@ describe("simulatePlanning", () => {
       const borrowing = equityBorrower(400_000)
       const solvent = equityBorrower(100_000)
       let relieved = 0
-      for (const p of borrowing.points.filter((p) => p.age >= 67)) {
+      for (const p of borrowing.points.filter((point) => point.age >= 67)) {
         const reference = at(solvent, p.age)
         const relief = reference.taxPaid - p.taxPaid
         expect(relief).toBeGreaterThan(0)
