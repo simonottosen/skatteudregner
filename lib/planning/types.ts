@@ -165,6 +165,67 @@ export interface PlannedProperty {
   disposalAge: number | null
 }
 
+/**
+ * Realkredit or bank — the two the household itself distinguishes.
+ *
+ * They differ in rate, in typical term, in whether the debt can be refinanced,
+ * and in whether a bidrag is charged at all. A single "loan" type would ask the
+ * user for a rate and a term with nothing to anchor either against, which is the
+ * form getting harder to fill in correctly rather than easier (issue #8).
+ */
+export type LoanType = "realkredit" | "bank"
+
+/**
+ * One debt the household carries through the projection.
+ *
+ * No acquisition/disposal ages of the kind {@link PlannedProperty} carries: every
+ * loan is drawn today and repaid over {@link PlannedLoan.termMonths}. Financing a
+ * property bought at 60 needs the simulation to hold a loan that does not exist
+ * yet, and a start age it ignored would let a plan describe borrowing that is
+ * silently dropped — worse than the all-equity purchase the projection admits to
+ * today. That belongs with the purchase itself.
+ */
+export interface PlannedLoan {
+  id: string
+  /**
+   * The {@link PlannedProperty} the loan is secured on; null for unsecured debt
+   * (car, student, consumer). Interest is deductible either way — the link says
+   * which property's equity the debt sits behind, not how it is taxed.
+   */
+  propertyId: string | null
+  /** Name shown in the UI ("Realkreditlån", "Billån"). */
+  label: string
+  type: LoanType
+  /** Outstanding balance in DKK. */
+  principal: number
+  /** Annual nominal interest rate as a fraction (0.041 = 4,1 %). */
+  rate: number
+  /**
+   * Remaining term in months — what the annuity step counts down (`amortizeYear`),
+   * and the only unit that can say a loan is four years and three months from
+   * maturity.
+   */
+  termMonths: number
+  /**
+   * Afdragsfrihed: years from now with interest only and no principal repayment.
+   * The loan keeps its maturity, so the principal skipped here is repaid over a
+   * correspondingly shorter remainder — the payment cliff when the period ends is
+   * the reason to model it at all.
+   */
+  interestOnlyYears: number
+  /**
+   * Annual bidragssats — the realkredit fee charged on the outstanding balance on
+   * top of interest and afdrag. Zero for a banklån, which carries no such fee.
+   *
+   * Not among the fields issue #8 lists, but the model this list replaces charges
+   * it ({@link PlanningState.mortgageBidragssats}, fed from the budget's own
+   * figure), and the same issue asks for the old fields to be absorbed rather
+   * than left running in parallel. A loan that could not carry the fee would
+   * force one or the other.
+   */
+  bidragssats: number
+}
+
 export type PlanningEventType = PlanningEvent["type"]
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown
