@@ -2,8 +2,9 @@
  * Taxation for the planning simulation, built on the real Danish tax engine in
  * `@/lib/tax`. This replaces the earlier hand-rolled approximation so the
  * projection uses the same rules as the /skat page: AM-bidrag, bund/mellem/top/
- * top-top-skat, kommune- + kirkeskat, personfradrag, and the aktieindkomst
- * progression limit (incl. the married doubling).
+ * top-top-skat, kommune- + kirkeskat, personfradrag, rentefradrag (incl.
+ * personskattelovens § 11 nedslag), and the aktieindkomst progression limit
+ * (incl. the married doubling).
  *
  * Multi-decade bracket creep is avoided by holding the rules at a fixed year and
  * applying them to *real* (today's-kroner) income: a nominal amount at year
@@ -60,12 +61,26 @@ function realFactor(ctx: TaxContext): number {
  * and earn no beskæftigelsesfradrag, so the gross amount is mapped to non-AM
  * personal income. `spouseTaxableNominal` lets the mellem-/topskat thresholds
  * transfer between partners.
+ *
+ * `nominalDeductibleInterest` is the person's share of the household's interest
+ * expense — realkredit, other debt, equity borrowed against the home. It enters
+ * as negative kapitalindkomst and buys relief twice over: it lowers the
+ * skattepligtige indkomst that kommune- and kirkeskat are levied on, and it earns
+ * personskattelovens § 11 nedslag on top. One number rather than one field per
+ * loan, because {@link calculateCapitalIncome} nets every interest field into a
+ * single kapitalindkomst before anything is applied — so which field carries it
+ * cannot matter, while *how many calls* it is spread over decides how many § 11
+ * beløbsgrænser the household gets. Aggregating here is what makes the threshold
+ * come out right by construction (issue #8).
  */
 export function pensionIncomeTax(
   nominalTaxable: number,
   ctx: TaxContext,
-  spouseTaxableNominal?: number
+  spouseTaxableNominal?: number,
+  nominalDeductibleInterest = 0
 ): number {
+  // No personal income, no tax for a deduction to reduce: § 11's nedslag is a
+  // credit in the tax, not a refundable one, so it cannot go below zero either.
   if (nominalTaxable <= 0) return 0
   const f = realFactor(ctx)
   const input = createDefaultInput()
@@ -74,10 +89,15 @@ export function pensionIncomeTax(
   input.churchMember = ctx.profile.churchMember
   input.married = ctx.married
   input.otherNonAmIncome = nominalTaxable / f
+  input.mortgageInterest = Math.max(0, nominalDeductibleInterest) / f
   if (ctx.married && spouseTaxableNominal !== undefined) {
     input.spousePersonalIncome = Math.max(0, spouseTaxableNominal / f)
   }
-  const realTax = Math.max(0, calculateTax(input).totalIncomeTax)
+  const result = calculateTax(input)
+  // § 11's nedslag is a credit applied *outside* the bracket arithmetic, so
+  // `totalIncomeTax` does not carry it (`lib/tax/calculator.ts`). It is already
+  // signed as a reduction — never positive — hence added rather than subtracted.
+  const realTax = Math.max(0, result.totalIncomeTax + result.ekstraRentefradrag)
   return realTax * f
 }
 
