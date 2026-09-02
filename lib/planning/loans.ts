@@ -50,8 +50,10 @@ export const LOAN_TYPE_DEFAULTS: Record<
 /** The 40 years `normalizePlanning` bounds both legacy loans by, in months. */
 const MAX_TERM_MONTHS = 40 * 12
 
-/** Same bound as the budget's own bidragssats (`lib/budget/state.ts`), so a rate
- * that survives there survives the trip into a loan unchanged. */
+/**
+ * Same bound as the budget's own bidragssats (`lib/budget/state.ts`), so a rate
+ * that survives there survives the trip into a loan unchanged.
+ */
 const MAX_BIDRAGSSATS = 0.05
 
 /**
@@ -173,16 +175,30 @@ export function missingSecurityNotice(
   )
 }
 
-/** What the mortgage fields are called once they are an entry in the list. */
-const LEGACY_MORTGAGE_LABEL = "Realkreditlån"
-
 /**
- * Not "Banklån": the field this comes from lumped student, car and consumer debt
- * together, so naming it after one of them puts a word in the user's mouth.
+ * What the other-debt fields are called once they are an entry in the list. Not
+ * "Banklån", the way the migrated mortgage simply takes its type's name: the
+ * field this comes from lumped student, car and consumer debt together, so
+ * naming it after one of them puts a word in the user's mouth.
  */
 const LEGACY_OTHER_DEBT_LABEL = "Anden gæld"
 
-/** Validate the fields of something already known to be an object. */
+/**
+ * A legacy term in years as the months the list holds.
+ *
+ * Floored at the whole year `normalizePlanning` floors the field at, so a term
+ * of nothing migrates to a year rather than to the single month `loanFrom` would
+ * otherwise round it up to. The ceiling is left to `loanFrom`, which bounds every
+ * term the same however it arrived.
+ */
+const legacyTermMonths = (years: unknown, fallbackYears: number) =>
+  clampNum(years, fallbackYears, 1) * 12
+
+/**
+ * Validate the fields of something already known to be an object — split from
+ * {@link normalizeLoan} so the migration below, which builds its own object, can
+ * reuse every bound without asserting away a null it cannot get.
+ */
 function loanFrom(o: Record<string, unknown>): PlannedLoan {
   const type: LoanType = o.type === "bank" ? "bank" : "realkredit"
   const defaults = LOAN_TYPE_DEFAULTS[type]
@@ -264,17 +280,13 @@ export function normalizeLoans(
     out.push(
       loanFrom({
         type: "realkredit",
-        label: LEGACY_MORTGAGE_LABEL,
         propertyId: properties[0]?.id ?? null,
         principal: mortgageBalance,
         rate: o.mortgageRate,
-        termMonths:
-          clampNum(
-            o.mortgageTermYears,
-            DEFAULT_PLANNING_STATE.mortgageTermYears,
-            1,
-            40
-          ) * 12,
+        termMonths: legacyTermMonths(
+          o.mortgageTermYears,
+          DEFAULT_PLANNING_STATE.mortgageTermYears
+        ),
         interestOnlyYears: o.mortgageInterestOnlyYears,
         bidragssats: o.mortgageBidragssats,
       })
@@ -289,13 +301,10 @@ export function normalizeLoans(
         propertyId: null,
         principal: otherDebtBalance,
         rate: o.otherDebtRate,
-        termMonths:
-          clampNum(
-            o.otherDebtTermYears,
-            DEFAULT_PLANNING_STATE.otherDebtTermYears,
-            1,
-            40
-          ) * 12,
+        termMonths: legacyTermMonths(
+          o.otherDebtTermYears,
+          DEFAULT_PLANNING_STATE.otherDebtTermYears
+        ),
       })
     )
   }
