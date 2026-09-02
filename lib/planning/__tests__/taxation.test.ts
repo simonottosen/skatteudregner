@@ -101,6 +101,89 @@ describe("pensionIncomeTax", () => {
   })
 })
 
+describe("pensionIncomeTax rentefradrag", () => {
+  const muni = getMunicipality(DEFAULT_TAX_PROFILE.municipality, ctx.profile.year)!
+  /**
+   * Negative nettokapitalindkomst leaves the skattepligtige indkomst, which is
+   * what kommune- and kirkeskat are levied on. Derived from the kommune's own
+   * rate rather than restated, so this is an independent figure.
+   */
+  const ordinaryRate =
+    muni.taxRate / 100 + (DEFAULT_TAX_PROFILE.churchMember ? muni.churchTaxRate / 100 : 0)
+  /** Personskattelovens § 11: 8 % of the first 50.000 kr. of the same amount. */
+  const nedslag = (interest: number) =>
+    Math.min(interest, rates.ekstraRentefradragThreshold) *
+    rates.ekstraRentefradragRate
+
+  const reliefOn = (interest: number, income = 400_000, c: TaxContext = ctx) =>
+    pensionIncomeTax(income, c, undefined, 0) -
+    pensionIncomeTax(income, c, undefined, interest)
+
+  it("grants nothing when there is no interest", () => {
+    expect(reliefOn(0)).toBe(0)
+  })
+
+  it("relieves the kommuneskat base and § 11's nedslag on top", () => {
+    // 20.000 kr. sits wholly inside the beløbsgrænse, so both parts apply in
+    // full: ~25 % of the interest plus 8 % of it again.
+    const interest = 20_000
+    expect(reliefOn(interest)).toBeCloseTo(
+      interest * ordinaryRate + nedslag(interest),
+      0
+    )
+  })
+
+  it("stops widening the § 11 nedslag above the beløbsgrænse", () => {
+    // The ordinary deduction keeps scaling; the 8 % does not, so the second
+    // 50.000 kr. of interest is worth strictly less than the first.
+    const grænse = rates.ekstraRentefradragThreshold
+    const first = reliefOn(grænse)
+    const second = reliefOn(grænse * 2) - first
+    expect(second).toBeLessThan(first)
+    expect(second).toBeCloseTo(grænse * ordinaryRate, 0)
+    expect(reliefOn(grænse * 2)).toBeCloseTo(
+      grænse * 2 * ordinaryRate + nedslag(grænse),
+      0
+    )
+  })
+
+  it("is worth ~a third of a real mortgage's first-year interest", () => {
+    // 2 mio. kr. at 4,1 % — the projection's own default rate.
+    const interest = 2_000_000 * 0.041
+    const relief = reliefOn(interest)
+    expect(relief / interest).toBeGreaterThan(0.25)
+    expect(relief / interest).toBeLessThan(0.35)
+  })
+
+  it("keeps its value in real terms far out in the projection", () => {
+    // The interest is nominal like everything else, so a fradrag worth 25.000
+    // real kroner today has to still be worth 25.000 real kroner in 20 years —
+    // otherwise the deduction would drift with the bracket indexation.
+    const t = 20
+    const f = Math.pow(1.02, t)
+    const far: TaxContext = { ...ctx, t, inflation: 0.02 }
+    expect(reliefOn(60_000 * f, 400_000 * f, far) / f).toBeCloseTo(
+      reliefOn(60_000),
+      0
+    )
+  })
+
+  it("stops once there is no base left to relieve", () => {
+    // Interest far beyond the income. Bundskat survives it — its base is
+    // personlig indkomst plus *positiv* kapitalindkomst, so renteudgifter never
+    // reach it — while the kommunale base empties and stays at zero.
+    const drained = pensionIncomeTax(150_000, ctx, undefined, 5_000_000)
+    expect(drained).toBeGreaterThan(0)
+    expect(drained).toBeLessThan(pensionIncomeTax(150_000, ctx))
+    // Twice the interest buys nothing more: the deduction cannot run negative.
+    expect(pensionIncomeTax(150_000, ctx, undefined, 10_000_000)).toBe(drained)
+  })
+
+  it("has no tax to reduce when the person has no income", () => {
+    expect(pensionIncomeTax(0, ctx, undefined, 100_000)).toBe(0)
+  })
+})
+
 describe("propertyHoldingTax progression", () => {
   const NO_INCOME: PensionerIncomeYear = {
     personalIncome: 0,
