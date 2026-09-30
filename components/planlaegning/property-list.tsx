@@ -15,10 +15,13 @@ import { MoneyInput, num } from "./money-input"
 import {
   PROPERTY_KINDS,
   PROPERTY_KIND_LABEL,
+  PROPERTY_USES,
+  PROPERTY_USE_LABEL,
   newPlannedProperty,
   pensionerNedslagNotice,
   propertySummary,
   removeProperty,
+  rentalExclusionNotice,
   replaceProperty,
 } from "@/lib/planning/properties"
 import type { PlannedProperty, PropertyKind } from "@/lib/planning/types"
@@ -45,6 +48,7 @@ export function PropertyList({
 }) {
   const [openId, setOpenId] = useState<string | null>(null)
   const notice = pensionerNedslagNotice(properties)
+  const rentalNotice = rentalExclusionNotice(properties)
 
   const add = (kind: PropertyKind) => {
     const created = newPlannedProperty(kind, currentAge)
@@ -117,6 +121,17 @@ export function PropertyList({
                         if (selectedItem) patch({ kind: selectedItem })
                       }}
                     />
+                    <Dropdown
+                      id={`prop-use-${p.id}`}
+                      titleText="Anvendelse"
+                      label="Vælg anvendelse"
+                      items={PROPERTY_USES}
+                      selectedItem={p.use}
+                      itemToString={(u) => (u ? PROPERTY_USE_LABEL[u] : "")}
+                      onChange={({ selectedItem }) => {
+                        if (selectedItem) patch({ use: selectedItem })
+                      }}
+                    />
                     <MoneyInput
                       id={`prop-value-${p.id}`}
                       label="Boligværdi"
@@ -185,6 +200,15 @@ export function PropertyList({
           hideCloseButton
           title="Pensionistnedslag"
           subtitle={notice}
+        />
+      )}
+      {rentalNotice && (
+        <InlineNotification
+          kind="warning"
+          lowContrast
+          hideCloseButton
+          title="Udlejning er ikke med i beregningen"
+          subtitle={rentalNotice}
         />
       )}
       <div className="flex flex-wrap gap-2">

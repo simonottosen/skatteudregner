@@ -793,6 +793,10 @@ function planProperties(state: PlanningState): PlannedProperty[] {
       id: "move",
       label: "",
       kind: "helaarsbolig",
+      // The home the household lives in after the move. Nothing here reads
+      // `use` — `RunProperty` does not carry it — so this is the honest value
+      // for the slot rather than one the projection acts on.
+      use: "own",
       value: 0,
       landValue: 0,
       acquisitionAge: moveAge,

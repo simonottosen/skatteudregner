@@ -21,6 +21,7 @@ import {
   type PlanningState,
   type PlanningTaxProfile,
   type PropertyKind,
+  type PropertyUse,
   type ScenarioChanges,
 } from "./types"
 import { getMunicipality } from "@/lib/tax/municipalities"
@@ -162,6 +163,12 @@ function normalizeProperty(raw: unknown): PlannedProperty | null {
   const o = raw as Record<string, unknown>
   const kind: PropertyKind =
     o.kind === "fritidsbolig" ? "fritidsbolig" : "helaarsbolig"
+  // Absent on a plan saved before the field existed, or a use an MCP client
+  // invented; both read as the one the projection models rather than claiming
+  // something the user never said. Defaulted rather than version-gated, for the
+  // reason `normalizeProperties` gives below.
+  const use: PropertyUse =
+    o.use === "vacant" || o.use === "rented" ? o.use : "own"
   const acquisitionAge = clampNum(o.acquisitionAge, 0, 0, 120)
   return {
     id: typeof o.id === "string" ? o.id : newId("prop"),
@@ -170,6 +177,7 @@ function normalizeProperty(raw: unknown): PlannedProperty | null {
         ? o.label
         : DEFAULT_PROPERTY_LABEL[kind],
     kind,
+    use,
     value: clampNum(o.value, 0, 0),
     landValue: clampNum(o.landValue, 0, 0),
     acquisitionAge,
@@ -193,6 +201,7 @@ export function homeProperty(value: number, landValue: number): PlannedProperty 
     id: newId("prop"),
     label: DEFAULT_PROPERTY_LABEL.helaarsbolig,
     kind: "helaarsbolig",
+    use: "own",
     value,
     landValue,
     acquisitionAge: 0,

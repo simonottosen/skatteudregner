@@ -237,6 +237,7 @@ describe("normalizePlanning", () => {
           id: "prop-a",
           label: "Rækkehuset",
           kind: "helaarsbolig",
+          use: "own",
           value: 4_000_000,
           landValue: 1_500_000,
           acquisitionAge: 0,
@@ -246,12 +247,44 @@ describe("normalizePlanning", () => {
           id: "prop-b",
           label: "Sommerhuset",
           kind: "fritidsbolig",
+          use: "own",
           value: 1_800_000,
           landValue: 900_000,
           acquisitionAge: 55,
           disposalAge: null,
         },
       ])
+    })
+
+    it("reads a plan saved before `use` existed as owner-occupied", () => {
+      // The field is additive with a default, so the migration is keyed on the
+      // property's own shape rather than on `version` — same reason as the
+      // list migration above. Anything else would claim a use the user never
+      // chose, and `"rented"` in particular is not modelled at all.
+      const [p] = normalizePlanning({
+        properties: [{ value: 3_000_000 }],
+      }).properties
+      expect(p.use).toBe("own")
+    })
+
+    it("reads a use it does not know as owner-occupied", () => {
+      // An MCP client can send any string it likes; an unrecognised one must
+      // not leave the property with a use nothing in the app can render.
+      const [p] = normalizePlanning({
+        properties: [{ value: 3_000_000, use: "garage" }],
+      }).properties
+      expect(p.use).toBe("own")
+    })
+
+    it("keeps a use it does know", () => {
+      const [rented] = normalizePlanning({
+        properties: [{ value: 3_000_000, use: "rented" }],
+      }).properties
+      expect(rented.use).toBe("rented")
+      const [vacant] = normalizePlanning({
+        properties: [{ value: 3_000_000, use: "vacant" }],
+      }).properties
+      expect(vacant.use).toBe("vacant")
     })
 
     it("ignores the legacy amounts once a list is present", () => {
