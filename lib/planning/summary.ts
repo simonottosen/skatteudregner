@@ -8,6 +8,7 @@
  * a notice that ships with the wrong number in it.
  */
 
+import { realkreditPrincipal } from "./loans"
 import { modelledMortgageMonthly, simulatePlanning } from "./simulate"
 import type { PlanningPoint, PlanningResult, PlanningState } from "./types"
 import { formatDKK } from "@/lib/format"
@@ -153,6 +154,11 @@ export function summarize(state: PlanningState): PlanningSummary {
  * line that duplicates the mortgage module. Returns null when there is nothing
  * to reconcile: a budget that does deduct, or a payment of zero — which covers
  * "no loan" too, since a balance of zero costs nothing to service.
+ *
+ * Quotes the realkredit balance summed over the list, matching the payment,
+ * because the budget's single housing line is what the two figures are being
+ * held against — a household with two realkreditlån recognises neither of them
+ * alone as "the restgæld my budget does not cover".
  */
 export function mortgageBudgetNotice(
   state: PlanningState
@@ -163,7 +169,7 @@ export function mortgageBudgetNotice(
   return {
     title: "Boliglånet er ikke med i dit budget",
     subtitle:
-      `Planen regner med en restgæld på ${formatDKK(state.mortgageBalance)}, ` +
+      `Planen regner med en restgæld på ${formatDKK(realkreditPrincipal(state.loans))}, ` +
       "men dit budget trækker ingen boligydelse fra. Ydelsen på ca. " +
       `${formatDKK(monthly)}/md. bliver derfor trukket fra din månedlige ` +
       "opsparing. Slå realkreditlånet til på budgetsiden, hvis din opsparing " +

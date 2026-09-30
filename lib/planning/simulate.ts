@@ -100,74 +100,6 @@ const mortgageAfterMove = (ev: PropertyEvent) =>
 const securedByProperty = (loan: PlannedLoan) =>
   loan.propertyId !== null || loan.type === "realkredit"
 
-/**
- * The household's debt as the loan list the projection works in.
- *
- * `PlanningState` still holds the nine scalars the list replaces, so the engine
- * derives one from them here; issue #8 moves `loans` onto the state, and then
- * this goes away and `simulatePlanning` is handed the list directly. `id` and
- * `label` are inert — nothing in the projection reads either — and are fixed
- * strings rather than minted, because a simulation has to be pure in its state.
- *
- * The same migration as `normalizeLoans`' legacy branch (`./loans`): the
- * realkreditlån secured on the home, one lumped unsecured debt beside it, each
- * dropped when its balance is zero. Deliberately not a *call* to it, because
- * that function's bounds are not the projection's. `loanFrom` caps
- * `interestOnlyYears` one year short of the term — a loan nothing ever repays is
- * not the fixed maturity `PlannedLoan` promises — while `normalizePlanning` lets
- * `mortgageInterestOnlyYears` reach `mortgageTermYears`, and `debtCost` has
- * always honoured that. Routing the scalars through `normalizeLoans` would take
- * a year of afdragsfrihed off every interest-only-to-maturity plan and have the
- * final year repay the whole balance, which is a change to the projection rather
- * than a refactor of it. Which bound wins is for the state migration to settle.
- */
-function plannedLoans(
-  state: PlanningState,
-  /**
-   * The property the plan's realkredit loan is secured on: the first one, which
-   * is "the home" — see {@link PlanningState.properties}.
-   */
-  home: PlannedProperty | undefined
-): PlannedLoan[] {
-  const loans: PlannedLoan[] = []
-  if (state.mortgageBalance > 0) {
-    loans.push({
-      id: "mortgage",
-      propertyId: home?.id ?? null,
-      label: "Realkreditlån",
-      type: "realkredit",
-      principal: state.mortgageBalance,
-      rate: state.mortgageRate,
-      // At least a month, so the annuity has a denominator.
-      termMonths: Math.max(1, Math.round(state.mortgageTermYears * 12)),
-      interestOnlyYears: state.mortgageInterestOnlyYears,
-      bidragssats: state.mortgageBidragssats,
-    })
-  }
-  if (state.otherDebtBalance > 0) {
-    loans.push({
-      id: "otherDebt",
-      // Not "Banklån", the way the migrated mortgage takes its type's name: the
-      // field this comes from lumped student, car and consumer debt together.
-      label: "Anden gæld",
-      propertyId: null,
-      type: "bank",
-      principal: state.otherDebtBalance,
-      rate: state.otherDebtRate,
-      // Floored at nothing rather than at a month, which is how
-      // `otherDebtTermYears` has always been read: a term of zero leaves an
-      // annuity with no payments to make, and `amortizeYear` stands the balance
-      // still through it. One field cannot carry two floors, so each loan keeps
-      // its own until the state migration unifies them.
-      termMonths: Math.max(0, Math.round(state.otherDebtTermYears * 12)),
-      interestOnlyYears: 0,
-      // A banklån carries no reservefonds- og administrationsbidrag.
-      bidragssats: 0,
-    })
-  }
-  return loans
-}
-
 /** Mutable per-year balances tracked through the simulation. */
 interface SimState {
   investments: number
@@ -386,11 +318,12 @@ function serviceYear(
  *
  * The realkredit half of the list and nothing else, because a single housing
  * line in the budget is what the notice is about — see {@link DebtCost.budgeted}.
- * Today's list holds one such loan, secured on the home.
+ * Summed over however many such loans the plan holds, for the same reason: the
+ * budget's one line paid for all of them.
  */
 export function modelledMortgageMonthly(state: PlanningState): number {
   let service = 0
-  for (const loan of plannedLoans(state, planProperties(state)[0])) {
+  for (const loan of state.loans) {
     if (loan.type !== "realkredit") continue
     service += serviceYear(
       loan.principal,
@@ -471,9 +404,9 @@ interface DebtCost {
    * One figure for the household rather than one per loan, because the budget
    * has a single housing line: what it withheld is a fact about the budget, not
    * a term of any contract, so {@link PlannedLoan} carries no such field. It is
-   * handed back whole against the realkredit service, which is the same
-   * arithmetic as deducting it from the home's own loan while that is the only
-   * one the list holds.
+   * handed back whole against the realkredit service — the aggregate of the
+   * list, so a household with two realkreditlån has the one line it budgeted
+   * set against the two payments it makes.
    *
    * Fixed for the whole projection: the budget was measured once, today, and
    * never learns that a property event swapped a loan out or that one matured.
@@ -485,12 +418,11 @@ interface DebtCost {
  * Pure in `state` and `loans`, so the Monte Carlo paths all share one schedule.
  *
  * A move takes out a loan that does not exist yet and so has no terms of its own
- * to read: it is priced at the household's own realkredit rate and bidragssats,
- * the same two figures the plan applies to every loan it did not get from the
- * user. The rate a lender charges does climb with LTV, so a move to a more
- * leveraged home understates its fee slightly — but the household's own rate is
- * better evidence about its own lender than a generic band average would be, and
- * the move's dominant effect, the change in balance, is modelled either way.
+ * to read: it is priced at those of the loan it replaces — see `swapLoansAt`.
+ * The rate a lender charges does climb with LTV, so a move to a more leveraged
+ * home understates its fee slightly — but the household's own lender is better
+ * evidence about its next loan than a generic band average would be, and the
+ * move's dominant effect, the change in balance, is modelled either way.
  */
 function debtCost(
   state: PlanningState,
@@ -551,17 +483,33 @@ function debtCost(
    * — `runPath` takes that balance out of the proceeds — and the household wakes
    * up owing one fresh 30-year loan at the event's LTV.
    *
-   * Every secured loan the plan can describe is on the home, because that is the
-   * only property `plannedLoans` links one to; giving each its own property is
-   * issue #8, and then a sale settles the loans on the property being sold
-   * rather than all of them. The replacement is secured on that same entry: a
-   * move is modelled as the home changing value, not as a second property.
+   * Every secured loan goes, whichever property it names, because the plan holds
+   * one move event for the household and not one per property — so there is no
+   * saying which of them was sold. Settling only the loans on the property being
+   * sold is issue #9, which gives a move a property to name. The replacement is
+   * secured on the first entry: a move is modelled as the home changing value,
+   * not as a second property.
+   *
+   * The new loan's terms are the biggest replaced one's, measured by what is
+   * still owed rather than what was borrowed, because that is the loan the
+   * household is actually paying and so the best evidence about the next one it
+   * will be offered. A blend would not help: two rates average, but two
+   * afdragsfrihed windows do not. With nothing to replace — the household owed
+   * nothing, or owed it all to a bank — the plan's
+   * {@link PlanningAssumptions.equityBorrowingRate} stands in, which is the rate
+   * it applies to the other debt it was never given terms for, and the loan
+   * carries no afdragsfrihed and no bidrag rather than a guess at either.
    */
   const swapLoansAt = (age: number) => {
     for (const e of byAge.get(age) ?? []) {
       if (e.type !== "property") continue
+      let replaced: LiveLoan | undefined
       for (let i = live.length - 1; i >= 0; i--) {
-        if (live[i].secured) live.splice(i, 1)
+        const loan = live[i]
+        if (!loan.secured) continue
+        if (loan.realkredit && (!replaced || loan.balance > replaced.balance))
+          replaced = loan
+        live.splice(i, 1)
       }
       live.push(
         liveLoanOf({
@@ -570,10 +518,10 @@ function debtCost(
           label: "Realkreditlån",
           type: "realkredit",
           principal: mortgageAfterMove(e),
-          rate: state.mortgageRate,
+          rate: replaced?.rate ?? state.assumptions.equityBorrowingRate,
           termMonths: MORTGAGE_TERM_MONTHS,
-          interestOnlyYears: state.mortgageInterestOnlyYears,
-          bidragssats: state.mortgageBidragssats,
+          interestOnlyYears: replaced?.interestOnlyYears ?? 0,
+          bidragssats: replaced?.bidragssats ?? 0,
         })
       )
     }
@@ -1439,15 +1387,17 @@ function runPath(
     // how the debt compounds, which is what a real loan does. Only interest:
     // nothing amortises this balance, so it cannot bill the household for a
     // repayment it never made.
-    const borrowedInterestThisYear = s.borrowedForSpending * state.mortgageRate
+    const borrowedInterestThisYear =
+      s.borrowedForSpending * state.assumptions.equityBorrowingRate
 
     // 2e) Properties change hands. A disposal is settled at the value it has
     // just grown to; an acquisition is paid at the value the plan states, which
     // is the price in the year it is bought, and starts appreciating from there.
-    // Both are all-equity except the home: every loan the plan can describe is
-    // on the home or on nothing, so no other property carries debt to settle
-    // (issue #8) — and a helårsbolig sale is tax-free under EBL § 8, a
-    // fritidsbolig sale under stk. 2, so no gain is realised either way.
+    // Both are all-equity except the home: the plan can secure a loan on any
+    // property, but a disposal does not say which one it settles, so the secured
+    // debt is all taken off the first (issue #9) — and a helårsbolig sale is
+    // tax-free under EBL § 8, a fritidsbolig sale under stk. 2, so no gain is
+    // realised either way.
     let housingCash = 0
     for (const i of schedule.soldByYear[y]) {
       const p = properties[i]
@@ -1740,15 +1690,9 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
   // on ages and kinds — not on a return draw, so every path shares one schedule.
   const schedule = propertySchedule(state, years)
 
-  // The debt the plan describes, as the list the engine works in. `PlanningState`
-  // still holds the scalars, so this is where they become loans — see
-  // {@link plannedLoans}. The home is the schedule's first property rather than
-  // the state's, because a plan that lists none but moves still has one.
-  const loans = plannedLoans(state, schedule.items[0])
-
   // The loan schedule doesn't care about return draws either, but it does care
   // about the year the property its secured loans are on is sold.
-  const debt = debtCost(state, loans, years, schedule)
+  const debt = debtCost(state, state.loans, years, schedule)
 
   // Retirement income per year (deterministic — shared by all paths). Computed
   // after the loan schedule because it deducts its interest: one figure per year

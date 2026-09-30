@@ -190,6 +190,26 @@ const propertySchema = z.object({
   disposalAge: z.number().nullable().optional(),
 })
 
+/**
+ * One debt the household carries. `termMonths` rather than years because that is
+ * what the plan stores, and rounding a term here would quietly reprice the loan.
+ *
+ * No `propertyId`: a plan's properties are identified by ids it mints itself, so
+ * a client sending a list has none to point at. A `realkredit` loan counts as
+ * secured on the household's home regardless — there is no unsecured kind — and
+ * a `bank` loan is secured on nothing, which covers every debt this schema can
+ * describe. `bidragssats` applies to realkredit loans only.
+ */
+const loanSchema = z.object({
+  label: z.string().optional(),
+  type: z.enum(["realkredit", "bank"]).optional(),
+  principal: z.number(),
+  rate: z.number().optional(),
+  termMonths: z.number().optional(),
+  interestOnlyYears: z.number().optional(),
+  bidragssats: z.number().optional(),
+})
+
 /** Top-level plan fields that can be overridden/edited. */
 const planFieldsSchema = z.object({
   monthlyContribution: z.number().optional(),
@@ -199,16 +219,15 @@ const planFieldsSchema = z.object({
   cashBuffer: z.number().optional(),
   investmentTaxMode: z.enum(["realisation", "lager", "ask"]).optional(),
   // The whole list, since a partial one cannot say which entry it means. The
-  // first is the home the mortgage below is secured on.
+  // first is the household's own home: a move is modelled as that property
+  // changing value, and a sale settles the secured loans.
   properties: z.array(propertySchema).optional(),
   includePropertyTax: z.boolean().optional(),
   propertyTaxInBudget: z.boolean().optional(),
-  mortgageBalance: z.number().optional(),
-  mortgageRate: z.number().optional(),
-  mortgageTermYears: z.number().optional(),
-  otherDebtBalance: z.number().optional(),
-  otherDebtRate: z.number().optional(),
-  otherDebtTermYears: z.number().optional(),
+  // Likewise the whole list: refinancing one of two realkreditlån means sending
+  // both, since a partial list cannot say which is which. An empty list is a
+  // household that owes nothing.
+  loans: z.array(loanSchema).optional(),
 })
 
 const assumptionsSchema = z.object({
@@ -220,6 +239,7 @@ const assumptionsSchema = z.object({
   inflation: z.number().optional(),
   contributionGrowth: z.number().optional(),
   safeWithdrawalRate: z.number().optional(),
+  equityBorrowingRate: z.number().optional(),
 })
 
 /** Shared pension fields a scenario may override. */
@@ -247,7 +267,7 @@ const changesSchema = z
   .describe(
     "Changes layered on the base plan. Salary +X kr./mo invested ⇒ " +
       'addEvents:[{type:"recurring",age:<currentAge>,monthlyDelta:X}]. ' +
-      "Also supports overriding mortgage, other debt, the property list, " +
+      "Also supports overriding the loan list, the property list, " +
       "investmentTaxMode, includePropertyTax, shared pension fields and the " +
       "tax profile (kommune/kirkeskat/year)."
   )
