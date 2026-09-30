@@ -523,7 +523,12 @@ function debtCost(
     secured: boolean
   }
 
-  const live: LiveLoan[] = loans.map((loan) => ({
+  /**
+   * A contract as the walk starts it. The two flags are derived here and nowhere
+   * else, so that a loan the projection mints mid-walk is classified by the same
+   * rules as one the household arrived with.
+   */
+  const liveLoanOf = (loan: PlannedLoan): LiveLoan => ({
     balance: loan.principal,
     rate: loan.rate,
     monthsLeft: loan.termMonths,
@@ -531,7 +536,15 @@ function debtCost(
     bidragssats: loan.bidragssats,
     realkredit: loan.type === "realkredit",
     secured: securedByProperty(loan),
-  }))
+  })
+
+  const live: LiveLoan[] = loans.map(liveLoanOf)
+
+  /** Add what is still owed to whichever of the two balances it counts in. */
+  const recordBalance = (y: number, loan: LiveLoan) => {
+    if (loan.secured) securedBalanceByYear[y] += loan.balance
+    else unsecuredBalanceByYear[y] += loan.balance
+  }
 
   /**
    * A move sells the home and buys another, so the debt it secured goes with it
@@ -541,7 +554,8 @@ function debtCost(
    * Every secured loan the plan can describe is on the home, because that is the
    * only property `plannedLoans` links one to; giving each its own property is
    * issue #8, and then a sale settles the loans on the property being sold
-   * rather than all of them.
+   * rather than all of them. The replacement is secured on that same entry: a
+   * move is modelled as the home changing value, not as a second property.
    */
   const swapLoansAt = (age: number) => {
     for (const e of byAge.get(age) ?? []) {
@@ -549,24 +563,25 @@ function debtCost(
       for (let i = live.length - 1; i >= 0; i--) {
         if (live[i].secured) live.splice(i, 1)
       }
-      live.push({
-        balance: mortgageAfterMove(e),
-        rate: state.mortgageRate,
-        monthsLeft: MORTGAGE_TERM_MONTHS,
-        interestOnlyYears: state.mortgageInterestOnlyYears,
-        bidragssats: state.mortgageBidragssats,
-        realkredit: true,
-        secured: true,
-      })
+      live.push(
+        liveLoanOf({
+          id: "moveMortgage",
+          propertyId: schedule.items[0]?.id ?? null,
+          label: "Realkreditlån",
+          type: "realkredit",
+          principal: mortgageAfterMove(e),
+          rate: state.mortgageRate,
+          termMonths: MORTGAGE_TERM_MONTHS,
+          interestOnlyYears: state.mortgageInterestOnlyYears,
+          bidragssats: state.mortgageBidragssats,
+        })
+      )
     }
   }
 
   // Events at the starting age fire before year 1, as they do in `runPath` —
   // which is why today's balances are recorded before them and not after.
-  for (const loan of live) {
-    if (loan.secured) securedBalanceByYear[0] += loan.balance
-    else unsecuredBalanceByYear[0] += loan.balance
-  }
+  for (const loan of live) recordBalance(0, loan)
   swapLoansAt(state.currentAge)
   for (let y = 1; y < length; y++) {
     for (const loan of live) {
@@ -588,8 +603,7 @@ function debtCost(
       deductibleByYear[y] += year.deductible
       loan.balance = year.balance
       loan.monthsLeft = Math.max(0, loan.monthsLeft - 12)
-      if (loan.secured) securedBalanceByYear[y] += loan.balance
-      else unsecuredBalanceByYear[y] += loan.balance
+      recordBalance(y, loan)
     }
     swapLoansAt(state.currentAge + y)
   }
