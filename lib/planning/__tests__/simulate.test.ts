@@ -892,6 +892,53 @@ describe("simulatePlanning", () => {
         expect(contribAt(r, 51)).toBeCloseTo(360_000 + payment - newPayment, 6)
         expect(contribAt(r, 60)).toBeCloseTo(360_000 + payment - newPayment, 6)
       })
+
+      /**
+       * Which of two realkreditlån the replacement is priced at: the bigger one.
+       *
+       * A move takes out a loan that does not exist yet, so it has no terms of
+       * its own and the schedule has to borrow some. The household's own lender
+       * is the only evidence there is, and with two loans the bigger balance is
+       * the one it is mostly paying — a 2 M loan at 6 % beside a 1 M loan at 2 %
+       * is not a household that borrows at 2 %. Averaging the two would be worse
+       * than picking either: rates average, but afdragsfrihed windows do not, so
+       * the blend would describe a loan neither lender offers.
+       *
+       * Asserted both ways round, because the list's order is not evidence about
+       * anything — and taking the first or the last entry passes half of this.
+       */
+      it("prices a move's loan at the bigger of two realkreditlån", () => {
+        const big = loan({ principal: 2_000_000, rate: 0.06 })
+        const small = loan({ principal: 1_000_000, rate: 0.02 })
+        // What the year after the move charges: the budget deducted nothing, so
+        // the whole modelled payment comes off the contribution.
+        const chargedAfterMove = (loans: PlannedLoan[]) => {
+          const r = simulatePlanning(
+            makeState({
+              ...base,
+              monthlyContribution: 30_000, // 360.000/yr, above either payment
+              loans,
+              mortgageBudgetedMonthly: 0,
+              events: [
+                {
+                  id: "p1",
+                  type: "property",
+                  label: "Nyt hus",
+                  age: 45,
+                  newValue: 5_000_000,
+                  mortgageLtv: 0.8,
+                },
+              ],
+            })
+          )
+          return 360_000 - contribAt(r, 46)
+        }
+        const atBigRate = serviceOf(4_000_000, big.rate, 30 * 12)
+        const atSmallRate = serviceOf(4_000_000, small.rate, 30 * 12)
+        expect(atBigRate).toBeGreaterThan(atSmallRate)
+        expect(chargedAfterMove([big, small])).toBeCloseTo(atBigRate, 6)
+        expect(chargedAfterMove([small, big])).toBeCloseTo(atBigRate, 6)
+      })
     })
   })
 
