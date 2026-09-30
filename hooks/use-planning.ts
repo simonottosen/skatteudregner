@@ -101,18 +101,12 @@ export function usePlanning() {
         assessmentBasis: input.property?.assessmentBasis,
         landAssessmentBasis: input.property?.landAssessmentBasis,
       }),
-      mortgageBalance,
-      mortgageRate: mortgage.enabled
-        ? mortgage.interestRate
-        : DEFAULT_PLANNING_STATE.mortgageRate,
-      mortgageTermYears: mortgage.enabled
-        ? mortgage.remainingYears
-        : DEFAULT_PLANNING_STATE.mortgageTermYears,
-      // What the budget really held back, straight off the shared summary — not
-      // what the loan above would cost. The module is off by default, and then
-      // `remaining` is gross of whatever the household pays its lender even
-      // though `mortgageBalance` was inferred from the /skat interest.
-      ...mortgageFromBudget(mortgage, mortgageMonthly),
+      // The loan's terms and, separately, what the budget really held back —
+      // straight off the shared summary, not what the loan would cost. The
+      // module is off by default, and then `remaining` is gross of whatever the
+      // household pays its lender even though the balance was inferred from the
+      // /skat interest.
+      ...mortgageFromBudget(mortgage, mortgageMonthly, mortgageBalance),
       currentAge,
       tax: {
         year: input.year,

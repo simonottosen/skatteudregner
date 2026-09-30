@@ -4,6 +4,7 @@
  * from Supabase) and by tests. No DOM/React/browser APIs.
  */
 
+import { normalizeLoans } from "./loans"
 import {
   DEFAULT_ASSUMPTIONS,
   DEFAULT_PENSION,
@@ -54,8 +55,41 @@ function boolOr(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback
 }
 
-export function normalizeAssumptions(value: unknown): PlanningAssumptions {
-  if (!value || typeof value !== "object") return { ...DEFAULT_ASSUMPTIONS }
+/**
+ * `equityBorrowingRate` as a version-2 blob states it: the plan's old
+ * `mortgageRate`, which is the field the engine charged this borrowing at before
+ * the rate became an assumption of its own. Falls back to the shared default,
+ * for a blob predating both.
+ *
+ * Read off the whole plan rather than the assumptions object it now lives in,
+ * because that is where the old field sat — a sibling of `assumptions`, not a
+ * member of it.
+ */
+function legacyEquityBorrowingRate(plan: unknown): number {
+  const o = (plan ?? {}) as Record<string, unknown>
+  return clampNum(
+    o.mortgageRate,
+    DEFAULT_ASSUMPTIONS.equityBorrowingRate,
+    0,
+    0.2
+  )
+}
+
+export function normalizeAssumptions(
+  value: unknown,
+  /**
+   * The plan the assumptions came from, for the one field that migrates out of
+   * it. Optional because a caller with assumptions and no plan — a scenario's
+   * `assumptionOverrides` — has nothing to migrate.
+   */
+  plan?: unknown
+): PlanningAssumptions {
+  const equityBorrowingFallback = legacyEquityBorrowingRate(plan)
+  if (!value || typeof value !== "object")
+    return {
+      ...DEFAULT_ASSUMPTIONS,
+      equityBorrowingRate: equityBorrowingFallback,
+    }
   const o = value as Partial<PlanningAssumptions>
   return {
     housingReturn: clampNum(o.housingReturn, DEFAULT_ASSUMPTIONS.housingReturn, -1, 1),
@@ -66,6 +100,13 @@ export function normalizeAssumptions(value: unknown): PlanningAssumptions {
     inflation: clampNum(o.inflation, DEFAULT_ASSUMPTIONS.inflation, -1, 1),
     contributionGrowth: clampNum(o.contributionGrowth, DEFAULT_ASSUMPTIONS.contributionGrowth, -1, 1),
     safeWithdrawalRate: clampNum(o.safeWithdrawalRate, DEFAULT_ASSUMPTIONS.safeWithdrawalRate, 0.01, 0.2),
+    // Same 0–20 % bound the `mortgageRate` it migrates from was held to.
+    equityBorrowingRate: clampNum(
+      o.equityBorrowingRate,
+      equityBorrowingFallback,
+      0,
+      0.2
+    ),
   }
 }
 
@@ -272,16 +313,11 @@ export function normalizeScenarioChanges(value: unknown): ScenarioChanges {
     if (typeof ov.includePropertyTax === "boolean") out.includePropertyTax = ov.includePropertyTax
     if (typeof ov.propertyTaxInBudget === "boolean")
       out.propertyTaxInBudget = ov.propertyTaxInBudget
-    if ("mortgageBalance" in ov) out.mortgageBalance = clampNum(ov.mortgageBalance, 0, 0)
-    if ("mortgageRate" in ov)
-      out.mortgageRate = clampNum(ov.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2)
-    if ("mortgageTermYears" in ov)
-      out.mortgageTermYears = clampNum(ov.mortgageTermYears, DEFAULT_PLANNING_STATE.mortgageTermYears, 1, 40)
-    if ("otherDebtBalance" in ov) out.otherDebtBalance = clampNum(ov.otherDebtBalance, 0, 0)
-    if ("otherDebtRate" in ov)
-      out.otherDebtRate = clampNum(ov.otherDebtRate, DEFAULT_PLANNING_STATE.otherDebtRate, 0, 0.5)
-    if ("otherDebtTermYears" in ov)
-      out.otherDebtTermYears = clampNum(ov.otherDebtTermYears, DEFAULT_PLANNING_STATE.otherDebtTermYears, 1, 40)
+    // "What if I refinanced" is a whole list too, for the same reason: a partial
+    // one cannot say which loan it means. The legacy balances are read here as
+    // well, so a scenario saved against the old scalars keeps its meaning.
+    if ("loans" in ov || "mortgageBalance" in ov || "otherDebtBalance" in ov)
+      out.loans = normalizeLoans(ov, out.properties ?? [])
     if (Object.keys(out).length > 0) changes.overrides = out
   }
 
@@ -357,14 +393,12 @@ export function normalizePlanning(raw: unknown): PlanningState {
   const o = raw as Partial<PlanningState>
   const currentAge = clampNum(o.currentAge, DEFAULT_PLANNING_STATE.currentAge, 0, 100)
   const endAge = clampNum(o.endAge, DEFAULT_PLANNING_STATE.endAge, currentAge + 1, 120)
-  const mortgageTermYears = clampNum(
-    o.mortgageTermYears,
-    DEFAULT_PLANNING_STATE.mortgageTermYears,
-    1,
-    40
-  )
+  // The loans are secured against the *normalized* list, not the blob's own: a
+  // property that arrives without an id gets a fresh one, so a second
+  // normalization of the same blob would mint ids this plan does not keep.
+  const properties = normalizeProperties(o)
   return {
-    version: 2,
+    version: 3,
     currentAge,
     endAge,
     retirementAge: clampNum(
@@ -379,15 +413,7 @@ export function normalizePlanning(raw: unknown): PlanningState {
         ? o.investmentTaxMode
         : "realisation",
     cashBuffer: clampNum(o.cashBuffer, 0, 0),
-    otherDebtBalance: clampNum(o.otherDebtBalance, 0, 0),
-    otherDebtRate: clampNum(o.otherDebtRate, DEFAULT_PLANNING_STATE.otherDebtRate, 0, 0.5),
-    otherDebtTermYears: clampNum(
-      o.otherDebtTermYears,
-      DEFAULT_PLANNING_STATE.otherDebtTermYears,
-      1,
-      40
-    ),
-    properties: normalizeProperties(o),
+    properties,
     includePropertyTax: boolOr(
       o.includePropertyTax,
       DEFAULT_PLANNING_STATE.includePropertyTax
@@ -396,25 +422,7 @@ export function normalizePlanning(raw: unknown): PlanningState {
       o.propertyTaxInBudget,
       DEFAULT_PLANNING_STATE.propertyTaxInBudget
     ),
-    mortgageBalance: clampNum(o.mortgageBalance, 0, 0),
-    mortgageRate: clampNum(o.mortgageRate, DEFAULT_PLANNING_STATE.mortgageRate, 0, 0.2),
-    // Same bound as the budget's own bidragssats (`lib/budget/state.ts`), so a
-    // rate that survives there survives the trip into a plan unchanged.
-    mortgageBidragssats: clampNum(
-      o.mortgageBidragssats,
-      DEFAULT_PLANNING_STATE.mortgageBidragssats,
-      0,
-      0.05
-    ),
-    mortgageTermYears,
-    // Afdragsfrihed sits inside the loan term, so a longer period than the loan
-    // itself describes a loan that is never repaid.
-    mortgageInterestOnlyYears: clampNum(
-      o.mortgageInterestOnlyYears,
-      DEFAULT_PLANNING_STATE.mortgageInterestOnlyYears,
-      0,
-      mortgageTermYears
-    ),
+    loans: normalizeLoans(o, properties),
     // A plan saved before this field existed has no opinion about it, and the
     // safe reading of silence is "nothing was deducted": crediting a payment the
     // budget may never have made is the failure this field was added to stop.
@@ -425,7 +433,9 @@ export function normalizePlanning(raw: unknown): PlanningState {
     ),
     monthlyContribution: clampNum(o.monthlyContribution, 0, 0),
     annualSpending: clampNum(o.annualSpending, 0, 0),
-    assumptions: normalizeAssumptions(o.assumptions),
+    // The whole blob, so `equityBorrowingRate` can migrate out of the plan's old
+    // `mortgageRate` — a sibling of `assumptions`, not a member of it.
+    assumptions: normalizeAssumptions(o.assumptions, o),
     pension: normalizePension(o.pension),
     tax: normalizeTaxProfile(o.tax),
     events: normalizeEvents(o.events),

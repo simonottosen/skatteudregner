@@ -2,11 +2,14 @@ import { describe, it, expect } from "vitest"
 import {
   applyDerivedDefaults,
   homeFromSources,
+  loansFromBudget,
   mortgageFromBudget,
   planFiguresFromBudget,
   propertiesFromBudget,
+  type BudgetMortgage,
   type PlanningDerivedDefaults,
 } from "../from-budget"
+import { LOAN_TYPE_DEFAULTS, newPlannedLoan } from "../loans"
 import { ASSESSMENT_FACTOR } from "../taxation"
 import { DEFAULT_PLANNING_STATE, type PlannedProperty } from "../types"
 import {
@@ -34,41 +37,162 @@ const enabled: MortgageState = {
 }
 
 describe("mortgageFromBudget", () => {
-  it("carries the budget's own deduction and the rate that priced it", () => {
-    const link = mortgageFromBudget(enabled, mortgageMonthlyTotal(enabled))
+  it("carries the budget's own deduction and the loan that priced it", () => {
+    const link = mortgageFromBudget(
+      enabled,
+      mortgageMonthlyTotal(enabled),
+      2_000_000
+    )
     expect(link.mortgageBudgetedMonthly).toBeCloseTo(
       computeMortgage(enabled).monthlyTotal,
       6
     )
-    expect(link.mortgageBidragssats).toBe(0.006)
+    expect(link.mortgage).toEqual({
+      balance: 2_000_000,
+      rate: 0.04,
+      termYears: 20,
+      bidragssats: 0.006,
+    })
   })
 
   it("takes the summary's figure, not a second computation of it", () => {
     // The surplus the plan starts from was reduced by *this* number. Recomputing
     // it from the module would let the two drift the moment either page changes
     // how it rounds or what it includes — the shape of issue #2.
-    const link = mortgageFromBudget(enabled, 9_999)
+    const link = mortgageFromBudget(enabled, 9_999, 2_000_000)
     expect(link.mortgageBudgetedMonthly).toBe(9_999)
   })
 
-  it("carries nothing at all when the module is off", () => {
+  it("vouches for no deduction and no fee when the module is off", () => {
     // The default state of /budget. It deducts nothing, so the plan is told
     // nothing was deducted — and gets no bidragssats either, because a fee
     // without a deduction is charged against the saving for free.
     const off: MortgageState = { ...enabled, enabled: false }
-    expect(mortgageFromBudget(off, 0)).toEqual({
-      mortgageBidragssats: 0,
-      mortgageBudgetedMonthly: 0,
-    })
+    expect(mortgageFromBudget(off, 0, 0).mortgageBudgetedMonthly).toBe(0)
+    expect(mortgageFromBudget(off, 0, 0).mortgage.bidragssats).toBe(0)
     // Even handed a payment, a disabled module cannot vouch for it.
-    expect(mortgageFromBudget(off, 12_119).mortgageBudgetedMonthly).toBe(0)
-    expect(mortgageFromBudget(off, 12_119).mortgageBidragssats).toBe(0)
+    expect(mortgageFromBudget(off, 12_119, 0).mortgageBudgetedMonthly).toBe(0)
+    expect(mortgageFromBudget(off, 12_119, 0).mortgage.bidragssats).toBe(0)
+  })
+
+  it("keeps the balance the caller derived with the module off", () => {
+    // The renteudgifter typed on /skat imply a loan whether or not /budget's
+    // realkredit section was ever filled in — that plan owes the money, and
+    // `mortgageBudgetNotice` is what tells the user the budget does not know.
+    const off: MortgageState = { ...enabled, enabled: false }
+    const link = mortgageFromBudget(off, 0, 1_750_000)
+    expect(link.mortgage.balance).toBe(1_750_000)
+    // On the terms a hand-added realkreditlån would start on, since the module
+    // that could have stated them is off.
+    expect(link.mortgage.rate).toBe(LOAN_TYPE_DEFAULTS.realkredit.rate)
+    expect(link.mortgage.termYears).toBe(
+      LOAN_TYPE_DEFAULTS.realkredit.termMonths / 12
+    )
   })
 
   it("never reports a negative deduction", () => {
     // A hand-back below zero would be a payment the household received; the
     // simulation would add it to the saving every year.
-    expect(mortgageFromBudget(enabled, -5_000).mortgageBudgetedMonthly).toBe(0)
+    expect(
+      mortgageFromBudget(enabled, -5_000, 2_000_000).mortgageBudgetedMonthly
+    ).toBe(0)
+  })
+})
+
+describe("loansFromBudget", () => {
+  const budgetMortgage: BudgetMortgage = {
+    balance: 1_900_000,
+    rate: 0.04,
+    termYears: 20,
+    bidragssats: 0.006,
+  }
+
+  it("gives a plan with no debt the loan the budget describes", () => {
+    const [loan, ...rest] = loansFromBudget([], budgetMortgage, "prop-home")
+    expect(rest).toEqual([])
+    expect(loan).toMatchObject({
+      type: "realkredit",
+      propertyId: "prop-home",
+      principal: 1_900_000,
+      rate: 0.04,
+      termMonths: 240,
+      bidragssats: 0.006,
+    })
+    expect(loan.id).toBeTruthy()
+  })
+
+  it("re-prices the realkreditlån the plan already has", () => {
+    const existing = newPlannedLoan("realkredit", "prop-home")
+    const [loan, ...rest] = loansFromBudget(
+      [existing],
+      budgetMortgage,
+      "prop-home"
+    )
+    expect(rest).toEqual([])
+    // The same entry, so the row the user has open does not jump.
+    expect(loan.id).toBe(existing.id)
+    expect(loan.principal).toBe(1_900_000)
+  })
+
+  it("leaves the loans the other pages have never heard of alone", () => {
+    // /budget knows about one housing line. The billån the user added on
+    // /planlaegning has to survive the next edit to either page.
+    const car = newPlannedLoan("bank", null)
+    const next = loansFromBudget([car], budgetMortgage, "prop-home")
+    expect(next).toHaveLength(2)
+    expect(next.map((l) => l.type)).toEqual(["realkredit", "bank"])
+    expect(next[1]).toEqual(car)
+  })
+
+  it("writes to the first realkreditlån and no other", () => {
+    // A household with two: the budget's single housing line cannot say which
+    // is which, so it re-prices one and leaves the second as the user typed it.
+    const first = { ...newPlannedLoan("realkredit", "prop-home"), id: "loan-a" }
+    const second = {
+      ...newPlannedLoan("realkredit", "prop-home"),
+      id: "loan-b",
+      principal: 400_000,
+    }
+    const next = loansFromBudget([first, second], budgetMortgage, "prop-home")
+    expect(next[0].principal).toBe(1_900_000)
+    expect(next[1]).toEqual(second)
+  })
+
+  it("keeps an afdragsfri periode the budget cannot describe", () => {
+    // `MortgageState.interestOnly` is a boolean with no end date, so it cannot
+    // say how many years are left. Overwriting the user's own number would
+    // start repaying a loan they said was afdragsfrit until 2031.
+    const afdragsfri = {
+      ...newPlannedLoan("realkredit", "prop-home"),
+      interestOnlyYears: 5,
+    }
+    const [loan] = loansFromBudget([afdragsfri], budgetMortgage, "prop-home")
+    expect(loan.interestOnlyYears).toBe(5)
+  })
+
+  it("does not delete a loan the budget has nothing to say about", () => {
+    // "The module is off and /skat states no interest" is not "the household
+    // paid the mortgage off"; only the user can make that second claim.
+    const existing = newPlannedLoan("realkredit", "prop-home")
+    expect(
+      loansFromBudget([existing], { ...budgetMortgage, balance: 0 }, "prop-home")
+    ).toEqual([existing])
+  })
+
+  it("leaves a renter's loan secured on nothing", () => {
+    const [loan] = loansFromBudget([], budgetMortgage, null)
+    expect(loan.propertyId).toBeNull()
+  })
+
+  it("gives the annuity a term to divide by", () => {
+    // A `remainingYears` of nothing is a loan with no payments to make, and the
+    // projection's annuity step would divide by its month count.
+    const [loan] = loansFromBudget(
+      [],
+      { ...budgetMortgage, termYears: 0 },
+      "prop-home"
+    )
+    expect(loan.termMonths).toBeGreaterThanOrEqual(1)
   })
 })
 
@@ -375,10 +499,12 @@ describe("applyDerivedDefaults", () => {
     annualSpending: 240_000,
     currentAge: 41,
     home: { value: 2_500_000, landValue: 900_000 },
-    mortgageBalance: 1_900_000,
-    mortgageRate: 0.04,
-    mortgageTermYears: 20,
-    mortgageBidragssats: 0.006,
+    mortgage: {
+      balance: 1_900_000,
+      rate: 0.04,
+      termYears: 20,
+      bidragssats: 0.006,
+    },
     mortgageBudgetedMonthly: 12_119,
     tax: { year: 2026, municipality: "Aarhus", churchMember: true },
     pension: {
@@ -405,30 +531,37 @@ describe("applyDerivedDefaults", () => {
   it("lands the debt and the home it is secured on in the same call", () => {
     // The shipped bug in one line: `mortgageBalance` rode in on the spread
     // while `properties` was never set, so a fresh homeowner carried the loan
-    // against nothing and their net worth was short a whole house.
+    // against nothing and their net worth was short a whole house. The pant is
+    // asserted too, because the loan is only secured on the home the same call
+    // created if the merge reads the ids back out of the list it just built.
     for (const value of [1, 750_000, 2_500_000, 12_000_000]) {
       const next = applyDerivedDefaults(
         DEFAULT_PLANNING_STATE,
         defaults({
           home: { value, landValue: Math.round(value * 0.4) },
-          mortgageBalance: Math.round(value * 0.8),
+          mortgage: { ...defaults().mortgage, balance: Math.round(value * 0.8) },
         })
       )
-      expect(next.mortgageBalance).toBe(Math.round(value * 0.8))
+      expect(next.loans).toHaveLength(1)
+      expect(next.loans[0].principal).toBe(Math.round(value * 0.8))
       expect(next.properties).toHaveLength(1)
       expect(next.properties[0].value).toBe(value)
+      expect(next.loans[0].propertyId).toBe(next.properties[0].id)
     }
   })
 
   it("does not invent a property out of a home worth nothing", () => {
-    // A renter. The rest of the link still has to arrive.
+    // A renter. The rest of the link still has to arrive, and the loan with it
+    // — secured on nothing, which is what a renter's realkreditlån cannot be,
+    // but the budget is the wrong place to argue about that.
     const next = applyDerivedDefaults(
       DEFAULT_PLANNING_STATE,
       defaults({ home: { value: 0, landValue: 0 } })
     )
     expect(next.properties).toEqual([])
     expect(next.monthlyContribution).toBe(7_500)
-    expect(next.mortgageBalance).toBe(1_900_000)
+    expect(next.loans[0].principal).toBe(1_900_000)
+    expect(next.loans[0].propertyId).toBeNull()
   })
 
   it("re-prices the home the plan already has instead of adding a second", () => {

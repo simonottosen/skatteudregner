@@ -51,36 +51,12 @@ import {
 } from "@/lib/planning/summary"
 import { formatCompactDKK, formatDKK } from "@/lib/format"
 import { PlanningChart, type WealthView } from "./planning-chart"
-import { MoneyInput, num } from "./money-input"
+import { MoneyInput, PercentField, num } from "./money-input"
 import { PropertyList } from "./property-list"
+import { LoanList } from "./loan-list"
 import { EventEditor } from "./event-editor"
 import { ScenarioEditor } from "./scenario-editor"
 import { MunicipalitySelect } from "@/components/tax-calculator/municipality-select"
-
-/** NumberInput bound to a fraction but shown as a percentage. */
-function PercentField({
-  id,
-  label,
-  value,
-  step = 0.1,
-  onChange,
-}: {
-  id: string
-  label: string
-  value: number
-  step?: number
-  onChange: (fraction: number) => void
-}) {
-  return (
-    <NumberInput
-      id={id}
-      label={`${label} (%)`}
-      step={step}
-      value={Math.round(value * 10000) / 100}
-      onChange={(_e, { value: v }) => onChange(num(v, value * 100) / 100)}
-    />
-  )
-}
 
 /** The pot/contribution inputs for one person's pension. */
 function PensionPersonFields({
@@ -839,64 +815,33 @@ export function PlanningOverview() {
               value={Math.round(state.annualSpending / 12)}
               onChange={(v) => planning.patch({ annualSpending: v * 12 })}
             />
-            <MoneyInput
-              id="plan-mortgage"
-              label="Restgæld på bolig"
-              value={state.mortgageBalance}
-              onChange={(v) => planning.patch({ mortgageBalance: v })}
-            />
-            <NumberInput
-              id="plan-mortgage-interest-only"
-              label="Afdragsfrihed (år tilbage)"
-              helperText="Lånet har samme udløb — restgælden afdrages bagefter over færre år, så ydelsen stiger."
-              min={0}
-              max={state.mortgageTermYears}
-              value={state.mortgageInterestOnlyYears}
-              onChange={(_e, { value }) =>
-                planning.patch({
-                  mortgageInterestOnlyYears: num(
-                    value,
-                    state.mortgageInterestOnlyYears
-                  ),
-                })
-              }
-            />
-            <MoneyInput
-              id="plan-other-debt"
-              label="Anden gæld (forbrugs-/billån, SU mv.)"
-              value={state.otherDebtBalance}
-              onChange={(v) => planning.patch({ otherDebtBalance: v })}
-            />
-            <PercentField
-              id="plan-other-debt-rate"
-              label="Rente på anden gæld"
-              value={state.otherDebtRate}
-              onChange={(v) => planning.patch({ otherDebtRate: v })}
-            />
-            <NumberInput
-              id="plan-other-debt-term"
-              label="Afdragstid på anden gæld (år)"
-              min={1}
-              max={40}
-              value={state.otherDebtTermYears}
-              onChange={(_e, { value }) =>
-                planning.patch({
-                  otherDebtTermYears: num(value, state.otherDebtTermYears),
-                })
-              }
-            />
           </div>
           <Separator />
           <div className="space-y-2">
             <h3 className="text-sm font-medium">Boliger</h3>
             <p className="text-muted-foreground text-xs">
-              Den første bolig på listen er den, restgælden ovenfor hører til.
+              Den første bolig på listen er den, dine lån som standard har pant
+              i — og den, en flytning ændrer værdien af.
             </p>
             <PropertyList
               properties={state.properties}
               currentAge={state.currentAge}
               endAge={state.endAge}
               onChange={(properties) => planning.patch({ properties })}
+            />
+          </div>
+          <Separator />
+          <div className="space-y-2">
+            <h3 className="text-sm font-medium">Gæld</h3>
+            <p className="text-muted-foreground text-xs">
+              Tilføj et lån for hver gæld med sin egen rente og afdragstid — to
+              realkreditlån, eller et billån ved siden af SU-gælden.
+            </p>
+            <LoanList
+              loans={state.loans}
+              properties={state.properties}
+              currentAge={state.currentAge}
+              onChange={(loans) => planning.patch({ loans })}
             />
           </div>
           {planning.savingsSplit && (
@@ -991,6 +936,13 @@ export function PlanningOverview() {
               label="Lønstigning (vækst i opsparing)"
               value={state.assumptions.contributionGrowth}
               onChange={(v) => planning.setAssumption("contributionGrowth", v)}
+            />
+            <PercentField
+              id="a-equity-borrowing"
+              label="Rente ved lån i friværdi"
+              helperText="Bruges, hvis formuen ikke kan dække forbruget som pensionist, og der må lånes i boligen."
+              value={state.assumptions.equityBorrowingRate}
+              onChange={(v) => planning.setAssumption("equityBorrowingRate", v)}
             />
           </div>
         </CardContent>

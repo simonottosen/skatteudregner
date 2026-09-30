@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest"
 import { DEFAULT_PLANNING_STATE, type PlanningState } from "../types"
 import { applyScenario } from "../scenario"
 import { normalizePlanning, normalizeScenarioChanges } from "../normalize"
+import { maxInterestOnlyYears, newPlannedLoan } from "../loans"
 import { mortgageBudgetNotice, summarize, summarizeResult } from "../summary"
 import { modelledMortgageMonthly, simulatePlanning } from "../simulate"
 import { formatDKK } from "@/lib/format"
@@ -47,7 +48,10 @@ describe("applyScenario", () => {
   it("merges widened scalar, pension and tax overrides without clobbering persons", () => {
     const base = makeState({
       investmentTaxMode: "realisation",
-      mortgageRate: 0.04,
+      loans: [
+        { ...newPlannedLoan("realkredit", null), id: "l-base", rate: 0.04 },
+        { ...newPlannedLoan("bank", null), id: "l-car" },
+      ],
       pension: {
         ...DEFAULT_PLANNING_STATE.pension,
         single: true,
@@ -60,12 +64,22 @@ describe("applyScenario", () => {
       tax: { year: 2026, municipality: "København", churchMember: false },
     })
     const out = applyScenario(base, {
-      overrides: { investmentTaxMode: "ask", mortgageRate: 0.06 },
+      overrides: {
+        investmentTaxMode: "ask",
+        // A list override replaces the base list rather than being merged into
+        // it loan by loan: "what if we refinanced" is a statement about the
+        // whole of the household's debt, and there is no key to match on that
+        // would let a scenario re-price one loan and keep the others.
+        loans: [
+          { ...newPlannedLoan("realkredit", null), id: "l-refi", rate: 0.06 },
+        ],
+      },
       pensionOverrides: { single: false, includeFolkepension: false },
       taxOverrides: { municipality: "Aarhus", churchMember: true },
     })
     expect(out.investmentTaxMode).toBe("ask")
-    expect(out.mortgageRate).toBe(0.06)
+    expect(out.loans).toHaveLength(1)
+    expect(out.loans[0].rate).toBe(0.06)
     expect(out.pension.single).toBe(false)
     expect(out.pension.includeFolkepension).toBe(false)
     expect(out.pension.pensionReturn).toBe(0.05) // untouched
@@ -82,8 +96,10 @@ describe("normalizeScenarioChanges (widened)", () => {
     const c = normalizeScenarioChanges({
       overrides: {
         investmentTaxMode: "ask",
-        mortgageRate: 0.06,
-        mortgageBalance: -500, // clamped to 0
+        loans: [
+          { type: "realkredit", principal: 1_500_000, rate: 0.06 },
+          { type: "bank", principal: -500 }, // clamped to 0
+        ],
         includePropertyTax: true,
         bogus: 123, // dropped
       },
@@ -92,8 +108,8 @@ describe("normalizeScenarioChanges (widened)", () => {
       assumptionOverrides: { inflation: 0.03 },
     })
     expect(c.overrides?.investmentTaxMode).toBe("ask")
-    expect(c.overrides?.mortgageRate).toBe(0.06)
-    expect(c.overrides?.mortgageBalance).toBe(0)
+    expect(c.overrides?.loans?.[0].rate).toBe(0.06)
+    expect(c.overrides?.loans?.[1].principal).toBe(0)
     expect(c.overrides?.includePropertyTax).toBe(true)
     expect("bogus" in (c.overrides as object)).toBe(false)
     expect(c.pensionOverrides?.single).toBe(false)
@@ -101,6 +117,32 @@ describe("normalizeScenarioChanges (widened)", () => {
     expect(c.taxOverrides?.churchMember).toBe(true)
     expect(c.taxOverrides?.year).toBe(2025)
     expect(c.assumptionOverrides?.inflation).toBe(0.03)
+  })
+
+  it("migrates a scenario saved against the old debt scalars", () => {
+    // Scenarios are stored inside the plan, so a version-2 blob carries
+    // version-2 overrides. "What if we had a smaller mortgage" has to survive
+    // the move to a list, or reopening a saved comparison silently drops the
+    // debt it was a comparison about and the two plans come out identical.
+    const c = normalizeScenarioChanges({
+      overrides: {
+        mortgageBalance: 1_200_000,
+        mortgageRate: 0.05,
+        otherDebtBalance: 90_000,
+        otherDebtRate: 0.08,
+      },
+    })
+    expect(c.overrides?.loans).toHaveLength(2)
+    expect(c.overrides?.loans?.[0]).toMatchObject({
+      type: "realkredit",
+      principal: 1_200_000,
+      rate: 0.05,
+    })
+    expect(c.overrides?.loans?.[1]).toMatchObject({
+      type: "bank",
+      principal: 90_000,
+      rate: 0.08,
+    })
   })
 
   it("drops an invalid investmentTaxMode but keeps valid fields", () => {
@@ -260,6 +302,13 @@ describe("mortgageBudgetNotice", () => {
    * fires on a consistent plan is noise, and one that stays quiet on an
    * inconsistent plan is the original bug with extra steps.
    */
+  const theLoan = {
+    ...newPlannedLoan("realkredit", "p0"),
+    id: "l0",
+    principal: 2_000_000,
+    rate: 0.04,
+    termMonths: 20 * 12,
+  }
   const inconsistent = makeState({
     properties: [
       {
@@ -272,9 +321,7 @@ describe("mortgageBudgetNotice", () => {
         disposalAge: null,
       },
     ],
-    mortgageBalance: 2_000_000,
-    mortgageRate: 0.04,
-    mortgageTermYears: 20,
+    loans: [theLoan],
     mortgageBudgetedMonthly: 0,
   })
 
@@ -301,7 +348,7 @@ describe("mortgageBudgetNotice", () => {
     // per-year figure dressed up as "/md." cannot pass.
     const monthly = modelledMortgageMonthly({
       ...inconsistent,
-      mortgageBidragssats: 0.006,
+      loans: [{ ...theLoan, bidragssats: 0.006 }],
     })
     expect(monthly).toBeCloseTo(
       mortgageMonthlyTotal({
@@ -329,20 +376,59 @@ describe("mortgageBudgetNotice", () => {
   })
 
   it("stays quiet when there is no loan", () => {
-    expect(mortgageBudgetNotice({ ...inconsistent, mortgageBalance: 0 })).toBeNull()
+    expect(mortgageBudgetNotice({ ...inconsistent, loans: [] })).toBeNull()
   })
 
-  it("stays quiet when the loan costs nothing to hold", () => {
-    // Interest-free, fee-free and afdragsfri for its whole term: the projection
-    // charges zero, so there is nothing for the budget to have deducted.
-    // `mortgageBalance` on its own is not evidence of a payment.
+  it("stays quiet about a banklån the housing line never paid for", () => {
+    // A car loan is not a housing cost, so a budget with no realkredit section
+    // is not inconsistent with holding one — it is what a renter with a car
+    // looks like. Only the realkredit half of the list can fire this.
     expect(
       mortgageBudgetNotice({
         ...inconsistent,
-        mortgageRate: 0,
-        mortgageBidragssats: 0,
-        mortgageInterestOnlyYears: inconsistent.mortgageTermYears,
+        loans: [{ ...newPlannedLoan("bank", null), principal: 200_000 }],
       })
     ).toBeNull()
+  })
+
+  it("stays quiet when the loan costs nothing to hold", () => {
+    // Interest-free, fee-free and afdragsfri for as long as the bound allows:
+    // the projection charges one year of afdrag at the very end and nothing
+    // before it, so the first year has nothing for the budget to have deducted.
+    // A `principal` on its own is not evidence of a payment.
+    expect(
+      mortgageBudgetNotice({
+        ...inconsistent,
+        loans: [
+          {
+            ...theLoan,
+            rate: 0,
+            bidragssats: 0,
+            interestOnlyYears: maxInterestOnlyYears(theLoan),
+          },
+        ],
+      })
+    ).toBeNull()
+  })
+
+  it("adds up two realkreditlån the one housing line paid for", () => {
+    // The notice quotes what the budget is short by, and a household with two
+    // realkreditlån is short the service on both — the budget has one housing
+    // line and cannot say which loan it covered.
+    const both = {
+      ...inconsistent,
+      loans: [theLoan, { ...theLoan, id: "l1", principal: 500_000 }],
+    }
+    expect(modelledMortgageMonthly(both)).toBeCloseTo(
+      modelledMortgageMonthly(inconsistent) +
+        modelledMortgageMonthly({
+          ...inconsistent,
+          loans: [{ ...theLoan, id: "l1", principal: 500_000 }],
+        }),
+      6
+    )
+    expect(mortgageBudgetNotice(both)!.subtitle).toContain(
+      formatDKK(2_500_000)
+    )
   })
 })

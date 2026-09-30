@@ -12,28 +12,59 @@
 import type { BudgetSummary } from "@/lib/budget/state"
 import { planningContribution } from "@/lib/budget/state"
 import type { MortgageState } from "@/lib/budget/mortgage"
+import { newPlannedLoan } from "./loans"
 import { homeProperty } from "./normalize"
 import { ASSESSMENT_FACTOR } from "./taxation"
-import type { PensionPerson, PlannedProperty, PlanningState } from "./types"
-
-/**
- * The mortgage fields a plan reads off the budget instead of deriving. Picked
- * from `PlanningState` rather than restated, so the two cannot drift apart.
- */
-export type BudgetMortgageLink = Pick<
+import type {
+  PensionPerson,
+  PlannedLoan,
+  PlannedProperty,
   PlanningState,
-  "mortgageBidragssats" | "mortgageBudgetedMonthly"
->
+} from "./types"
 
 /**
- * Carry the budget's mortgage deduction, and the fee rate it was priced with,
- * into a plan.
+ * The household's realkreditlån as the other pages describe it.
  *
- * The two travel together because they have to agree. The projection charges
- * interest + bidrag + afdrag and hands `mortgageBudgetedMonthly` back: a plan
- * holding the rate without the deduction would charge a fee its budget never
- * paid, and one holding the deduction without the rate would hand back more
- * than it charges. Both read the same `enabled` flag so they cannot drift.
+ * Its own object rather than `Partial<PlanningState>` keys, which is what the
+ * terms used to be: a plan's loans are a list now, so there is no field on the
+ * state for "the rate" to be carried in, and the entry these amounts belong to
+ * has to be found before they can be written (see {@link loansFromBudget}).
+ */
+export interface BudgetMortgage {
+  /**
+   * What the household still owes. Derived by the caller, because /budget's
+   * realkredit module and the renteudgifter typed on /skat are two different
+   * ways of knowing it and only the hook sees both.
+   */
+  balance: number
+  rate: number
+  termYears: number
+  bidragssats: number
+}
+
+/** The mortgage half of the defaults: the loan's terms and the budget's line. */
+export interface BudgetMortgageLink {
+  mortgage: BudgetMortgage
+  /** @see PlanningState.mortgageBudgetedMonthly */
+  mortgageBudgetedMonthly: number
+}
+
+/**
+ * Carry the budget's mortgage deduction, and the loan it was priced from, into
+ * a plan.
+ *
+ * The terms and the deduction travel together because they have to agree. The
+ * projection charges interest + bidrag + afdrag and hands
+ * `mortgageBudgetedMonthly` back: a plan holding the fee without the deduction
+ * would charge a bidrag its budget never paid, and one holding the deduction
+ * without the fee would hand back more than it charges. Both read the same
+ * `enabled` flag so they cannot drift.
+ *
+ * With the module off, the loan keeps the balance the caller derived — /skat's
+ * interest still evidences a debt — but no bidragssats: /planlaegning never asks
+ * for one, and a market-average fee would be charged against the saving every
+ * year for a loan the budget has not accounted for. That is an omission the plan
+ * states (`mortgageBudgetNotice`) rather than a fee it invents.
  *
  * `budgetedMonthly` is the figure off the shared budget summary
  * (`BudgetSummary.mortgageMonthly`) rather than a second computation from
@@ -43,17 +74,28 @@ export type BudgetMortgageLink = Pick<
  */
 export function mortgageFromBudget(
   mortgage: MortgageState,
-  budgetedMonthly: number
+  budgetedMonthly: number,
+  balance: number
 ): BudgetMortgageLink {
-  // Nothing deducted, so no fee to model either. /planlaegning never asks for a
-  // bidragssats, and a market-average one would be charged against the saving
-  // every year for a loan the budget has not accounted for — an omission the
-  // plan states (`mortgageBudgetNotice`) rather than a fee it invents.
+  const fallback = newPlannedLoan("realkredit", null)
   if (!mortgage.enabled) {
-    return { mortgageBidragssats: 0, mortgageBudgetedMonthly: 0 }
+    return {
+      mortgage: {
+        balance,
+        rate: fallback.rate,
+        termYears: fallback.termMonths / 12,
+        bidragssats: 0,
+      },
+      mortgageBudgetedMonthly: 0,
+    }
   }
   return {
-    mortgageBidragssats: mortgage.bidragssats,
+    mortgage: {
+      balance,
+      rate: mortgage.interestRate,
+      termYears: mortgage.remainingYears,
+      bidragssats: mortgage.bidragssats,
+    },
     mortgageBudgetedMonthly: Math.max(0, budgetedMonthly),
   }
 }
@@ -196,21 +238,67 @@ export function propertiesFromBudget(
 }
 
 /**
+ * Carry the household's realkreditlån — as /budget and /skat describe it — into
+ * a plan's loan list.
+ *
+ * The same shape as {@link propertiesFromBudget}, for the same reason: neither
+ * page has heard of the billån the user added on /planlaegning, so replacing the
+ * list wholesale is how that billån would disappear the next time either
+ * changed. The entry written is the first realkredit one — the budget has a
+ * single housing line, so there is one loan it can be describing — and a list
+ * holding none gets one prepended, which puts the household's mortgage where the
+ * migration from the old scalars also put it: at the front, secured on the home.
+ *
+ * `interestOnlyYears` survives untouched, unlike every other term. /budget's
+ * `interestOnly` is a boolean with no end date, so it cannot say how many years
+ * are left of an afdragsfri periode; overwriting a hand-entered period with a
+ * derived one would silently start repaying a loan the user told the plan was
+ * afdragsfrit until 2031.
+ *
+ * A balance of zero leaves the list alone rather than deleting the loan: "the
+ * budget has nothing to say about a mortgage" and "the household paid it off"
+ * are different claims, and only the user can make the second one.
+ */
+export function loansFromBudget(
+  current: readonly PlannedLoan[],
+  mortgage: BudgetMortgage,
+  homeId: string | null
+): PlannedLoan[] {
+  if (mortgage.balance <= 0) return [...current]
+  const terms = {
+    propertyId: homeId,
+    principal: Math.max(0, Math.round(mortgage.balance)),
+    rate: mortgage.rate,
+    // At least a month, so the projection's annuity has a denominator.
+    termMonths: Math.max(1, Math.round(mortgage.termYears * 12)),
+    bidragssats: mortgage.bidragssats,
+  }
+  const i = current.findIndex((l) => l.type === "realkredit")
+  if (i < 0)
+    return [{ ...newPlannedLoan("realkredit", homeId), ...terms }, ...current]
+  const next = [...current]
+  next[i] = { ...next[i], ...terms }
+  return next
+}
+
+/**
  * Everything a plan reads off /skat and /budget rather than asking the user for.
  *
  * The linked half is `Partial<PlanningState>` rather than a restatement of the
  * fields, so a key that is not a plan field cannot be declared here at all —
  * `home` used to travel in this object unannounced and reach persisted state as
- * a key `PlanningState` has never had. `home` and `pension` are named separately
- * because neither *is* a plan field: the home is two amounts that have to be
- * merged into a list the user also edits, and the pension is only the few person
- * fields the other pages happen to know.
+ * a key `PlanningState` has never had. `home`, `mortgage` and `pension` are
+ * named separately because none of them *is* a plan field: the first two are
+ * amounts that have to be merged into lists the user also edits, and the pension
+ * is only the few person fields the other pages happen to know.
  */
 export type PlanningDerivedDefaults = Partial<
-  Omit<PlanningState, "properties" | "pension">
+  Omit<PlanningState, "properties" | "loans" | "pension">
 > & {
   /** The household's own home as /skat and /budget describe it. */
   home: HomeAmounts
+  /** Its realkreditlån, likewise. */
+  mortgage: BudgetMortgage
   pension: {
     single: boolean
     person1: Partial<PensionPerson>
@@ -232,11 +320,15 @@ export function applyDerivedDefaults(
   prev: PlanningState,
   defaults: PlanningDerivedDefaults
 ): PlanningState {
-  const { home, pension, ...linked } = defaults
+  const { home, mortgage, pension, ...linked } = defaults
+  // Merged before the loans, because a home the plan did not have yet is minted
+  // an id here and the mortgage has to be secured on the entry that keeps it.
+  const properties = propertiesFromBudget(prev.properties, home)
   return {
     ...prev,
     ...linked,
-    properties: propertiesFromBudget(prev.properties, home),
+    properties,
+    loans: loansFromBudget(prev.loans, mortgage, properties[0]?.id ?? null),
     pension: {
       ...prev.pension,
       single: pension.single,

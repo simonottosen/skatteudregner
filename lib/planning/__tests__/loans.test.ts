@@ -2,16 +2,22 @@ import { describe, it, expect } from "vitest"
 import { amortizeYear } from "../amortisation"
 import {
   LOAN_TYPE_DEFAULTS,
+  hasDanglingSecurity,
   loanSummary,
   missingSecurityNotice,
   newPlannedLoan,
   normalizeLoans,
+  realkreditPrincipal,
   removeLoan,
   repaymentSummary,
   replaceLoan,
   securitySummary,
 } from "../loans"
-import { DEFAULT_PLANNING_STATE, type PlannedLoan, type PlannedProperty } from "../types"
+import {
+  DEFAULT_ASSUMPTIONS,
+  type PlannedLoan,
+  type PlannedProperty,
+} from "../types"
 
 const at = (fields: Partial<PlannedLoan> = {}): PlannedLoan => ({
   id: "l1",
@@ -45,14 +51,14 @@ describe("newPlannedLoan", () => {
   })
 
   it("starts on the rate and term the scalar it replaces used", () => {
-    // Both shapes live in the state until the wiring lands, so a hand-added loan
-    // has to price the same as the field it stands in for.
+    // A hand-added loan prices the same as the field it stands in for, so
+    // rebuilding a migrated plan by hand gives back the plan that was migrated.
     const realkredit = newPlannedLoan("realkredit", null)
-    expect(realkredit.rate).toBe(DEFAULT_PLANNING_STATE.mortgageRate)
-    expect(realkredit.termMonths).toBe(DEFAULT_PLANNING_STATE.mortgageTermYears * 12)
+    expect(realkredit.rate).toBe(DEFAULT_ASSUMPTIONS.equityBorrowingRate)
+    expect(realkredit.termMonths).toBe(30 * 12)
     const bank = newPlannedLoan("bank", null)
-    expect(bank.rate).toBe(DEFAULT_PLANNING_STATE.otherDebtRate)
-    expect(bank.termMonths).toBe(DEFAULT_PLANNING_STATE.otherDebtTermYears * 12)
+    expect(bank.rate).toBe(0.07)
+    expect(bank.termMonths).toBe(10 * 12)
   })
 
   it("charges no bidrag nobody quoted", () => {
@@ -186,6 +192,49 @@ describe("loanSummary", () => {
   })
 })
 
+describe("realkreditPrincipal", () => {
+  it("adds up what the household owes its realkreditinstitut", () => {
+    // Two realkreditlån are one housing line in the budget, so the notice and
+    // the reconciliation both need the sum rather than either balance.
+    expect(
+      realkreditPrincipal([
+        at({ id: "a", principal: 1_800_000 }),
+        at({ id: "b", principal: 600_000 }),
+      ])
+    ).toBe(2_400_000)
+  })
+
+  it("leaves out the debt no housing line ever paid for", () => {
+    // A banklån is folded into the budget's expense total, so counting it here
+    // would have the plan quote a restgæld its budget was never asked about.
+    expect(
+      realkreditPrincipal([
+        at({ id: "a", principal: 1_800_000 }),
+        at({ id: "b", type: "bank", principal: 600_000 }),
+      ])
+    ).toBe(1_800_000)
+  })
+
+  it("owes nothing on an empty list", () => {
+    expect(realkreditPrincipal([])).toBe(0)
+  })
+})
+
+describe("hasDanglingSecurity", () => {
+  it("separates a loan with no pant from one whose bolig is gone", () => {
+    // The distinction the form turns on: an unsecured loan is what the user
+    // asked for, a dangling one is what a deleted property left behind. Reading
+    // the second as the first would drop the link the row still has to show.
+    expect(hasDanglingSecurity(at({ propertyId: null }), [])).toBe(false)
+    expect(hasDanglingSecurity(at({ propertyId: "prop-b" }), [property()])).toBe(
+      true
+    )
+    expect(
+      hasDanglingSecurity(at({ propertyId: "prop-a" }), [property()])
+    ).toBe(false)
+  })
+})
+
 describe("missingSecurityNotice", () => {
   it("says nothing about a list whose security all checks out", () => {
     expect(missingSecurityNotice([], [])).toBeNull()
@@ -309,19 +358,17 @@ describe("normalizeLoans", () => {
       expect(mortgage.id).not.toBe(other.id)
     })
 
-    it("falls back to the same rate and term `normalizePlanning` would", () => {
+    it("falls back to the same rate and term the scalars defaulted to", () => {
+      // A blob that names a balance and nothing else is a plan that never
+      // touched the rate or the term, so it comes back on the ones it had.
       const [mortgage, other] = normalizeLoans(
         { mortgageBalance: 1, otherDebtBalance: 1 },
         [home]
       )
-      expect(mortgage.rate).toBe(DEFAULT_PLANNING_STATE.mortgageRate)
-      expect(mortgage.termMonths).toBe(
-        DEFAULT_PLANNING_STATE.mortgageTermYears * 12
-      )
-      expect(other.rate).toBe(DEFAULT_PLANNING_STATE.otherDebtRate)
-      expect(other.termMonths).toBe(
-        DEFAULT_PLANNING_STATE.otherDebtTermYears * 12
-      )
+      expect(mortgage.rate).toBe(LOAN_TYPE_DEFAULTS.realkredit.rate)
+      expect(mortgage.termMonths).toBe(LOAN_TYPE_DEFAULTS.realkredit.termMonths)
+      expect(other.rate).toBe(LOAN_TYPE_DEFAULTS.bank.rate)
+      expect(other.termMonths).toBe(LOAN_TYPE_DEFAULTS.bank.termMonths)
     })
 
     it("bounds a legacy term the way the field it comes from was bounded", () => {
@@ -527,7 +574,7 @@ describe("normalizeLoans", () => {
 
 describe("a normalized loan against the amortizer", () => {
   /**
-   * The schedule `mortgageCost` (`../simulate`) already runs: one call a year,
+   * The schedule `debtCost` (`../simulate`) already runs: one call a year,
    * against a maturity clock ticking down twelve months at a time, with the
    * afdragsfri years taken off the front. Counted in months rather than in the
    * whole years `amortisation.test.ts` walks, because a term that is not a whole
