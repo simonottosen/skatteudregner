@@ -4,6 +4,7 @@ import {
   DEFAULT_PENSION_PERSON,
   DEFAULT_PLANNING_STATE,
   DEFAULT_TAX_PROFILE,
+  type PlannedLoan,
   type PlannedProperty,
   type PlanningResult,
   type PlanningState,
@@ -18,7 +19,7 @@ import {
   mortgageMonthlyTotal,
   type MortgageState,
 } from "@/lib/budget/mortgage"
-import { normalizeLoans } from "../loans"
+import { maxInterestOnlyYears, normalizeLoans } from "../loans"
 import { applyScenario } from "../scenario"
 import {
   ASSESSMENT_FACTOR,
@@ -83,6 +84,34 @@ function property(
   }
 }
 
+let loanIds = 0
+
+/**
+ * A plan loan with the fields these tests rarely care about filled in: a
+ * 30-year realkreditlån at 4 %, repaying from the first year, free of bidrag.
+ *
+ * `propertyId` is left null and the loan is still a claim on the home — see
+ * `securedByProperty` in `../simulate` — which is what lets the one-home
+ * shorthand below stay a shorthand. The property list is built inside
+ * {@link makeState} and has no id a call site could name; the tests that are
+ * about which property secures what pass `properties` and `loans` together.
+ */
+function loan(
+  fields: Partial<PlannedLoan> & { principal: number }
+): PlannedLoan {
+  return {
+    id: `l${loanIds++}`,
+    label: "Realkreditlån",
+    type: "realkredit",
+    propertyId: null,
+    rate: 0.04,
+    termMonths: 30 * 12,
+    interestOnlyYears: 0,
+    bidragssats: 0,
+    ...fields,
+  }
+}
+
 /**
  * The plan's own shape, plus a one-home shorthand.
  *
@@ -133,7 +162,6 @@ describe("simulatePlanning", () => {
         startInvestments: 100000,
         monthlyContribution: 0,
         homeValue: 0,
-        mortgageBalance: 0,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0.05,
@@ -156,7 +184,6 @@ describe("simulatePlanning", () => {
         startInvestments: 0,
         monthlyContribution: 1000, // 12.000/yr
         homeValue: 0,
-        mortgageBalance: 0,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0,
@@ -179,13 +206,11 @@ describe("simulatePlanning", () => {
         startInvestments: 0,
         monthlyContribution: 0,
         homeValue: 2_000_000,
-        mortgageBalance: 1_000_000,
+        loans: [loan({ principal: 1_000_000 })],
         // This is a balance-sheet test: the household's budget pays the loan, so
         // the cash flow has nothing to charge and cannot borrow against the very
         // equity being measured.
-        mortgageBudgetedMonthly:
-          serviceOf(1_000_000, DEFAULT_PLANNING_STATE.mortgageRate, 30 * 12) /
-          12,
+        mortgageBudgetedMonthly: serviceOf(1_000_000, 0.04, 30 * 12) / 12,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           housingReturn: 0.02,
@@ -274,7 +299,7 @@ describe("simulatePlanning", () => {
         startInvestments: 0,
         monthlyContribution: 0,
         homeValue: 2_000_000,
-        mortgageBalance: 500_000, // equity = 1.5M
+        loans: [loan({ principal: 500_000 })], // equity = 1.5M
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0,
@@ -308,7 +333,6 @@ describe("simulatePlanning", () => {
         startInvestments: 1_000_000,
         monthlyContribution: 20000,
         homeValue: 0,
-        mortgageBalance: 0,
         annualSpending: 300000, // FI target = 7.5M (25x)
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
@@ -331,7 +355,6 @@ describe("simulatePlanning", () => {
         startInvestments: 0,
         monthlyContribution: 1000, // 12.000/yr
         homeValue: 0,
-        mortgageBalance: 0,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0,
@@ -366,7 +389,6 @@ describe("simulatePlanning", () => {
         startInvestments: 100000,
         monthlyContribution: 1000, // 12.000/yr
         homeValue: 1_000_000,
-        mortgageBalance: 0,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0.05,
@@ -396,7 +418,6 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 0,
         homeValue: 0,
-        mortgageBalance: 0,
         assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
         pension: {
           person1: {
@@ -437,9 +458,7 @@ describe("simulatePlanning", () => {
         startInvestments: 0,
         monthlyContribution: 0,
         homeValue: 3_000_000,
-        mortgageBalance: 2_000_000,
-        mortgageRate: 0.04,
-        mortgageTermYears: 20,
+        loans: [loan({ principal: 2_000_000, termMonths: 20 * 12 })],
         // Same reason as above: a budget that pays the loan keeps this about the
         // amortisation schedule and not about how the payment is funded.
         mortgageBudgetedMonthly: serviceOf(2_000_000, 0.04, 20 * 12) / 12,
@@ -462,6 +481,7 @@ describe("simulatePlanning", () => {
     // The contribution has to cover the step-up: a household that cannot pay it
     // borrows against the house instead, which cancels the extra afdrag out of
     // equity and is its own case below.
+    const theLoan = loan({ principal: 2_000_000, termMonths: 20 * 12 })
     const base = {
       currentAge: 40,
       endAge: 90,
@@ -469,9 +489,7 @@ describe("simulatePlanning", () => {
       startInvestments: 0,
       monthlyContribution: 20_000,
       homeValue: 3_000_000,
-      mortgageBalance: 2_000_000,
-      mortgageRate: 0.04,
-      mortgageTermYears: 20,
+      loans: [theLoan],
       assumptions: {
         ...DEFAULT_PLANNING_STATE.assumptions,
         housingReturn: 0,
@@ -480,7 +498,7 @@ describe("simulatePlanning", () => {
     }
     const plain = simulatePlanning(makeState(base))
     const io = simulatePlanning(
-      makeState({ ...base, mortgageInterestOnlyYears: 5 })
+      makeState({ ...base, loans: [{ ...theLoan, interestOnlyYears: 5 }] })
     )
     const at = (r: typeof plain, age: number) =>
       r.points.find((p) => p.age === age)!
@@ -498,28 +516,50 @@ describe("simulatePlanning", () => {
     expect(io.debtFreeAge).toBe(60)
   })
 
-  it("pushes the debt-free age out of reach when afdragsfrihed covers the term", () => {
-    // Interest-only to maturity leaves nothing scheduled to repay the principal.
+  /**
+   * Afdragsfrihed for as much of the term as a loan may carry: the whole of it
+   * bar the final year.
+   *
+   * Version 2 of the plan let `mortgageInterestOnlyYears` reach
+   * `mortgageTermYears`, and such a plan had no debt-free age at all — nothing
+   * was ever scheduled to repay the principal. The move to a list settled that
+   * in favour of {@link maxInterestOnlyYears}, which caps afdragsfrihed a year
+   * short, on the ground that a loan nothing ever repays is not the fixed
+   * maturity a `PlannedLoan` promises. So the balance now falls off a cliff in
+   * that last year instead of rolling to maturity, and the milestone the
+   * household is shown is the maturity age rather than "never".
+   */
+  it("holds the balance flat under afdragsfrihed, then clears it at maturity", () => {
     // The household never retires inside the horizon, so the balance moves only
     // with the loan schedule — a retired one would have to borrow against the
     // house to keep paying the interest, which is its own case below.
+    //
+    // A small loan against a big saving, so that the cliff is a payment the
+    // household can actually make: nineteen years of afdragsfrihed pile the
+    // whole principal into year twenty, and one it could not afford would be
+    // borrowed back against the house, leaving the debt standing and telling us
+    // about the equity borrowing rather than about the schedule.
+    const principal = 300_000
+    const termMonths = 20 * 12
     const res = simulatePlanning(
       makeState({
         currentAge: 40,
         endAge: 90,
         retirementAge: 95,
         startInvestments: 0,
-        monthlyContribution: 0,
+        monthlyContribution: 30_000,
         homeValue: 3_000_000,
-        mortgageBalance: 2_000_000,
-        mortgageRate: 0.04,
-        mortgageTermYears: 20,
-        mortgageInterestOnlyYears: 20,
-        // The budget pays this loan's interest, so the balance moves with the
-        // schedule alone. Leave it out and the household has no contribution to
-        // charge the interest against, borrows it against the house instead,
-        // and the balance climbs — a real behaviour, but a different test.
-        mortgageBudgetedMonthly: serviceOf(2_000_000, 0.04, 20 * 12, true) / 12,
+        loans: [
+          loan({
+            principal,
+            termMonths,
+            interestOnlyYears: maxInterestOnlyYears({ termMonths }),
+          }),
+        ],
+        // The budget pays this loan's interest, so the saving absorbs only the
+        // principal when it falls due.
+        mortgageBudgetedMonthly:
+          serviceOf(principal, 0.04, termMonths, true) / 12,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           housingReturn: 0,
@@ -527,36 +567,24 @@ describe("simulatePlanning", () => {
         },
       })
     )
-    expect(res.debtFreeAge).toBeNull()
+    // Nineteen years of interest only: equity is still the down payment.
+    expect(res.points.find((p) => p.age === 59)!.homeEquity).toBeCloseTo(
+      3_000_000 - principal,
+      0
+    )
+    // Then the whole balance in one year, and the house is owned outright.
+    expect(res.debtFreeAge).toBe(60)
     expect(res.points.find((p) => p.age === 70)!.homeEquity).toBeCloseTo(
-      1_000_000,
+      3_000_000,
       0
     )
   })
 
-  /**
-   * The engine derives its loan list from the plan's scalars itself rather than
-   * calling `normalizeLoans` (`../loans`), and this is why: the two disagree
-   * about how long a loan may be afdragsfri, and the disagreement is visible in
-   * the projection.
-   *
-   * `normalizePlanning` lets `mortgageInterestOnlyYears` reach
-   * `mortgageTermYears` — the test above is a plan that uses the whole of it —
-   * while `loanFrom` caps `PlannedLoan.interestOnlyYears` one year short, on the
-   * ground that a loan nothing ever repays is not the fixed maturity a
-   * `PlannedLoan` promises. Routing the scalars through `normalizeLoans` would
-   * therefore hand the final year back its afdrag and have it repay the whole
-   * balance at once, turning `debtFreeAge` from null into the maturity age.
-   * That is a change to the projection, not a refactor of it.
-   *
-   * Which bound wins is for the state migration to settle (issue #8), and it has
-   * to settle it deliberately: pick `loanFrom`'s and the plans above change
-   * meaning; pick `normalizePlanning`'s and `PlannedLoan` stops promising a
-   * maturity. This test exists so that migration cannot make the choice by
-   * accident — if it starts failing, the bounds have been unified, and the
-   * question is whether the behaviour above was meant to move with them.
-   */
-  it("differs from normalizeLoans on afdragsfrihed to maturity", () => {
+  it("caps afdragsfrihed a year short of maturity when migrating a plan", () => {
+    // The bound above is the normalizer's, so a version-2 plan that used the
+    // whole of its term arrives clamped rather than being read as a loan with
+    // no repayment date. Pinned here because the projection's milestone turns
+    // on it: 19 gives a debt-free age of 60, 20 gives none.
     const [migrated] = normalizeLoans(
       {
         mortgageBalance: 2_000_000,
@@ -568,6 +596,7 @@ describe("simulatePlanning", () => {
     )
     expect(migrated.termMonths).toBe(20 * 12)
     expect(migrated.interestOnlyYears).toBe(19)
+    expect(migrated.interestOnlyYears).toBe(maxInterestOnlyYears(migrated))
   })
 
   it("dates the debt-free age by the home's loan, not by a bank loan", () => {
@@ -583,14 +612,18 @@ describe("simulatePlanning", () => {
         startInvestments: 0,
         monthlyContribution: 0,
         homeValue: 3_000_000,
-        mortgageBalance: 2_000_000,
-        mortgageRate: 0.04,
-        mortgageTermYears: 20,
+        loans: [
+          loan({ principal: 2_000_000, termMonths: 20 * 12 }),
+          // Outlives the mortgage by a decade.
+          loan({
+            type: "bank",
+            label: "SU-gæld",
+            principal: 300_000,
+            rate: 0.06,
+            termMonths: 30 * 12,
+          }),
+        ],
         mortgageBudgetedMonthly: serviceOf(2_000_000, 0.04, 20 * 12) / 12,
-        // Outlives the mortgage by a decade.
-        otherDebtBalance: 300_000,
-        otherDebtRate: 0.06,
-        otherDebtTermYears: 30,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           housingReturn: 0,
@@ -623,9 +656,7 @@ describe("simulatePlanning", () => {
         startInvestments: 0,
         monthlyContribution: 0,
         properties: [],
-        mortgageBalance: 1_000_000,
-        mortgageRate: 0.04,
-        mortgageTermYears: 20,
+        loans: [loan({ principal: 1_000_000, termMonths: 20 * 12 })],
         mortgageBudgetedMonthly: serviceOf(1_000_000, 0.04, 20 * 12) / 12,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
@@ -661,6 +692,8 @@ describe("simulatePlanning", () => {
     // Maturity is fixed: the term lost the afdragsfri years.
     const stepUp = service(2_000_000, (20 - IO_YEARS) * 12) - ioService
 
+    const theLoan = loan({ principal: 2_000_000, termMonths: 20 * 12 })
+
     // Every source of growth is off, so a krone of net worth can only come from
     // a krone the household actually put in.
     const base = {
@@ -670,9 +703,6 @@ describe("simulatePlanning", () => {
       startInvestments: 0,
       monthlyContribution: 10_000,
       homeValue: 3_000_000,
-      mortgageBalance: 2_000_000,
-      mortgageRate: 0.04,
-      mortgageTermYears: 20,
       includePropertyTax: false,
       assumptions: {
         ...DEFAULT_PLANNING_STATE.assumptions,
@@ -690,14 +720,14 @@ describe("simulatePlanning", () => {
      * it is stated here rather than reconstructed from the loan, because the
      * budget is the only thing that knows what it withheld.
      */
-    const withBudget = (mortgageInterestOnlyYears: number) => ({
+    const withBudget = (interestOnlyYears: number) => ({
       ...base,
-      mortgageInterestOnlyYears,
+      loans: [{ ...theLoan, interestOnlyYears }],
       mortgageBudgetedMonthly:
-        (mortgageInterestOnlyYears >= 1 ? ioService : payment) / 12,
+        (interestOnlyYears >= 1 ? ioService : payment) / 12,
     })
-    const run = (mortgageInterestOnlyYears: number) =>
-      simulatePlanning(makeState(withBudget(mortgageInterestOnlyYears)))
+    const run = (interestOnlyYears: number) =>
+      simulatePlanning(makeState(withBudget(interestOnlyYears)))
     const contribAt = (r: ReturnType<typeof run>, age: number) =>
       r.points.find((p) => p.age === age)!.contributionYoY
 
@@ -880,8 +910,6 @@ describe("simulatePlanning", () => {
       startInvestments: 0,
       monthlyContribution: 10_000, // 120.000/yr
       homeValue: 3_000_000,
-      mortgageRate: 0.04,
-      mortgageTermYears: 20,
       includePropertyTax: false,
       assumptions: {
         ...DEFAULT_PLANNING_STATE.assumptions,
@@ -909,7 +937,7 @@ describe("simulatePlanning", () => {
           // Big enough that the whole payment fits inside it; at 10.000/md. the
           // `Math.max(0, …)` floor would hide the size of the charge.
           monthlyContribution: 20_000, // 240.000/yr
-          mortgageBalance: 2_000_000,
+          loans: [loan({ principal: 2_000_000, termMonths: 20 * 12 })],
           mortgageBudgetedMonthly: 0,
         })
       )
@@ -942,8 +970,13 @@ describe("simulatePlanning", () => {
       const r = simulatePlanning(
         makeState({
           ...base,
-          mortgageBalance: quoted.loan,
-          mortgageBidragssats: m.bidragssats,
+          loans: [
+            loan({
+              principal: quoted.loan,
+              termMonths: 20 * 12,
+              bidragssats: m.bidragssats,
+            }),
+          ],
           mortgageBudgetedMonthly: mortgageMonthlyTotal(m),
         })
       )
@@ -960,11 +993,11 @@ describe("simulatePlanning", () => {
     })
 
     it("charges the afdrag a budget on afdragsfrihed never paid", () => {
-      // The budget's `interestOnly` flag and the plan's
-      // `mortgageInterestOnlyYears` are separate inputs, so they can disagree:
-      // here the household pays interest + bidrag only, while the plan
-      // amortizes from year one. The gap is the afdrag, and it has to be
-      // charged — the plan cannot repay principal out of money nobody paid.
+      // The budget's `interestOnly` flag and the loan's `interestOnlyYears`
+      // are separate inputs, so they can disagree: here the household pays
+      // interest + bidrag only, while the plan amortizes from year one. The gap
+      // is the afdrag, and it has to be charged — the plan cannot repay
+      // principal out of money nobody paid.
       const m: MortgageState = {
         ...DEFAULT_MORTGAGE,
         enabled: true,
@@ -983,11 +1016,16 @@ describe("simulatePlanning", () => {
       const r = simulatePlanning(
         makeState({
           ...base,
-          mortgageBalance: 2_000_000,
-          mortgageBidragssats: m.bidragssats,
+          loans: [
+            loan({
+              principal: 2_000_000,
+              termMonths: 20 * 12,
+              bidragssats: m.bidragssats,
+              // The plan disagrees with the budget: no afdragsfrihed here.
+              interestOnlyYears: 0,
+            }),
+          ],
           mortgageBudgetedMonthly: mortgageMonthlyTotal(m),
-          // The plan disagrees with the budget: no afdragsfrihed here.
-          mortgageInterestOnlyYears: 0,
         })
       )
       expect(contribAt(r, 41)).toBeCloseTo(120_000 - afdrag, 6)
@@ -1020,9 +1058,7 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 100_000,
         homeValue: 3_000_000,
-        mortgageBalance: 2_000_000,
-        mortgageRate: 0.04,
-        mortgageTermYears: 5,
+        loans: [loan({ principal: 2_000_000, termMonths: 5 * 12 })],
         includePropertyTax: false,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
@@ -1055,13 +1091,13 @@ describe("simulatePlanning", () => {
 
   it("survives a scenario shortening the term below the afdragsfri period", () => {
     // `applyScenario` spreads overrides straight onto the state without going
-    // back through `normalizePlanning`, and `mortgageInterestOnlyYears` is not
-    // itself overridable — so a scenario that shortens the term is the one way
-    // an afdragsfri period can outlast the loan it belongs to. No clamp is
-    // needed at the point of use: past maturity `amortizeYear` charges interest
-    // only regardless, so the extra afdragsfri years ask for what already
-    // happens. This pins that, since the obvious "fix" is a clamp no test can
-    // tell apart from its absence.
+    // back through `normalizePlanning`, so a `loans` override reaches the engine
+    // unclamped — and `maxInterestOnlyYears` is the normalizer's bound, not the
+    // engine's. That is the one way an afdragsfri period can outlast the loan it
+    // belongs to. No clamp is needed at the point of use: past maturity
+    // `amortizeYear` charges interest only regardless, so the extra afdragsfri
+    // years ask for what already happens. This pins that, since the obvious
+    // "fix" is a clamp no test can tell apart from its absence.
     const base = makeState({
       currentAge: 40,
       endAge: 90,
@@ -1069,10 +1105,13 @@ describe("simulatePlanning", () => {
       startInvestments: 0,
       monthlyContribution: 30_000,
       homeValue: 3_000_000,
-      mortgageBalance: 2_000_000,
-      mortgageRate: 0.04,
-      mortgageTermYears: 30,
-      mortgageInterestOnlyYears: 25,
+      loans: [
+        loan({
+          principal: 2_000_000,
+          termMonths: 30 * 12,
+          interestOnlyYears: 25,
+        }),
+      ],
       assumptions: {
         ...DEFAULT_PLANNING_STATE.assumptions,
         housingReturn: 0,
@@ -1080,7 +1119,11 @@ describe("simulatePlanning", () => {
       },
     })
     const res = simulatePlanning(
-      applyScenario(base, { overrides: { mortgageTermYears: 10 } })
+      applyScenario(base, {
+        overrides: {
+          loans: [{ ...base.loans[0], termMonths: 10 * 12 }],
+        },
+      })
     )
     // Interest-only for the whole (shortened) term leaves the principal
     // untouched: still 2 M owed when the loan matures at 50 and ever after.
@@ -1101,7 +1144,6 @@ describe("simulatePlanning", () => {
         currentAge: 30,
         endAge: 60,
         homeValue: 0,
-        mortgageBalance: 0,
       })
     )
     expect(res.debtFreeAge).toBeNull()
@@ -1125,7 +1167,6 @@ describe("simulatePlanning", () => {
       monthlyContribution: 0,
       annualSpending: 0,
       homeValue: 0,
-      mortgageBalance: 0,
       assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
     }
     const single = simulatePlanning(
@@ -1175,8 +1216,6 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 600_000,
         homeValue: 5_000_000,
-        mortgageBalance: 0,
-        mortgageTermYears: 1, // already paid off
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0,
@@ -1209,7 +1248,6 @@ describe("simulatePlanning", () => {
       monthlyContribution: 0,
       annualSpending: 200_000,
       homeValue: 0,
-      mortgageBalance: 0,
       assumptions: {
         ...DEFAULT_PLANNING_STATE.assumptions,
         investmentReturn: 0,
@@ -1249,7 +1287,6 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 0,
         homeValue: 0,
-        mortgageBalance: 0,
         pension: {
           person1: {
             ...DEFAULT_PENSION_PERSON,
@@ -1289,8 +1326,6 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 100_000,
         homeValue: 5_000_000,
-        mortgageBalance: 0,
-        mortgageTermYears: 1, // already paid off
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0,
@@ -1326,8 +1361,6 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 300_000,
         homeValue: 5_000_000,
-        mortgageBalance: 0,
-        mortgageTermYears: 1,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0.5, // big embedded gains → high gains-tax bracket
@@ -1357,11 +1390,9 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 100_000,
         homeValue: 5_000_000,
-        mortgageBalance: 0,
-        mortgageRate: rate,
-        mortgageTermYears: 1, // already paid off
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
+          equityBorrowingRate: rate,
           investmentReturn: 0,
           investmentFee: 0,
           housingReturn: 0,
@@ -1414,7 +1445,7 @@ describe("simulatePlanning", () => {
   describe("equity borrowed to fund spending", () => {
     // Issue #28's reproduction: a retired household with no income and no pot,
     // so every krone of spending is borrowed against the house.
-    const repro = (mortgageRate: number) =>
+    const repro = (equityBorrowingRate: number) =>
       makeState({
         currentAge: 65,
         endAge: 70,
@@ -1424,12 +1455,10 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 100_000,
         homeValue: 5_000_000,
-        mortgageBalance: 0,
-        mortgageRate,
-        mortgageTermYears: 30,
         includePropertyTax: false,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
+          equityBorrowingRate,
           investmentReturn: 0,
           investmentFee: 0,
           volatility: 0,
@@ -1488,8 +1517,9 @@ describe("simulatePlanning", () => {
         makeState({
           ...repro(rate),
           homeValue: 3_000_000,
-          mortgageBalance: 2_000_000,
-          mortgageTermYears: term,
+          loans: [
+            loan({ principal: 2_000_000, rate, termMonths: term * 12 }),
+          ],
         })
       )
       let scheduled = 2_000_000
@@ -1550,7 +1580,6 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 0,
         homeValue: 0,
-        mortgageBalance: 0,
         assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
         pension: {
           person1: {
@@ -1584,8 +1613,6 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 1_000_000, // dwarfs every resource
         homeValue: 500_000,
-        mortgageBalance: 0,
-        mortgageTermYears: 1,
         assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
       })
     )
@@ -1604,7 +1631,6 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 200_000,
         homeValue: 0,
-        mortgageBalance: 0,
         assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
       })
     )
@@ -1621,7 +1647,6 @@ describe("simulatePlanning", () => {
       monthlyContribution: 0,
       annualSpending: 0,
       homeValue: 0,
-      mortgageBalance: 0,
       assumptions: {
         ...DEFAULT_PLANNING_STATE.assumptions,
         investmentReturn: 0.1,
@@ -1654,7 +1679,6 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 300_000,
         homeValue: 0,
-        mortgageBalance: 0,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0,
@@ -1689,10 +1713,14 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 0,
         homeValue: 0,
-        mortgageBalance: 0,
-        otherDebtBalance: 200_000,
-        otherDebtRate: 0,
-        otherDebtTermYears: 10,
+        loans: [
+          loan({
+            type: "bank",
+            principal: 200_000,
+            rate: 0,
+            termMonths: 10 * 12,
+          }),
+        ],
         assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, volatility: 0 },
       })
     )
@@ -1714,10 +1742,14 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 0,
         homeValue: 0,
-        mortgageBalance: 0,
-        otherDebtBalance: 100_000,
-        otherDebtRate: 0,
-        otherDebtTermYears: 10, // still being paid off at 65
+        loans: [
+          loan({
+            type: "bank",
+            principal: 100_000,
+            rate: 0,
+            termMonths: 10 * 12, // still being paid off at 65
+          }),
+        ],
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0,
@@ -1753,7 +1785,6 @@ describe("simulatePlanning", () => {
       startInvestments: 0,
       monthlyContribution: 10_000,
       homeValue: 0,
-      mortgageBalance: 0,
       assumptions: {
         ...DEFAULT_PLANNING_STATE.assumptions,
         investmentReturn: 0,
@@ -1767,9 +1798,14 @@ describe("simulatePlanning", () => {
     const indebted = simulatePlanning(
       makeState({
         ...base,
-        otherDebtBalance: 400_000,
-        otherDebtRate: 0.08,
-        otherDebtTermYears: 10,
+        loans: [
+          loan({
+            type: "bank",
+            principal: 400_000,
+            rate: 0.08,
+            termMonths: 10 * 12,
+          }),
+        ],
       })
     )
     const at = (r: typeof debtFree, age: number) =>
@@ -1801,7 +1837,6 @@ describe("simulatePlanning", () => {
       annualSpending: 0,
       homeValue: 4_000_000,
       landValue: 2_000_000,
-      mortgageBalance: 0,
       assumptions: {
         ...DEFAULT_PLANNING_STATE.assumptions,
         investmentReturn: 0,
@@ -1846,7 +1881,6 @@ describe("simulatePlanning", () => {
       annualSpending: 200_000,
       homeValue: 4_000_000,
       landValue: 2_000_000,
-      mortgageBalance: 0,
       includePropertyTax: true,
       assumptions: {
         ...DEFAULT_PLANNING_STATE.assumptions,
@@ -1892,7 +1926,6 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 300_000,
         homeValue: 4_000_000,
-        mortgageBalance: 0,
         includePropertyTax: false,
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
@@ -1927,7 +1960,6 @@ describe("simulatePlanning", () => {
       annualSpending: 0,
       homeValue: 4_000_000,
       landValue: 2_000_000,
-      mortgageBalance: 0,
       includePropertyTax: true,
       assumptions: {
         ...DEFAULT_PLANNING_STATE.assumptions,
@@ -2009,8 +2041,7 @@ describe("simulatePlanning", () => {
           monthlyContribution: 0,
           startInvestments: 0,
           cashBuffer: 0,
-          mortgageBalance: 8_000_000,
-          mortgageRate: 0,
+          loans: [loan({ principal: 8_000_000, rate: 0 })],
           propertyTaxInBudget: false,
         })
       )
@@ -2061,7 +2092,6 @@ describe("simulatePlanning", () => {
           annualSpending: 0,
           homeValue: 4_000_000,
           landValue: 2_000_000,
-          mortgageBalance: 0,
           includePropertyTax: true,
           propertyTaxInBudget: false,
           assumptions: {
@@ -2178,7 +2208,6 @@ describe("simulatePlanning", () => {
           annualSpending: 400_000,
           homeValue: 0,
           landValue: 0,
-          mortgageBalance: 0,
           includePropertyTax: false,
           assumptions: { ...flat, investmentReturn: RETURN },
           pension: {
@@ -2241,7 +2270,6 @@ describe("simulatePlanning", () => {
         annualSpending: 590_000,
         homeValue: HOME_VALUE,
         landValue: LAND_VALUE,
-        mortgageBalance: 0,
         includePropertyTax: true,
         propertyTaxInBudget: false,
         assumptions: { ...flat, investmentReturn: RETURN },
@@ -2336,7 +2364,6 @@ describe("simulatePlanning", () => {
               annualSpending: 0,
               homeValue: 30_000_000,
               landValue: 15_000_000,
-              mortgageBalance: 0,
               includePropertyTax: true,
               propertyTaxInBudget: false,
               assumptions: { ...flat, investmentReturn },
@@ -2412,7 +2439,6 @@ describe("simulatePlanning", () => {
             annualSpending: 0,
             homeValue: 8_000_000,
             landValue: 4_000_000,
-            mortgageBalance: 0,
             includePropertyTax: true,
             propertyTaxInBudget: false,
             assumptions: { ...flat, investmentReturn: RETURN },
@@ -2446,7 +2472,6 @@ describe("simulatePlanning", () => {
       monthlyContribution: 0,
       annualSpending: 0,
       homeValue: 3_000_000,
-      mortgageBalance: 0,
     }
     const width = (housingVolatility: number) => {
       const r = simulatePlanning(
@@ -2475,7 +2500,6 @@ describe("simulatePlanning", () => {
       monthlyContribution: 0,
       annualSpending: 300_000,
       homeValue: 0,
-      mortgageBalance: 0,
       assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
     })
     const req = solveRequiredMonthlyContribution(state)
@@ -2500,7 +2524,6 @@ describe("simulatePlanning", () => {
       monthlyContribution: 0,
       annualSpending: 300_000,
       homeValue: 0,
-      mortgageBalance: 0,
       assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
     })
     expect(solveRequiredMonthlyContribution(alreadyFI)).toBe(0)
@@ -2513,7 +2536,6 @@ describe("simulatePlanning", () => {
       monthlyContribution: 0,
       annualSpending: 300_000,
       homeValue: 0,
-      mortgageBalance: 0,
       assumptions: { ...DEFAULT_PLANNING_STATE.assumptions, inflation: 0 },
     })
     expect(solveRequiredMonthlyContribution(unreachable)).toBeNull()
@@ -2548,7 +2570,6 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 0,
         properties,
-        mortgageBalance: 0,
         includePropertyTax: true,
         propertyTaxInBudget: false,
         assumptions: still,
@@ -2710,7 +2731,6 @@ describe("simulatePlanning", () => {
             monthlyContribution: 0,
             annualSpending: SPENDING,
             properties,
-            mortgageBalance: 0,
             includePropertyTax: true,
             propertyTaxInBudget: false,
             assumptions: { ...still, investmentReturn: RETURN },
@@ -2817,7 +2837,7 @@ describe("simulatePlanning", () => {
     const deductibleOf = (balance: number, months = 30 * 12) =>
       amortizeYear(balance, 0.04, months).interest + balance * BIDRAGSSATS
     /** Retired, drawing a real pension, and still carrying a real loan. */
-    const retiredWithLoan = (mortgageBalance: number) =>
+    const retiredWithLoan = (principal: number, bidragssats = BIDRAGSSATS) =>
       makeState({
         currentAge: 65,
         endAge: 80,
@@ -2826,13 +2846,10 @@ describe("simulatePlanning", () => {
         monthlyContribution: 0,
         annualSpending: 250_000,
         homeValue: 4_000_000,
-        mortgageBalance,
-        mortgageRate: 0.04,
-        mortgageTermYears: 30,
         // A real bidragssats, so the expectations below — all built from
         // `deductibleOf` — pin that the lender's fee earns the fradrag the
         // statute grants it, and that it does so without leaving the cash flow.
-        mortgageBidragssats: BIDRAGSSATS,
+        loans: [loan({ principal, bidragssats })],
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           inflation: 0,
@@ -2900,10 +2917,7 @@ describe("simulatePlanning", () => {
         INTEREST_YEAR
       )
       const noBidrag = at(
-        simulatePlanning({
-          ...retiredWithLoan(2_000_000),
-          mortgageBidragssats: 0,
-        }),
+        simulatePlanning(retiredWithLoan(2_000_000, 0)),
         INTEREST_YEAR
       )
       const gross = noBidrag.retirementIncome + noBidrag.taxPaid
@@ -2945,10 +2959,7 @@ describe("simulatePlanning", () => {
           startInvestments: 0,
           monthlyContribution: 30_000,
           homeValue: 4_000_000,
-          mortgageBalance: 2_000_000,
-          mortgageRate: 0.04,
-          mortgageTermYears: 30,
-          mortgageBidragssats: BIDRAGSSATS,
+          loans: [loan({ principal: 2_000_000, bidragssats: BIDRAGSSATS })],
           mortgageBudgetedMonthly: 0,
           assumptions: {
             ...DEFAULT_PLANNING_STATE.assumptions,
@@ -3039,9 +3050,14 @@ describe("simulatePlanning", () => {
       const noDebt = simulatePlanning(retiredWithLoan(0))
       const withDebt = simulatePlanning({
         ...retiredWithLoan(0),
-        otherDebtBalance: 500_000,
-        otherDebtRate: 0.08,
-        otherDebtTermYears: 10,
+        loans: [
+          loan({
+            type: "bank",
+            principal: 500_000,
+            rate: 0.08,
+            termMonths: 10 * 12,
+          }),
+        ],
       })
       const interest = amortizeYear(500_000, 0.08, 10 * 12).interest
       const gross =
@@ -3084,7 +3100,7 @@ describe("simulatePlanning", () => {
           homeValue,
           startInvestments: 0,
           annualSpending,
-          mortgageRate: 0.04,
+          assumptions: { ...base.assumptions, equityBorrowingRate: 0.04 },
           pension: {
             ...base.pension,
             person1: {
@@ -3209,7 +3225,7 @@ describe("simulatePlanning", () => {
       // as working — the one window where the retirement gate is observable.
       // It stays shut: the plan is still charging only the *excess* over the
       // budget's mortgage line, so the budget still holds the fradrag.
-      const stillWorking = (mortgageBalance: number) =>
+      const stillWorking = (principal: number) =>
         simulatePlanning(
           makeState({
             currentAge: 66,
@@ -3218,9 +3234,10 @@ describe("simulatePlanning", () => {
             startInvestments: 0,
             monthlyContribution: 30_000,
             homeValue: 4_000_000,
-            mortgageBalance,
-            mortgageRate: 0.04,
-            mortgageTermYears: 30,
+            // The zero-balance case is the no-loan one: a loan owing nothing
+            // costs nothing and deducts nothing, which is what makes it the
+            // reference the loan is compared against.
+            loans: [loan({ principal })],
             assumptions: {
               ...DEFAULT_PLANNING_STATE.assumptions,
               investmentReturn: 0,
@@ -3259,9 +3276,7 @@ describe("simulatePlanning", () => {
           startInvestments: 0,
           monthlyContribution: 30_000, // 360.000/yr, comfortably above the loan
           homeValue: 4_000_000,
-          mortgageBalance: 2_000_000,
-          mortgageRate: 0.04,
-          mortgageTermYears: 30,
+          loans: [loan({ principal: 2_000_000 })],
           mortgageBudgetedMonthly: 0, // budget deducted nothing → charge it all
           assumptions: {
             ...DEFAULT_PLANNING_STATE.assumptions,
@@ -3291,10 +3306,7 @@ describe("simulatePlanning", () => {
         startInvestments: 0,
         monthlyContribution: 30_000,
         homeValue: 4_000_000,
-        mortgageBalance: 2_000_000,
-        mortgageRate: 0.04,
-        mortgageTermYears: 30,
-        mortgageInterestOnlyYears: IO,
+        loans: [loan({ principal: 2_000_000, interestOnlyYears: IO })],
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0,
@@ -3470,6 +3482,13 @@ describe("simulatePlanning", () => {
      * debt serviced from the drawdown, property tax settled against it, and a
      * retirement long enough to eat the portfolio and start borrowing against the
      * house.
+     *
+     * `equityBorrowingRate` is the realkreditlån's own rate, which is what a plan
+     * saved before the loan list arrives with: the projection used to price
+     * borrowing against the house at the mortgage's rate, and the migration seeds
+     * the assumption from it. Naming it keeps these figures comparable to the ones
+     * recorded then — the reference is only a lock while both sides describe the
+     * same household.
      */
     it("reproduces the whole projection of a plan that uses every loan branch", () => {
       const r = simulatePlanning(
@@ -3496,15 +3515,27 @@ describe("simulatePlanning", () => {
             }),
           ],
           includePropertyTax: true,
-          mortgageBalance: 2_400_000,
-          mortgageRate: 0.042,
-          mortgageBidragssats: 0.0085,
-          mortgageTermYears: 28,
-          mortgageInterestOnlyYears: 6,
+          loans: [
+            loan({
+              principal: 2_400_000,
+              rate: 0.042,
+              bidragssats: 0.0085,
+              termMonths: 28 * 12,
+              interestOnlyYears: 6,
+            }),
+            loan({
+              label: "Banklån",
+              type: "bank",
+              principal: 420_000,
+              rate: 0.069,
+              termMonths: 9 * 12,
+            }),
+          ],
           mortgageBudgetedMonthly: 11_500,
-          otherDebtBalance: 420_000,
-          otherDebtRate: 0.069,
-          otherDebtTermYears: 9,
+          assumptions: {
+            ...DEFAULT_PLANNING_STATE.assumptions,
+            equityBorrowingRate: 0.042,
+          },
           events: [
             {
               id: "e1",
@@ -3584,9 +3615,12 @@ describe("simulatePlanning", () => {
           startInvestments: 300_000,
           monthlyContribution: 5_000,
           homeValue: 2_000_000,
-          mortgageBalance: 1_200_000,
-          mortgageRate: 0.04,
-          mortgageBidragssats: 0.008,
+          loans: [loan({ principal: 1_200_000, bidragssats: 0.008 })],
+          // The loan's own rate, as above.
+          assumptions: {
+            ...DEFAULT_PLANNING_STATE.assumptions,
+            equityBorrowingRate: 0.04,
+          },
           events: [
             {
               id: "m0a",
