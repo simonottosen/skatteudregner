@@ -18,6 +18,7 @@ import {
   mortgageMonthlyTotal,
   type MortgageState,
 } from "@/lib/budget/mortgage"
+import { normalizeLoans } from "../loans"
 import { applyScenario } from "../scenario"
 import {
   ASSESSMENT_FACTOR,
@@ -531,6 +532,113 @@ describe("simulatePlanning", () => {
       1_000_000,
       0
     )
+  })
+
+  /**
+   * The engine derives its loan list from the plan's scalars itself rather than
+   * calling `normalizeLoans` (`../loans`), and this is why: the two disagree
+   * about how long a loan may be afdragsfri, and the disagreement is visible in
+   * the projection.
+   *
+   * `normalizePlanning` lets `mortgageInterestOnlyYears` reach
+   * `mortgageTermYears` — the test above is a plan that uses the whole of it —
+   * while `loanFrom` caps `PlannedLoan.interestOnlyYears` one year short, on the
+   * ground that a loan nothing ever repays is not the fixed maturity a
+   * `PlannedLoan` promises. Routing the scalars through `normalizeLoans` would
+   * therefore hand the final year back its afdrag and have it repay the whole
+   * balance at once, turning `debtFreeAge` from null into the maturity age.
+   * That is a change to the projection, not a refactor of it.
+   *
+   * Which bound wins is for the state migration to settle (issue #8), and it has
+   * to settle it deliberately: pick `loanFrom`'s and the plans above change
+   * meaning; pick `normalizePlanning`'s and `PlannedLoan` stops promising a
+   * maturity. This test exists so that migration cannot make the choice by
+   * accident — if it starts failing, the bounds have been unified, and the
+   * question is whether the behaviour above was meant to move with them.
+   */
+  it("differs from normalizeLoans on afdragsfrihed to maturity", () => {
+    const [migrated] = normalizeLoans(
+      {
+        mortgageBalance: 2_000_000,
+        mortgageRate: 0.04,
+        mortgageTermYears: 20,
+        mortgageInterestOnlyYears: 20,
+      },
+      []
+    )
+    expect(migrated.termMonths).toBe(20 * 12)
+    expect(migrated.interestOnlyYears).toBe(19)
+  })
+
+  it("dates the debt-free age by the home's loan, not by a bank loan", () => {
+    // "Gældfri bolig" is the milestone, so a student or car loan running past
+    // the mortgage neither postpones it nor brings it forward. The projection
+    // reports that debt on its own line (`otherDebt`) precisely because it sits
+    // outside the home equity the mortgage comes off.
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 40,
+        endAge: 90,
+        retirementAge: 65,
+        startInvestments: 0,
+        monthlyContribution: 0,
+        homeValue: 3_000_000,
+        mortgageBalance: 2_000_000,
+        mortgageRate: 0.04,
+        mortgageTermYears: 20,
+        mortgageBudgetedMonthly: serviceOf(2_000_000, 0.04, 20 * 12) / 12,
+        // Outlives the mortgage by a decade.
+        otherDebtBalance: 300_000,
+        otherDebtRate: 0.06,
+        otherDebtTermYears: 30,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          housingReturn: 0,
+          volatility: 0,
+        },
+      })
+    )
+    expect(res.debtFreeAge).toBe(60)
+    // The bank loan really is still owed in that year, so the two figures are
+    // being kept apart rather than happening to agree.
+    expect(res.points.find((p) => p.age === 60)!.otherDebt).toBeGreaterThan(
+      100_000
+    )
+  })
+
+  it("keeps a mortgage secured on the home even when the plan lists none", () => {
+    // Reachable on the default path, not just in principle: `use-planning.ts`
+    // infers a balance from the renteudgifter typed on /skat, while
+    // `propertiesFromBudget` adds nothing to the property list until a market
+    // value or a beskatningsgrundlag arrives. A realkreditlån is a lån mod pant
+    // i fast ejendom — there is no unsecured kind — so such a plan has left its
+    // home undescribed rather than described an unsecured loan, and reading it
+    // as unsecured would move the balance off home equity and onto `otherDebt`
+    // and leave the household with no debt-free age at all.
+    const res = simulatePlanning(
+      makeState({
+        currentAge: 40,
+        endAge: 70,
+        retirementAge: 65,
+        startInvestments: 0,
+        monthlyContribution: 0,
+        properties: [],
+        mortgageBalance: 1_000_000,
+        mortgageRate: 0.04,
+        mortgageTermYears: 20,
+        mortgageBudgetedMonthly: serviceOf(1_000_000, 0.04, 20 * 12) / 12,
+        assumptions: {
+          ...DEFAULT_PLANNING_STATE.assumptions,
+          housingReturn: 0,
+          volatility: 0,
+        },
+      })
+    )
+    const at41 = res.points.find((p) => p.age === 41)!
+    // A house worth nothing and a loan against it: equity is the debt, negative.
+    expect(at41.homeEquity).toBeLessThan(-900_000)
+    expect(at41.otherDebt).toBe(0)
+    expect(res.debtFreeAge).toBe(60)
   })
 
   /**
@@ -1627,6 +1735,58 @@ describe("simulatePlanning", () => {
     const at65 = res.points.find((p) => p.age === 65)!
     expect(at65.investmentsSold).toBeCloseTo(10_000, 0)
     expect(at65.otherDebt).toBeCloseTo(90_000, 0)
+  })
+
+  it("charges a working household nothing for its other-debt service", () => {
+    // The other side of the case above, and the asymmetry with the realkredit
+    // service. /budget carries the housing loan on a line of its own that
+    // `budgetExpenses` leaves out and `mortgageBudgetedMonthly` hands back, so
+    // the working household can be charged what the modelled payment differs
+    // from the budgeted one by. A banklån has no such line — the budget folds
+    // every other repayment into its expense total — so charging it here would
+    // bill the household twice, and the amortisation has to show up on the
+    // balance sheet without touching the cash flow.
+    const base = {
+      currentAge: 40,
+      endAge: 45,
+      retirementAge: 65,
+      startInvestments: 0,
+      monthlyContribution: 10_000,
+      homeValue: 0,
+      mortgageBalance: 0,
+      assumptions: {
+        ...DEFAULT_PLANNING_STATE.assumptions,
+        investmentReturn: 0,
+        investmentFee: 0,
+        inflation: 0,
+        volatility: 0,
+        contributionGrowth: 0,
+      },
+    }
+    const debtFree = simulatePlanning(makeState(base))
+    const indebted = simulatePlanning(
+      makeState({
+        ...base,
+        otherDebtBalance: 400_000,
+        otherDebtRate: 0.08,
+        otherDebtTermYears: 10,
+      })
+    )
+    const at = (r: typeof debtFree, age: number) =>
+      r.points.find((p) => p.age === age)!
+
+    // The whole contribution is still invested, to the krone, and nothing is
+    // sold to service the loan.
+    expect(at(debtFree, 45).investments).toBeCloseTo(120_000 * 5, 6)
+    expect(at(indebted, 45).investments).toBeCloseTo(
+      at(debtFree, 45).investments,
+      6
+    )
+    expect(at(indebted, 45).investmentsSold).toBeCloseTo(0, 6)
+    // But the loan really is being repaid — it is only the cash flow that is
+    // left alone, not the balance.
+    expect(at(indebted, 45).otherDebt).toBeLessThan(400_000)
+    expect(at(indebted, 45).netWorth).toBeLessThan(at(debtFree, 45).netWorth)
   })
 
   it("models property tax in retirement only when enabled", () => {
