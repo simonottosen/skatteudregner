@@ -103,21 +103,17 @@ interface SimState {
    */
   propertyValue: number
   /**
-   * The scheduled loan: the plan's own realkredit, plus whatever a property
-   * event replaces it with. Kept apart from {@link borrowedForSpending} because
-   * only this balance is amortised, and only this balance is what the schedule
-   * in {@link MortgageCost.byYear} charges for.
-   */
-  mortgage: number
-  /**
    * Equity borrowed to fund an outflow the household could not otherwise cover.
-   * A second, separate balance: it accrues interest (charged as an outflow of
-   * its own, so the household really pays it) but is never amortised, since
-   * nothing in the cash flow pays it down except an explicit surplus.
+   *
+   * The household's only path-dependent debt, and the only one that could be:
+   * every scheduled loan is pure in the plan's inputs, so
+   * {@link MortgageCost.balanceByYear} and {@link OtherDebtCost.balanceByYear}
+   * walk them once between them for all 401 paths. This balance no schedule can
+   * predict. It accrues interest — charged as an outflow of its own, so the
+   * household really pays it — but is never amortised, since nothing in the cash
+   * flow pays it down except an explicit surplus.
    */
   borrowedForSpending: number
-  /** Months left on the current mortgage (drives the amortization annuity). */
-  mortgageMonthsLeft: number
   /** Monthly contribution (a recurring event can change it). */
   monthly: number
   /** Liquid cash buffer (grows with inflation, spent before investments). */
@@ -131,9 +127,14 @@ interface SimState {
  * portfolio-wide in effect — a lender looks at the household's whole balance
  * sheet — and splitting them per property would need an allocation rule the plan
  * has no input for.
+ *
+ * The scheduled loan is passed in rather than read off `s`, because it is not
+ * path state: it comes from {@link MortgageCost.balanceByYear}, and which of a
+ * year's two readings of it applies — before the year's move or after it — is
+ * something only the caller knows.
  */
-const homeEquityOf = (s: SimState) =>
-  s.propertyValue - s.mortgage - s.borrowedForSpending
+const homeEquityOf = (s: SimState, loanBalance: number) =>
+  s.propertyValue - loanBalance - s.borrowedForSpending
 
 /**
  * One property as a path sees it: the plan's static facts plus the value and
@@ -205,7 +206,9 @@ interface PathResult {
 function fundShortfall(
   s: SimState,
   shortfall: number,
-  taxCtx: TaxContext
+  taxCtx: TaxContext,
+  /** The scheduled loan's balance, for the equity there is left to borrow. */
+  loanBalance: number
 ): {
   tax: number
   sold: number
@@ -240,7 +243,7 @@ function fundShortfall(
   // inputs and would never charge for this, so adding it there would have the
   // household amortise — for free — a debt nobody is billed for.
   if (shortfall > 1) {
-    borrowed = Math.min(shortfall, Math.max(0, homeEquityOf(s)))
+    borrowed = Math.min(shortfall, Math.max(0, homeEquityOf(s, loanBalance)))
     s.borrowedForSpending += borrowed
     shortfall -= borrowed
   }
@@ -311,13 +314,6 @@ interface MortgageCost {
   /**
    * Modelled service per year of the projection (element 0 unused). Follows
    * property events, which swap the loan for a fresh 30-year one.
-   *
-   * Deliberately a schedule derived from the plan's inputs rather than a
-   * reading of the running balance. Feeding equity borrowed in retirement back
-   * into the service compounds principal as well as interest — a bigger balance
-   * charges a bigger service, which borrows more, which charges more again — and
-   * that is why the borrowing lives on {@link SimState.borrowedForSpending},
-   * where it accrues interest alone and never asks this schedule for anything.
    */
   byYear: number[]
   /**
@@ -326,6 +322,28 @@ interface MortgageCost {
    * {@link serviceYear} for why the lender's bidrag is in here.
    */
   deductibleByYear: number[]
+  /**
+   * What is still owed at the close of each year, *before* a move that year
+   * swaps the loan out. That is the balance the year's cash flow is settled
+   * against, because a move lands at year end — after the household has lived
+   * the year on the loan it woke up with. {@link runPath} threads the year's
+   * moves back on and so opens the next year on the balance this walk carried
+   * into it. Element 0 is today's, likewise before any event at the starting age.
+   *
+   * Walked here rather than in each path, like {@link OtherDebtCost.balanceByYear}
+   * and for the same reason: every input to it is deterministic — the rate, the
+   * term, the afdragsfrihed, the property events, the year the sale settles it —
+   * so the 401 paths would each recompute one identical series, and two walks of
+   * one loan are two chances to disagree about it.
+   *
+   * It is the *scheduled* loan and nothing else. Feeding equity borrowed in
+   * retirement back into it would compound principal as well as interest — a
+   * bigger balance charges a bigger service, which borrows more, which charges
+   * more again — and that is why the borrowing lives on
+   * {@link SimState.borrowedForSpending}, where it accrues interest alone and
+   * never asks this schedule for anything.
+   */
+  balanceByYear: number[]
   /**
    * The payment the household's budget already deducted, per year — a reading of
    * `state.mortgageBudgetedMonthly` and never of the loan above. The working
@@ -356,6 +374,7 @@ function mortgageCost(
 ): MortgageCost {
   const byYear = new Array<number>(Math.max(0, years) + 1).fill(0)
   const deductibleByYear = new Array<number>(byYear.length).fill(0)
+  const balanceByYear = new Array<number>(byYear.length).fill(0)
   const byAge = eventsByAge(state.events)
   let balance = state.mortgageBalance
   let monthsLeft = mortgageTermMonths(state)
@@ -368,7 +387,9 @@ function mortgageCost(
     }
   }
 
-  // Events at the starting age fire before year 1, as they do in `runPath`.
+  // Events at the starting age fire before year 1, as they do in `runPath` —
+  // which is why today's balance is recorded before them and not after.
+  balanceByYear[0] = balance
   swapLoanAt(state.currentAge)
   for (let y = 1; y < byYear.length; y++) {
     // The sale settles the loan out of the proceeds (`runPath`, step 2e), so the
@@ -387,12 +408,14 @@ function mortgageCost(
     byYear[y] = year.service
     deductibleByYear[y] = year.deductible
     balance = year.balance
+    balanceByYear[y] = balance
     monthsLeft = Math.max(0, monthsLeft - 12)
     swapLoanAt(state.currentAge + y)
   }
   return {
     byYear,
     deductibleByYear,
+    balanceByYear,
     budgeted: state.mortgageBudgetedMonthly * 12,
   }
 }
@@ -486,6 +509,8 @@ const PROPERTY_TAX_REFINEMENT_PASSES = 3
 function settleAgainstDrawdown(
   s: SimState,
   taxCtx: TaxContext,
+  /** The scheduled loan's balance, for {@link fundShortfall}'s equity test. */
+  loanBalance: number,
   /** The § 26 base's personal-income half — the same figure `chargeGiven` uses. */
   personalIncome: number,
   /** The year's combined § 25 amounts — the width of the band that can move. */
@@ -498,7 +523,7 @@ function settleAgainstDrawdown(
   for (let pass = 0; pass < PROPERTY_TAX_REFINEMENT_PASSES; pass++) {
     const shortfall = shortfallGiven(charge)
     if (shortfall <= 0) return charge
-    const realised = fundShortfall({ ...s }, shortfall, taxCtx).gain
+    const realised = fundShortfall({ ...s }, shortfall, taxCtx, loanBalance).gain
     // The first prediction is also what bounds the answer: the fixed point's
     // aktieindkomst is at least this and at most a known step above it, so a
     // band test on it says whether the engine needs asking at all. The
@@ -543,18 +568,29 @@ function nextNormal(rng: () => number): number {
 }
 
 /**
- * Apply a single life event to the running state (mutates and returns it).
+ * Apply a single life event to the running state (mutates `s`), and return the
+ * scheduled loan's balance the event leaves behind.
  *
  * `properties` is the path's live list; a move rewrites its first entry, the one
  * the scheduled loan is secured on. Giving a move its own choice of which
  * property to replace is issue #9.
+ *
+ * The balance is threaded in and out rather than read straight from
+ * {@link MortgageCost.balanceByYear}, because a move needs it to work out the
+ * equity its sale releases — and two moves at the same age would then both sell
+ * against a loan the first of them had already repaid. What is threaded is not a
+ * second amortisation: it changes only at a move, and it walks the same events
+ * in the same order as {@link mortgageCost}'s own `swapLoanAt`, so it lands on
+ * the balance that schedule carries into the next year.
  */
 function applyEvent(
   s: SimState,
   event: PlanningEvent,
   globalHousingReturn: number,
-  properties: RunProperty[]
-): SimState {
+  properties: RunProperty[],
+  /** The scheduled loan's balance as this event finds it. */
+  loanBalance: number
+): number {
   // Fraction of the investment pot that is cost basis (not gains).
   const basisFraction =
     s.investments > 0 ? Math.min(1, s.investmentBasis / s.investments) : 1
@@ -582,7 +618,7 @@ function applyEvent(
       // Selling settles every claim on the house, borrowed equity included, so
       // the borrowing does not follow the household into the new home. Only the
       // home is sold: any further property stays put, value and all.
-      const realisedEquity = oldValue - s.mortgage - s.borrowedForSpending
+      const realisedEquity = oldValue - loanBalance - s.borrowedForSpending
       s.borrowedForSpending = 0
       s.investments += realisedEquity
       s.investmentBasis += realisedEquity // tax-free home proceeds → basis
@@ -606,12 +642,10 @@ function applyEvent(
       // for a plan whose first entry is a fritidsbolig.
       home.kind = "helaarsbolig"
       home.housingReturn = ev.housingReturnOverride ?? globalHousingReturn
-      s.mortgage = newMortgage
-      s.mortgageMonthsLeft = MORTGAGE_TERM_MONTHS // fresh 30-year loan
-      break
+      return newMortgage
     }
   }
-  return s
+  return loanBalance
 }
 
 /** Events grouped by the age at which they fire. */
@@ -705,12 +739,12 @@ interface PropertySchedule {
    * The year the loan-bearing property (index 0) is disposed of, or `Infinity`
    * if it never is.
    *
-   * Read by both halves of the loan's arithmetic — {@link mortgageCost} stops
-   * billing for it and {@link runPath} stops amortising it — so that the balance
-   * the sale settles is the one the household last paid for. Derived from the
-   * same ownership transitions as {@link soldByYear} rather than from
-   * `disposalAge` directly, which is what keeps the two from disagreeing about a
-   * property that is disposed of in the year it is bought.
+   * Read by {@link mortgageCost}, which from that year bills nothing for the
+   * loan and carries a zero balance forward, so that what {@link runPath} takes
+   * out of the sale proceeds is the balance the household last paid for.
+   * Derived from the same ownership transitions as {@link soldByYear} rather
+   * than from `disposalAge` directly, which is what keeps the two from
+   * disagreeing about a property that is disposed of in the year it is bought.
    */
   loanRepaidYear: number
 }
@@ -1109,30 +1143,37 @@ function runPath(
     investments: state.startInvestments,
     investmentBasis: state.startInvestments,
     propertyValue: ownedValue,
-    mortgage: state.mortgageBalance,
     borrowedForSpending: 0,
-    mortgageMonthsLeft: mortgageTermMonths(state),
     monthly: state.monthlyContribution,
     cash: state.cashBuffer,
   }
 
+  /**
+   * The scheduled loan as this path has reached: read from `mortgage` at the
+   * top of every year and moved only by a move. It is a local rather than a
+   * field of {@link SimState} because it is not path state at all — no return
+   * draw can touch it — and a field is what would invite it to be walked here a
+   * second time.
+   */
+  let loan = mortgage.balanceByYear[0]
+
   // Apply any events registered at the starting age before recording year 0.
   for (const e of byAge.get(state.currentAge) ?? []) {
-    applyEvent(s, e, state.assumptions.housingReturn, properties)
+    loan = applyEvent(s, e, state.assumptions.housingReturn, properties, loan)
   }
 
   const liquid0 = s.investments + s.cash
   const investments: number[] = [Math.max(0, s.investments)]
-  const homeEquitySeries: number[] = [homeEquityOf(s)]
+  const homeEquitySeries: number[] = [homeEquityOf(s, loan)]
   const cashSeries: number[] = [s.cash]
   const otherDebtSeries: number[] = [otherDebt.balanceByYear[0]]
   const netWorth: number[] = [
-    liquid0 + homeEquityOf(s) - otherDebt.balanceByYear[0],
+    liquid0 + homeEquityOf(s, loan) - otherDebt.balanceByYear[0],
   ]
   const contributions: number[] = [0]
   const housingGains: number[] = [0]
   const investmentGains: number[] = [0]
-  const mortgageSeries: number[] = [s.mortgage]
+  const mortgageSeries: number[] = [loan]
   const investmentTaxSeries: number[] = [0]
   const spendingSeries: number[] = [0]
   const investmentsSoldSeries: number[] = [0]
@@ -1183,7 +1224,11 @@ function runPath(
     // trend is per property, since a plan may say a summer house appreciates
     // differently from the home. Grundværdi rides along at the same rate — the
     // plan has no separate land-price assumption to grow it by.
-    const equityBefore = homeEquityOf(s)
+    //
+    // What the household owes as the year opens — the loan last year closed on,
+    // the move it may have ended in included.
+    const openingLoan = loan
+    const equityBefore = homeEquityOf(s, openingLoan)
     const shock = housingShockFor(y)
     let ownedValueNow = 0
     for (const p of properties) {
@@ -1194,19 +1239,12 @@ function runPath(
       ownedValueNow += p.value
     }
     s.propertyValue = ownedValueNow
-    // Afdragsfrihed is counted from today, not from when the loan was taken out
-    // — the user enters the years they have left of it. The year the loan-bearing
-    // property is sold is skipped: `mortgageCost` bills nothing for it, so
-    // amortising anyway would hand the household a year's afdrag it never paid.
-    if (y !== schedule.loanRepaidYear) {
-      s.mortgage = amortizeYear(
-        s.mortgage,
-        state.mortgageRate,
-        s.mortgageMonthsLeft,
-        y <= state.mortgageInterestOnlyYears
-      ).balance
-    }
-    s.mortgageMonthsLeft = Math.max(0, s.mortgageMonthsLeft - 12)
+    // The loan has already had its year — once, in `mortgageCost`, for all 401
+    // paths. That walk is where afdragsfrihed is applied and where the year the
+    // loan-bearing property is sold leaves a settled balance behind, so reading
+    // the schedule is also what keeps the household from being billed for a
+    // year's afdrag it never paid.
+    loan = mortgage.balanceByYear[y]
 
     // 2b) Cash buffer keeps its real value (grows with price inflation).
     s.cash *= 1 + state.assumptions.inflation
@@ -1239,13 +1277,13 @@ function runPath(
       p.owned = false
       s.propertyValue -= p.value
       housingCash += p.value
-      if (i === 0 && s.mortgage > 0) {
-        // The loan is secured on this property, so the sale settles it. Not
-        // floored at zero: a household selling for less than it owes still owes
-        // the difference, and hiding that would forgive a real debt.
-        housingCash -= s.mortgage
-        s.mortgage = 0
-        s.mortgageMonthsLeft = 0
+      if (i === 0 && openingLoan > 0) {
+        // The loan is secured on this property, so the sale settles it — out of
+        // the balance the year opened with, because this is `loanRepaidYear` by
+        // construction and `mortgageCost` neither bills nor amortises that year.
+        // Not floored at zero: a household selling for less than it owes still
+        // owes the difference, and hiding that would forgive a real debt.
+        housingCash -= openingLoan
       }
       if (s.propertyValue <= 0 && s.borrowedForSpending > 0) {
         // Equity borrowing is secured on the portfolio as a whole, so it comes
@@ -1278,7 +1316,7 @@ function runPath(
     // borrowing against the home equity.
     let contribThisYear = 0
     const drawFromAssets = (need: number) => {
-      const funded = fundShortfall(s, need, taxCtx)
+      const funded = fundShortfall(s, need, taxCtx, loan)
       investmentTax += funded.tax
       investmentsSoldThisYear += funded.sold
       borrowedThisYear += funded.borrowed
@@ -1353,6 +1391,7 @@ function runPath(
         propertyTaxThisYear = settleAgainstDrawdown(
           s,
           taxCtx,
+          loan,
           pension.taxable[y],
           nedslagInPlay,
           propertyTaxThisYear,
@@ -1400,6 +1439,7 @@ function runPath(
         propertyTaxThisYear = settleAgainstDrawdown(
           s,
           taxCtx,
+          loan,
           pension.taxable[y],
           nedslagInPlay,
           propertyTaxThisYear,
@@ -1431,16 +1471,18 @@ function runPath(
     // and the interest it accrued. Buying and selling move equity too, but they
     // are transfers, not gains: adding the year's net housing cash flow back
     // cancels them, so "Boligværdi" reports appreciation and afdrag alone.
-    const housingGain = homeEquityOf(s) - equityBefore + housingCash
+    const housingGain = homeEquityOf(s, loan) - equityBefore + housingCash
 
-    // 4) Life events at this age.
+    // 4) Life events at this age. A move lands here, at the year's end, so the
+    // loan it leaves behind is what the *next* year opens on — which is why the
+    // year's own cash flow above was settled against the loan it had all along.
     const beforeMonthly = s.monthly
     for (const e of byAge.get(age) ?? []) {
-      applyEvent(s, e, state.assumptions.housingReturn, properties)
+      loan = applyEvent(s, e, state.assumptions.housingReturn, properties, loan)
     }
     if (s.monthly !== beforeMonthly) contribution = s.monthly * 12
 
-    const homeEquity = homeEquityOf(s)
+    const homeEquity = homeEquityOf(s, loan)
     investments.push(s.investments)
     homeEquitySeries.push(homeEquity)
     cashSeries.push(s.cash)
@@ -1453,7 +1495,7 @@ function runPath(
     investmentGains.push(gain)
     // Both balances: a household that borrowed against its house to eat is not
     // debt-free just because the scheduled loan matured.
-    mortgageSeries.push(s.mortgage + s.borrowedForSpending)
+    mortgageSeries.push(loan + s.borrowedForSpending)
     investmentTaxSeries.push(investmentTax)
     spendingSeries.push(spendingThisYear)
     investmentsSoldSeries.push(investmentsSoldThisYear)
