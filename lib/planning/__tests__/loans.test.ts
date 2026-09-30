@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest"
 import { amortizeYear } from "../amortisation"
 import {
   LOAN_TYPE_DEFAULTS,
+  hasDanglingSecurity,
   loanSummary,
   missingSecurityNotice,
   newPlannedLoan,
@@ -216,6 +217,21 @@ describe("realkreditPrincipal", () => {
 
   it("owes nothing on an empty list", () => {
     expect(realkreditPrincipal([])).toBe(0)
+  })
+})
+
+describe("hasDanglingSecurity", () => {
+  it("separates a loan with no pant from one whose bolig is gone", () => {
+    // The distinction the form turns on: an unsecured loan is what the user
+    // asked for, a dangling one is what a deleted property left behind. Reading
+    // the second as the first would drop the link the row still has to show.
+    expect(hasDanglingSecurity(at({ propertyId: null }), [])).toBe(false)
+    expect(hasDanglingSecurity(at({ propertyId: "prop-b" }), [property()])).toBe(
+      true
+    )
+    expect(
+      hasDanglingSecurity(at({ propertyId: "prop-a" }), [property()])
+    ).toBe(false)
   })
 })
 

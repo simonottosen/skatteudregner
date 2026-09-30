@@ -141,7 +141,8 @@ export function maxInterestOnlyYears(
  */
 export function realkreditPrincipal(loans: readonly PlannedLoan[]): number {
   let total = 0
-  for (const loan of loans) if (loan.type === "realkredit") total += loan.principal
+  for (const loan of loans)
+    if (loan.type === "realkredit") total += loan.principal
   return total
 }
 
@@ -200,23 +201,31 @@ export function loanSummary(
 }
 
 /**
- * What the user has to settle before the plan means what it says — or null when
- * every loan's security is accounted for.
+ * Whether the loan names a property the plan no longer has.
  *
  * Reachable by removing a property a loan was secured on: the two lists are
- * edited apart, so the link outlives the property. Reported rather than quietly
- * repaired, because "secured on nothing" and "secured on the house I have just
- * deleted by mistake" are different plans.
+ * edited apart, so the link outlives the property. Left standing rather than
+ * quietly repaired, because "secured on nothing" and "secured on the house I
+ * have just deleted by mistake" are different plans — so the form has to keep
+ * the link selectable and {@link missingSecurityNotice} has to say so.
+ */
+export function hasDanglingSecurity(
+  loan: PlannedLoan,
+  properties: readonly PlannedProperty[]
+): boolean {
+  if (loan.propertyId === null) return false
+  return !properties.some((p) => p.id === loan.propertyId)
+}
+
+/**
+ * What the user has to settle before the plan means what it says — or null when
+ * every loan's security is accounted for.
  */
 export function missingSecurityNotice(
   loans: readonly PlannedLoan[],
   properties: readonly PlannedProperty[]
 ): string | null {
-  const owned = new Set(properties.map((p) => p.id))
-  const dangling = loans.some(
-    (l) => l.propertyId !== null && !owned.has(l.propertyId)
-  )
-  if (!dangling) return null
+  if (!loans.some((l) => hasDanglingSecurity(l, properties))) return null
   return (
     "Et lån er knyttet til en bolig, planen ikke har. Vælg en anden bolig, " +
     "eller sæt lånet til uden pant."

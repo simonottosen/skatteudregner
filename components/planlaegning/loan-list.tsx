@@ -14,6 +14,7 @@ import { MoneyInput, PercentField, num } from "./money-input"
 import {
   LOAN_TYPES,
   LOAN_TYPE_LABEL,
+  hasDanglingSecurity,
   loanSummary,
   maxInterestOnlyYears,
   missingSecurityNotice,
@@ -89,9 +90,7 @@ export function LoanList({
             const open = openId === loan.id
             const patch = (fields: Partial<PlannedLoan>) =>
               onChange(replaceLoan(loans, { ...loan, ...fields }))
-            const dangling =
-              loan.propertyId !== null &&
-              !properties.some((p) => p.id === loan.propertyId)
+            const dangling = hasDanglingSecurity(loan, properties)
             const securityItems = [
               NO_SECURITY,
               ...properties.map((p) => p.id),

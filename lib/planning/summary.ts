@@ -166,10 +166,11 @@ export function mortgageBudgetNotice(
   if (state.mortgageBudgetedMonthly > 0) return null
   const monthly = modelledMortgageMonthly(state)
   if (monthly <= 0) return null
+  const principal = realkreditPrincipal(state.loans)
   return {
     title: "Boliglånet er ikke med i dit budget",
     subtitle:
-      `Planen regner med en restgæld på ${formatDKK(realkreditPrincipal(state.loans))}, ` +
+      `Planen regner med en restgæld på ${formatDKK(principal)}, ` +
       "men dit budget trækker ingen boligydelse fra. Ydelsen på ca. " +
       `${formatDKK(monthly)}/md. bliver derfor trukket fra din månedlige ` +
       "opsparing. Slå realkreditlånet til på budgetsiden, hvis din opsparing " +
