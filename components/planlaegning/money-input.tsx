@@ -1,6 +1,6 @@
 "use client"
 
-import { TextInput } from "@carbon/react"
+import { NumberInput, TextInput } from "@carbon/react"
 
 /**
  * Carbon's `NumberInput` reports an empty or half-typed field as a string, so
@@ -61,5 +61,39 @@ export function MoneyInput({
         kr.
       </span>
     </div>
+  )
+}
+
+/**
+ * NumberInput bound to a fraction but shown as a percentage.
+ *
+ * Beside {@link MoneyInput} rather than inside the overview, where it started,
+ * because the loan list needs the same field and two of these would be two
+ * roundings of the same fraction.
+ */
+export function PercentField({
+  id,
+  label,
+  value,
+  step = 0.1,
+  helperText,
+  onChange,
+}: {
+  id: string
+  label: string
+  value: number
+  step?: number
+  helperText?: string
+  onChange: (fraction: number) => void
+}) {
+  return (
+    <NumberInput
+      id={id}
+      label={`${label} (%)`}
+      step={step}
+      helperText={helperText}
+      value={Math.round(value * 10000) / 100}
+      onChange={(_e, { value: v }) => onChange(num(v, value * 100) / 100)}
+    />
   )
 }
