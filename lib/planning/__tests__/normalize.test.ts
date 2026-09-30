@@ -1,57 +1,126 @@
 import { describe, it, expect } from "vitest"
 import { newId, normalizePlanning } from "../normalize"
-import { DEFAULT_PLANNING_STATE } from "../types"
+import { DEFAULT_ASSUMPTIONS, DEFAULT_PLANNING_STATE } from "../types"
 
 describe("normalizePlanning", () => {
-  describe("mortgageInterestOnlyYears", () => {
+  describe("loans", () => {
     /**
-     * Afdragsfrihed sits inside the loan term, so a longer period than the loan
-     * itself describes a loan that is never repaid. The simulation copes with
-     * that on its own — past maturity it only charges interest either way — so
-     * the reason to bound it here is the stored plan and the input, which offers
-     * the term as its maximum. Without this, a saved plan can hold a value the
-     * user cannot re-enter and cannot see is wrong.
+     * The entries themselves are `normalizeLoans`' business and are tested in
+     * `loans.test.ts`. What is tested here is the plan-level join: that a
+     * version-2 blob's scalars reach the list at all, that a list already there
+     * is not migrated a second time, and — the one thing neither side can check
+     * alone — that the migrated mortgage is secured on the *same* property
+     * object the plan keeps.
      */
-    it("caps the period at the loan term", () => {
-      const s = normalizePlanning({
-        mortgageTermYears: 20,
-        mortgageInterestOnlyYears: 30,
+    it("migrates a version-2 plan's two debts into the list", () => {
+      const migrated = normalizePlanning({
+        version: 2,
+        properties: [{ id: "prop-home", value: 4_000_000 }],
+        mortgageBalance: 2_000_000,
+        mortgageRate: 0.038,
+        mortgageTermYears: 25,
+        mortgageBidragssats: 0.006,
+        otherDebtBalance: 150_000,
+        otherDebtRate: 0.07,
+        otherDebtTermYears: 10,
       })
-      expect(s.mortgageInterestOnlyYears).toBe(20)
-    })
-
-    it("clamps against the term after that term is itself clamped", () => {
-      // The raw term is out of range, so capping against it rather than against
-      // the value actually stored would let 45 through.
-      const s = normalizePlanning({
-        mortgageTermYears: 60,
-        mortgageInterestOnlyYears: 45,
+      expect(migrated.version).toBe(3)
+      expect(migrated.loans).toHaveLength(2)
+      expect(migrated.loans[0]).toMatchObject({
+        type: "realkredit",
+        propertyId: "prop-home",
+        principal: 2_000_000,
+        rate: 0.038,
+        termMonths: 300,
+        bidragssats: 0.006,
       })
-      expect(s.mortgageTermYears).toBe(40)
-      expect(s.mortgageInterestOnlyYears).toBe(40)
-    })
-
-    it("leaves a period inside the term alone", () => {
-      const s = normalizePlanning({
-        mortgageTermYears: 30,
-        mortgageInterestOnlyYears: 10,
+      expect(migrated.loans[1]).toMatchObject({
+        type: "bank",
+        propertyId: null,
+        principal: 150_000,
       })
-      expect(s.mortgageInterestOnlyYears).toBe(10)
     })
 
-    it("falls back to the default when absent or unusable", () => {
-      for (const raw of [{}, { mortgageInterestOnlyYears: "5" }, { mortgageInterestOnlyYears: NaN }]) {
-        expect(normalizePlanning(raw).mortgageInterestOnlyYears).toBe(
-          DEFAULT_PLANNING_STATE.mortgageInterestOnlyYears
-        )
-      }
+    it("secures the migrated mortgage on the home the plan keeps", () => {
+      // The ids are minted here: a version-1 home arrives without one, and
+      // normalizing the properties twice would mint two. A loan secured against
+      // the throwaway id would be a loan on a property the plan does not have —
+      // which `missingSecurityNotice` would then ask the user about.
+      const migrated = normalizePlanning({
+        version: 1,
+        homeValue: 3_500_000,
+        mortgageBalance: 2_000_000,
+      })
+      expect(migrated.loans[0].propertyId).toBe(migrated.properties[0].id)
     })
 
-    it("floors a negative period at zero", () => {
-      expect(
-        normalizePlanning({ mortgageInterestOnlyYears: -5 })
-          .mortgageInterestOnlyYears
-      ).toBe(0)
+    it("leaves a renter's inferred loan secured on nothing", () => {
+      // Reachable on the default path: /skat's renteudgifter imply a balance
+      // before any boligværdi has been entered.
+      const migrated = normalizePlanning({ mortgageBalance: 2_000_000 })
+      expect(migrated.properties).toEqual([])
+      expect(migrated.loans[0].propertyId).toBeNull()
+    })
+
+    it("ignores the legacy scalars once a list is present", () => {
+      // Keyed on the shape rather than on `version`, because a blob reaches this
+      // from localStorage, Supabase or an MCP client with any version field it
+      // likes. Migrating an already-migrated plan would double its debt on
+      // every load.
+      const both = normalizePlanning({
+        version: 2,
+        mortgageBalance: 9_000_000,
+        loans: [{ type: "bank", principal: 50_000 }],
+      })
+      expect(both.loans).toHaveLength(1)
+      expect(both.loans[0]).toMatchObject({ type: "bank", principal: 50_000 })
+    })
+
+    it("owes nothing on a plan that says nothing about debt", () => {
+      expect(normalizePlanning({}).loans).toEqual([])
+      expect(DEFAULT_PLANNING_STATE.loans).toEqual([])
+    })
+  })
+
+  describe("assumptions.equityBorrowingRate", () => {
+    /**
+     * The rate the projection charges on equity borrowed mid-retirement. It used
+     * to read the plan's `mortgageRate`, which is gone — and an unmigrated plan
+     * would fall to the shared default, silently repricing the borrowing of
+     * every household whose own rate was not 4,1 %.
+     */
+    it("takes the old mortgage rate as the plan's own", () => {
+      const s = normalizePlanning({ version: 2, mortgageRate: 0.052 })
+      expect(s.assumptions.equityBorrowingRate).toBe(0.052)
+    })
+
+    it("takes it even from a plan that already has an assumptions object", () => {
+      // The old field is a sibling of `assumptions`, not a member of it, so a
+      // plan with assumptions saved and no `equityBorrowingRate` among them
+      // still has a rate to migrate.
+      const s = normalizePlanning({
+        version: 2,
+        mortgageRate: 0.052,
+        assumptions: { inflation: 0.02 },
+      })
+      expect(s.assumptions.equityBorrowingRate).toBe(0.052)
+      expect(s.assumptions.inflation).toBe(0.02)
+    })
+
+    it("keeps a rate the plan states for itself", () => {
+      // A migrated plan is saved with both fields: the assumption wins, or
+      // editing it would be undone by the legacy sibling on the next load.
+      const s = normalizePlanning({
+        mortgageRate: 0.052,
+        assumptions: { equityBorrowingRate: 0.06 },
+      })
+      expect(s.assumptions.equityBorrowingRate).toBe(0.06)
+    })
+
+    it("falls back to the default for a plan that states neither", () => {
+      expect(normalizePlanning({}).assumptions.equityBorrowingRate).toBe(
+        DEFAULT_ASSUMPTIONS.equityBorrowingRate
+      )
     })
   })
 
@@ -67,7 +136,7 @@ describe("normalizePlanning", () => {
       // a plan that never recorded a deduction did not make one.
       const s = normalizePlanning({ mortgageBalance: 2_000_000 })
       expect(s.mortgageBudgetedMonthly).toBe(0)
-      expect(s.mortgageBalance).toBe(2_000_000)
+      expect(s.loans[0].principal).toBe(2_000_000)
     })
 
     it("keeps a real deduction", () => {
@@ -98,40 +167,6 @@ describe("normalizePlanning", () => {
     })
   })
 
-  describe("mortgageBidragssats", () => {
-    it("keeps a rate the budget would accept", () => {
-      // Same bound as the budget's own field, so a plan seeded from a budget
-      // survives the round trip with the fee it was priced with.
-      expect(
-        normalizePlanning({ mortgageBidragssats: 0.006 }).mortgageBidragssats
-      ).toBe(0.006)
-    })
-
-    it("clamps a rate outside the budget's range", () => {
-      expect(
-        normalizePlanning({ mortgageBidragssats: 0.5 }).mortgageBidragssats
-      ).toBe(0.05)
-      expect(
-        normalizePlanning({ mortgageBidragssats: -0.01 }).mortgageBidragssats
-      ).toBe(0)
-    })
-
-    it("falls back to the default when absent or unusable", () => {
-      // Zero, not a market average: /planlaegning never asks for a bidragssats,
-      // and an invented fee would be charged against the saving every year.
-      for (const raw of [
-        {},
-        { mortgageBidragssats: "0.006" },
-        { mortgageBidragssats: NaN },
-      ]) {
-        expect(normalizePlanning(raw).mortgageBidragssats).toBe(
-          DEFAULT_PLANNING_STATE.mortgageBidragssats
-        )
-      }
-      expect(DEFAULT_PLANNING_STATE.mortgageBidragssats).toBe(0)
-    })
-  })
-
   describe("properties", () => {
     it("migrates a version-1 plan's single home into the list", () => {
       // Everything saved before this field existed is a household with one
@@ -142,7 +177,7 @@ describe("normalizePlanning", () => {
         homeValue: 3_500_000,
         landValue: 1_200_000,
       })
-      expect(migrated.version).toBe(2)
+      expect(migrated.version).toBe(3)
       expect(migrated.properties).toHaveLength(1)
       expect(migrated.properties[0]).toMatchObject({
         kind: "helaarsbolig",
@@ -276,10 +311,14 @@ describe("normalizePlanning", () => {
    */
   describe("restoring a saved plan", () => {
     const saved = {
-      version: 2,
+      version: 3,
       properties: [
         { id: "prop-4f2a9c1d", label: "Rækkehuset", kind: "helaarsbolig", value: 4_000_000 },
         { id: "prop-b7e05a33", label: "Sommerhuset", kind: "fritidsbolig", value: 1_800_000 },
+      ],
+      loans: [
+        { id: "loan-6b1f3d08", propertyId: "prop-4f2a9c1d", type: "realkredit", principal: 2_400_000 },
+        { id: "loan-08c4e2b5", propertyId: null, type: "bank", principal: 180_000 },
       ],
       events: [
         { id: "pe-1c8d0e42", type: "expense", label: "Nyt tag", age: 45, amount: 250_000 },
@@ -302,6 +341,7 @@ describe("normalizePlanning", () => {
     it("hands back every id the blob already carries", () => {
       const s = normalizePlanning(saved)
       expect(s.properties.map((p) => p.id)).toEqual(["prop-4f2a9c1d", "prop-b7e05a33"])
+      expect(s.loans.map((l) => l.id)).toEqual(["loan-6b1f3d08", "loan-08c4e2b5"])
       expect(s.events.map((e) => e.id)).toEqual(["pe-1c8d0e42", "pe-9a3b6f70"])
       expect(s.scenarios.map((sc) => sc.id)).toEqual(["sc-2d61ae94"])
       // A scenario's own property list is normalized down the same path.
