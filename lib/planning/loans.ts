@@ -10,7 +10,7 @@
 
 import { clampNum, newId } from "./normalize"
 import {
-  DEFAULT_PLANNING_STATE,
+  DEFAULT_ASSUMPTIONS,
   type LoanType,
   type PlannedLoan,
   type PlannedProperty,
@@ -28,26 +28,35 @@ export const LOAN_TYPES: LoanType[] = ["realkredit", "bank"]
 /**
  * Rate and term a new loan of each type starts on.
  *
- * Read off the scalars this list replaces, so that a hand-added loan prices the
- * same as the field it stands in for. Unlike the balance these are not left at
- * zero: 0 % over 0 months is not a cautious guess but a free loan, and neither
- * number has a neutral value the form could fall back on.
+ * The figures the scalars this list replaced defaulted to, so that a hand-added
+ * loan prices the same as the field it stands in for, and a plan migrated from
+ * those scalars comes back on the terms it went in with. The realkredit rate is
+ * still stated once for the whole plan — as
+ * {@link PlanningAssumptions.equityBorrowingRate}, the rate the projection
+ * charges equity borrowing at — so it is read from there rather than repeated.
+ *
+ * Unlike the balance these are not left at zero: 0 % over 0 months is not a
+ * cautious guess but a free loan, and neither number has a neutral value the
+ * form could fall back on.
  */
 export const LOAN_TYPE_DEFAULTS: Record<
   LoanType,
   { rate: number; termMonths: number }
 > = {
   realkredit: {
-    rate: DEFAULT_PLANNING_STATE.mortgageRate,
-    termMonths: DEFAULT_PLANNING_STATE.mortgageTermYears * 12,
+    rate: DEFAULT_ASSUMPTIONS.equityBorrowingRate,
+    termMonths: 30 * 12,
   },
   bank: {
-    rate: DEFAULT_PLANNING_STATE.otherDebtRate,
-    termMonths: DEFAULT_PLANNING_STATE.otherDebtTermYears * 12,
+    rate: 0.07,
+    termMonths: 10 * 12,
   },
 }
 
-/** The 40 years `normalizePlanning` bounds both legacy loans by, in months. */
+/**
+ * Longest term any loan may state, in months — the 40 years the scalars this
+ * list replaced were bounded by, and now the only such bound in the plan.
+ */
 const MAX_TERM_MONTHS = 40 * 12
 
 /**
@@ -62,8 +71,10 @@ const MAX_BIDRAGSSATS = 0.05
  *
  * Zero kroner for the same reason `newPlannedProperty` starts at zero — an
  * amount the user did not type is one they would have to notice to correct — and
- * zero bidrag for the reason the plan's `mortgageBidragssats` defaults to zero:
- * an invented fee is charged against the saving every year.
+ * zero bidrag because /planlaegning never asks for a bidragssats: the real one
+ * arrives with the budget's own figure, the only place the fee and the deduction
+ * it is reconciled against are guaranteed to describe one loan. An invented one
+ * would be charged against the household's saving every year for the whole term.
  */
 export function newPlannedLoan(
   type: LoanType,
@@ -95,6 +106,43 @@ export function removeLoan(
   id: string
 ): PlannedLoan[] {
   return list.filter((l) => l.id !== id)
+}
+
+/**
+ * The most afdragsfrihed a loan of this term can carry, in years.
+ *
+ * Afdragsfrihed has to leave a year to repay in. `amortizeYear` stands the
+ * balance still through an interest-only year and again once the term has run
+ * out, so a period covering every billed year describes a loan nothing ever pays
+ * off — not the fixed maturity {@link PlannedLoan} promises.
+ *
+ * The billed years are counted with `ceil` because the term is months while the
+ * field is years: an 18-month loan is billed over two years, the second of them
+ * six months long, so the first can still be afdragsfri. Flooring would forbid
+ * that, and on the one-month term `termMonths` admits it would return −1 — which
+ * `clampNum` resolves in the max's favour, handing back a negative afdragsfrihed.
+ *
+ * Exported so the form can cap its input at the same number the normalizer
+ * would, rather than letting the user type a period that is silently trimmed.
+ */
+export function maxInterestOnlyYears(
+  loan: Pick<PlannedLoan, "termMonths">
+): number {
+  return Math.ceil(loan.termMonths / 12) - 1
+}
+
+/**
+ * What the household owes on its realkreditlån, across the whole list.
+ *
+ * The realkredit half and nothing else, because that is the half the budget's
+ * single housing line can have paid for — see `mortgageBudgetNotice`
+ * (`./summary`) and `DebtCost.budgeted` (`./simulate`), which both reconcile
+ * against it.
+ */
+export function realkreditPrincipal(loans: readonly PlannedLoan[]): number {
+  let total = 0
+  for (const loan of loans) if (loan.type === "realkredit") total += loan.principal
+  return total
 }
 
 /**
@@ -186,13 +234,13 @@ const LEGACY_OTHER_DEBT_LABEL = "Anden gæld"
 /**
  * A legacy term in years as the months the list holds.
  *
- * Floored at the whole year `normalizePlanning` floors the field at, so a term
- * of nothing migrates to a year rather than to the single month `loanFrom` would
+ * Floored at the whole year the field it comes from was floored at, so a term of
+ * nothing migrates to a year rather than to the single month `loanFrom` would
  * otherwise round it up to. The ceiling is left to `loanFrom`, which bounds every
  * term the same however it arrived.
  */
-const legacyTermMonths = (years: unknown, fallbackYears: number) =>
-  clampNum(years, fallbackYears, 1) * 12
+const legacyTermMonths = (years: unknown, type: LoanType) =>
+  clampNum(years, LOAN_TYPE_DEFAULTS[type].termMonths / 12, 1) * 12
 
 /**
  * Validate the fields of something already known to be an object — split from
@@ -221,21 +269,11 @@ function loanFrom(o: Record<string, unknown>): PlannedLoan {
     // that moved with it would rewrite a rate the user never touched.
     rate: clampNum(o.rate, defaults.rate, 0, 0.5),
     termMonths,
-    // Afdragsfrihed has to leave a year to repay in. `amortizeYear` stands the
-    // balance still through an interest-only year and again once the term has
-    // run out, so a period covering every billed year describes a loan nothing
-    // ever pays off — not the fixed maturity the rest of this contract promises.
-    // The billed years are counted with `ceil` because the term is months while
-    // this field is years: an 18-month loan is billed over two years, the second
-    // of them six months long, so the first can still be afdragsfri. Flooring
-    // would forbid that, and on the one-month term `termMonths` admits it would
-    // put the max below the min — which `clampNum` settles in the max's favour,
-    // handing back a negative afdragsfrihed.
     interestOnlyYears: clampNum(
       o.interestOnlyYears,
       0,
       0,
-      Math.ceil(termMonths / 12) - 1
+      maxInterestOnlyYears({ termMonths })
     ),
     // Bidrag is what a realkreditinstitut charges for lending against property.
     // A banklån carries none, whatever a blob says it carries.
@@ -253,11 +291,11 @@ function normalizeLoan(raw: unknown): PlannedLoan | null {
 /**
  * Read a plan blob's loan list, migrating it if it predates one.
  *
- * The plan used to hold exactly two debts as flat scalars: a realkreditlån
- * (`mortgage*`, secured on the first property — see {@link PlanningState}) and
- * one lumped other debt (`otherDebt*`, secured on nothing). Each becomes an
- * entry, and each is dropped when its balance is zero, so a household with no
- * bank debt comes back with a one-loan list rather than a loan of nothing.
+ * A version-2 plan held exactly two debts as flat scalars: a realkreditlån
+ * (`mortgage*`, secured on the first property) and one lumped other debt
+ * (`otherDebt*`, secured on nothing). Each becomes an entry, and each is dropped
+ * when its balance is zero, so a household with no bank debt comes back with a
+ * one-loan list rather than a loan of nothing.
  *
  * Keyed on the array being absent rather than on `version`, because a blob can
  * arrive from localStorage, Supabase or an MCP client with any version field it
@@ -270,6 +308,13 @@ function normalizeLoan(raw: unknown): PlannedLoan | null {
  * without one — a version-1 home gets a fresh id on each call. Securing the
  * migrated mortgage against a second normalization of the same blob would link
  * it to a property the plan does not keep.
+ *
+ * Every field goes through `loanFrom`, which is how the one place the old bounds
+ * disagreed gets settled: afdragsfrihed for the whole term, which the scalars
+ * allowed and {@link maxInterestOnlyYears} does not. A plan that had it migrates
+ * to a loan that repays its balance in the final year instead of rolling it to
+ * maturity, because the alternative is a {@link PlannedLoan} whose `termMonths`
+ * promises a repayment date it never reaches.
  */
 export function normalizeLoans(
   blob: unknown,
@@ -296,10 +341,7 @@ export function normalizeLoans(
         propertyId: properties[0]?.id ?? null,
         principal: mortgageBalance,
         rate: o.mortgageRate,
-        termMonths: legacyTermMonths(
-          o.mortgageTermYears,
-          DEFAULT_PLANNING_STATE.mortgageTermYears
-        ),
+        termMonths: legacyTermMonths(o.mortgageTermYears, "realkredit"),
         interestOnlyYears: o.mortgageInterestOnlyYears,
         bidragssats: o.mortgageBidragssats,
       })
@@ -314,10 +356,7 @@ export function normalizeLoans(
         propertyId: null,
         principal: otherDebtBalance,
         rate: o.otherDebtRate,
-        termMonths: legacyTermMonths(
-          o.otherDebtTermYears,
-          DEFAULT_PLANNING_STATE.otherDebtTermYears
-        ),
+        termMonths: legacyTermMonths(o.otherDebtTermYears, "bank"),
       })
     )
   }

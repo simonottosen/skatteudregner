@@ -57,6 +57,19 @@ export interface PlanningAssumptions {
   contributionGrowth: number
   /** Safe withdrawal rate; FI is reached at 1/SWR × annual spending. */
   safeWithdrawalRate: number
+  /**
+   * Rate charged on equity borrowed to fund spending the household's assets
+   * could not otherwise cover.
+   *
+   * An assumption rather than a term of any {@link PlannedLoan}, because this
+   * debt is not on the list: the projection raises it mid-retirement, path by
+   * path, against whatever equity is left (see `SimState.borrowedForSpending`).
+   * The list can be empty, hold three loans at three rates, or hold none secured
+   * on a property at all, so there is no entry the engine could read it off —
+   * which is what it used to do, reading `mortgageRate` and silently pricing the
+   * borrowing at nothing for a household that owed nothing today.
+   */
+  equityBorrowingRate: number
 }
 
 export const DEFAULT_ASSUMPTIONS: PlanningAssumptions = {
@@ -68,6 +81,10 @@ export const DEFAULT_ASSUMPTIONS: PlanningAssumptions = {
   inflation: 0.02,
   contributionGrowth: 0.02,
   safeWithdrawalRate: 0.04,
+  // What a realkreditlån cost when the plan held one rate for every loan it did
+  // not get from the user, so a plan that never touches this prices its
+  // borrowing as it always has.
+  equityBorrowingRate: 0.041,
 }
 
 /** A one-off cost (e.g. a wedding) deducted from investments at `age`. */
@@ -104,9 +121,15 @@ export interface RecurringEvent {
  * into investments; the down payment (newValue × (1 − ltv)) is taken back out of
  * investments; the new mortgage is newValue × ltv.
  *
- * "The home" is the first entry of {@link PlanningState.properties} — the one the
- * scheduled loan is secured on. Any other property the household owns is left
- * alone, and which of them a move sells is issue #9's question, not this one's.
+ * "The home" is the first entry of {@link PlanningState.properties}. Any other
+ * property the household owns is left alone, and which of them a move sells is
+ * issue #9's question, not this one's.
+ *
+ * The move settles *every* secured loan on {@link PlanningState.loans} and leaves
+ * one fresh 30-year loan behind, whichever property each of them names as
+ * security. That is the projection's limit rather than the plan's: secured debt
+ * is subtracted from the portfolio's equity as a whole, so the engine has no
+ * per-property balance to settle a sale against (issue #9).
  */
 export interface PropertyEvent {
   id: string
@@ -158,7 +181,8 @@ export interface PlannedProperty {
   /**
    * Age the household acquires it. At or below `currentAge` it is already owned
    * and costs nothing; later, it is bought that year and paid for out of the
-   * portfolio — all-equity, since the plan has only one loan (issue #8).
+   * portfolio — all-equity, because every {@link PlannedLoan} is drawn today and
+   * none can be taken out to fund a purchase decades out (see there).
    */
   acquisitionAge: number
   /** Age it is sold at; null means held for the whole projection. */
@@ -217,11 +241,11 @@ export interface PlannedLoan {
    * Annual bidragssats — the realkredit fee charged on the outstanding balance on
    * top of interest and afdrag. Zero for a banklån, which carries no such fee.
    *
-   * Not among the fields issue #8 lists, but the model this list replaces charges
-   * it ({@link PlanningState.mortgageBidragssats}, fed from the budget's own
-   * figure), and the same issue asks for the old fields to be absorbed rather
-   * than left running in parallel. A loan that could not carry the fee would
-   * force one or the other.
+   * Not among the fields issue #8 lists, but the scalars this list replaced
+   * charged it — fed from the budget's own figure, which is also what
+   * {@link PlanningState.mortgageBudgetedMonthly} is measured inclusive of. A
+   * loan that could not carry the fee would either hand back a payment larger
+   * than the one it charges, or invent a fee the budget never paid.
    */
   bidragssats: number
 }
@@ -253,12 +277,7 @@ export interface ScenarioChanges {
       | "properties"
       | "includePropertyTax"
       | "propertyTaxInBudget"
-      | "mortgageBalance"
-      | "mortgageRate"
-      | "mortgageTermYears"
-      | "otherDebtBalance"
-      | "otherDebtRate"
-      | "otherDebtTermYears"
+      | "loans"
     >
   >
   assumptionOverrides?: Partial<PlanningAssumptions>
@@ -336,8 +355,13 @@ export interface PlanningState {
   /**
    * 2 replaced the single `homeValue`/`landValue` pair with {@link properties}.
    * `normalizePlanning` migrates a version-1 blob into a one-element list.
+   *
+   * 3 replaced the eight `mortgage*`/`otherDebt*` scalars with {@link loans}.
+   * `normalizeLoans` migrates a version-2 blob into a list of up to two entries,
+   * and `normalizeAssumptions` takes the old `mortgageRate` as the plan's
+   * {@link PlanningAssumptions.equityBorrowingRate}, which used to read it.
    */
-  version: 2
+  version: 3
   /** User's current age (simulation start). */
   currentAge: number
   /** Age the simulation runs to (inclusive). */
@@ -353,18 +377,14 @@ export interface PlanningState {
    * price inflation) and is spent before investments are sold in retirement.
    */
   cashBuffer: number
-  /** Outstanding non-mortgage debt in DKK (student/car/consumer, aggregated). */
-  otherDebtBalance: number
-  /** Annual interest rate on the other debt. */
-  otherDebtRate: number
-  /** Remaining term in years over which the other debt is paid off. */
-  otherDebtTermYears: number
   /**
    * Every property the household owns or plans to own; empty if renting.
    *
-   * The first entry is "the home": the one {@link mortgageBalance} is secured on
-   * and the one a {@link PropertyEvent} move replaces. Giving each further loan
-   * its own property is issue #8.
+   * The first entry is "the home": the one a {@link PropertyEvent} move replaces,
+   * and the one whose sale settles the household's secured debt. A
+   * {@link PlannedLoan} may name any entry as its security, but the projection
+   * subtracts every secured balance from the portfolio's equity as a whole, so
+   * that is the only property a sale can settle against (issue #9).
    */
   properties: PlannedProperty[]
   /** Whether to model ongoing property tax (ejendomsværdiskat + grundskyld). */
@@ -378,44 +398,26 @@ export interface PlanningState {
    * of a budget that already lists it counts it twice.
    */
   propertyTaxInBudget: boolean
-  /** Outstanding mortgage principal in DKK. */
-  mortgageBalance: number
-  /** Annual interest rate used to amortize the mortgage. */
-  mortgageRate: number
   /**
-   * Annual bidragssats — the realkredit fee, charged on the outstanding balance
-   * on top of interest and afdrag.
+   * Every debt the household carries, secured or not; empty if it owes nothing.
    *
-   * Modelled so the payment the simulation charges is the *same quantity* as
-   * {@link mortgageBudgetedMonthly}, which the budget reports inclusive of
-   * bidrag. Leaving it out would hand back a fee that was never charged, every
-   * year, and lose it again at maturity.
-   *
-   * Zero by default because /planlaegning never asks for a bidragssats: the real
-   * one arrives with the budget's own figure, which is the only place the fee
-   * and the deduction it is reconciled against are guaranteed to describe one
-   * loan. A hand-entered loan therefore models interest + afdrag only — an
-   * omission the projection states rather than a fee it invents.
+   * One list rather than the eight scalars it replaces, because a household with
+   * two realkreditlån at two rates, or a car loan beside a student loan, could
+   * not state either as a single balance-rate-term triple and had to blend them
+   * by hand (issue #8). The projection aggregates the list — see `debtCost` in
+   * `./simulate` — so what it costs and what it owes is the sum of the entries,
+   * whatever their number.
    */
-  mortgageBidragssats: number
-  /** Remaining years on the mortgage (drives the debt-free age). */
-  mortgageTermYears: number
-  /**
-   * Afdragsfrihed: years from now with interest only and no principal repayment.
-   * The loan keeps its maturity, so the principal skipped here is repaid over a
-   * correspondingly shorter remainder — the payment cliff when the period ends
-   * is the reason to model it at all.
-   */
-  mortgageInterestOnlyYears: number
+  loans: PlannedLoan[]
   /**
    * The monthly realkredit payment the household's budget already subtracted
    * before reporting the surplus that becomes `monthlyContribution`
    * (`remaining = income − expenses − mortgage`, `lib/budget/state.ts`). Bidrag
    * included, because the budget's figure includes it.
    *
-   * Carried in from the budget rather than reconstructed from the loan above.
-   * The budget's mortgage module is off by default and then deducts nothing,
-   * while `mortgageBalance` can still be inferred from the interest entered on
+   * Carried in from the budget rather than reconstructed from {@link loans}. The
+   * budget's mortgage module is off by default and then deducts nothing, while a
+   * realkredit balance can still reach the list from the interest entered on
    * /skat — so the two describe different loans at least as often as the same
    * one, and reconstructing this would credit payments no one ever made.
    *
@@ -443,26 +445,19 @@ export interface PlanningState {
 }
 
 export const DEFAULT_PLANNING_STATE: PlanningState = {
-  version: 2,
+  version: 3,
   currentAge: 30,
   endAge: 90,
   retirementAge: 65,
   startInvestments: 0,
   investmentTaxMode: "realisation",
   cashBuffer: 0,
-  otherDebtBalance: 0,
-  otherDebtRate: 0.07,
-  otherDebtTermYears: 10,
   properties: [],
   includePropertyTax: false,
   // Charge it unless the user says their budget already covers it: a projection
   // that silently drops a real, lifelong expense reads as too optimistic.
   propertyTaxInBudget: false,
-  mortgageBalance: 0,
-  mortgageRate: 0.041,
-  mortgageBidragssats: 0,
-  mortgageTermYears: 30,
-  mortgageInterestOnlyYears: 0,
+  loans: [],
   mortgageBudgetedMonthly: 0,
   monthlyContribution: 0,
   annualSpending: 0,
@@ -478,11 +473,17 @@ export interface PlanningPoint {
   age: number
   /** Median liquid investments (nominal DKK). */
   investments: number
-  /** Median home equity = every property's value − mortgage (nominal DKK). */
+  /**
+   * Median home equity: every property's value, less every secured loan's
+   * balance and any equity borrowed for spending (nominal DKK).
+   */
   homeEquity: number
   /** Liquid cash buffer (nominal DKK). */
   cash: number
-  /** Outstanding non-mortgage debt (nominal DKK). */
+  /**
+   * Outstanding balance of the loans no property secures (nominal DKK) — the
+   * debt that sits beside home equity rather than inside it.
+   */
   otherDebt: number
   /** Median total wealth = investments + cash + home equity − other debt. */
   netWorth: number
@@ -522,7 +523,11 @@ export interface PlanningResult {
   points: PlanningPoint[]
   /** First age where liquid investments reach 1/SWR × annual spending. */
   fiAge: number | null
-  /** Age at which the mortgage is fully repaid (null if none / never). */
+  /**
+   * Age the household's *secured* debt is fully repaid — "gældfri bolig" — or
+   * null when it starts out owing none, or never clears it. Unsecured loans
+   * neither postpone the year nor bring it forward; see `simulatePlanning`.
+   */
   debtFreeAge: number | null
   /**
    * Age the deterministic (median) path runs out of money — investments and
