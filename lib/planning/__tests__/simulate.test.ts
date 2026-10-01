@@ -2874,10 +2874,11 @@ describe("simulatePlanning", () => {
 
     /**
      * Which sale settles which loan. `PlannedLoan.propertyId` used to be
-     * decorative: the whole secured balance was settled against the first
-     * property whichever property each loan named, so selling the summer house
-     * discharged the home's mortgage and selling the home discharged a loan the
-     * summer house secured (#9).
+     * decorative: the whole secured balance was settled against the *first*
+     * property and nothing was settled against any other, whichever property
+     * each loan named. So selling the home discharged a loan the summer house
+     * secured, and selling the summer house discharged nothing — not even its
+     * own mortgage, which the household then went on being billed for (#9).
      */
     describe("settling each loan against the property that secures it", () => {
       /**
@@ -2916,26 +2917,40 @@ describe("simulatePlanning", () => {
       const owed = (point: PlanningPoint, valueOwned: number) =>
         valueOwned - point.homeEquity
 
-      it("leaves the home's mortgage alone when the summer house is sold", () => {
+      it("settles the summer house's own loan, and leaves the mortgage alone", () => {
         const theHome = home(4_000_000)
+        const theSummer = { ...summer(2_000_000), disposalAge: 42 }
         const mortgage = loan({ principal: 1_000_000, propertyId: theHome.id })
-        const sold = byAge(
-          [theHome, { ...summer(2_000_000), disposalAge: 42 }],
-          [mortgage]
-        )
-        // The same plan with the summer house kept. The mortgage is on its own
-        // 30-year schedule and the sale is not an event in its life, so the two
-        // balances have to agree year for year.
-        const kept = byAge([theHome, summer(2_000_000)], [mortgage])
+        const onTheSummer = loan({
+          principal: 600_000,
+          propertyId: theSummer.id,
+        })
+        const sold = byAge([theHome, theSummer], [mortgage, onTheSummer])
+        // From the sale on, the household owes its mortgage and nothing else —
+        // and owes exactly what a household that never had the second loan
+        // would. Both halves in one comparison: the summer house took its own
+        // loan with it, and took nothing else.
+        const mortgageOnly = byAge([theHome], [mortgage])
         for (const age of [42, 43, 44, 45]) {
           expect(owed(sold.get(age)!, 4_000_000)).toBeCloseTo(
-            owed(kept.get(age)!, 6_000_000),
+            owed(mortgageOnly.get(age)!, 4_000_000),
             6
           )
         }
-        // Against a balance large enough that settling it would have shown: a
+        // Against a mortgage large enough that settling it would have shown: a
         // loan already paid off agrees with everything.
         expect(owed(sold.get(45)!, 4_000_000)).toBeGreaterThan(800_000)
+
+        // And out of its own proceeds, not forgiven: what reached the portfolio
+        // is 2.000.000 less the balance the sale year opened with — one year of
+        // a 30-year 4 % annuity, from the amortisation module rather than
+        // restated from the engine. Read as the step in `investments` the sale
+        // year adds over the one before it, which is what the pair above leaves
+        // undetermined.
+        const opening = amortizeYear(600_000, 0.04, 30 * 12, false).balance
+        const banked = (at: number) =>
+          sold.get(at)!.investments - mortgageOnly.get(at)!.investments
+        expect(banked(42) - banked(41)).toBeCloseTo(2_000_000 - opening, 6)
       })
 
       it("keeps servicing a loan on the summer house after the home is sold", () => {
