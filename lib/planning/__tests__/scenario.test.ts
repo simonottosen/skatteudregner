@@ -181,6 +181,70 @@ describe("normalizePlanning (scenarios)", () => {
     })
   })
 
+  /**
+   * A refinance scenario — the common one — overrides the loans and nothing
+   * else, so the list it names has no property of its own to be secured on. It
+   * has to reach the base plan's, because `applyScenario` swaps the loans out
+   * and leaves `properties` standing: those are the properties the scenario's
+   * mortgage really meets. Resolved against nothing it would come out as a
+   * realkredit securing no particular property, which the engine discharges at
+   * the household's *last* disposal rather than at the home's (#9) — a changed
+   * projection for a scenario that was saved years ago and never edited.
+   */
+  it("secures a refinance scenario's mortgage on the base plan's home", () => {
+    // The properties arrive without ids, so the id the scenario's loan names has
+    // to be the one this plan keeps and not a second minting of the same blob.
+    const round = normalizePlanning({
+      properties: [
+        { value: 4_000_000 },
+        { kind: "fritidsbolig", value: 2_000_000 },
+      ],
+      scenarios: [
+        {
+          id: "sc-refi",
+          name: "Omlagt lån",
+          changes: {
+            overrides: {
+              loans: [
+                { type: "realkredit", principal: 1_000_000 },
+                // "Uden pant" as the user chose it in the form: an explicit null
+                // is a decision, so the fallback may not re-secure it.
+                { type: "realkredit", principal: 50_000, propertyId: null },
+              ],
+            },
+          },
+        },
+      ],
+    })
+    const loans = round.scenarios[0].changes.overrides!.loans!
+    expect(loans[0].propertyId).toBe(round.properties[0].id)
+    expect(loans[1].propertyId).toBeNull()
+  })
+
+  it("prefers the properties the scenario states over the base plan's", () => {
+    // "What if I bought a bigger house and borrowed for it" describes one
+    // household: `applyScenario` swaps both lists out together, so the home its
+    // loan is secured on is the scenario's own.
+    const round = normalizePlanning({
+      properties: [{ value: 4_000_000 }],
+      scenarios: [
+        {
+          id: "sc-move",
+          name: "Nyt hus",
+          changes: {
+            overrides: {
+              properties: [{ value: 6_000_000 }],
+              loans: [{ type: "realkredit", principal: 1_000_000 }],
+            },
+          },
+        },
+      ],
+    })
+    const ov = round.scenarios[0].changes.overrides!
+    expect(ov.loans![0].propertyId).toBe(ov.properties![0].id)
+    expect(ov.loans![0].propertyId).not.toBe(round.properties[0].id)
+  })
+
   it("drops malformed scenarios and unknown override keys", () => {
     const round = normalizePlanning({
       ...DEFAULT_PLANNING_STATE,

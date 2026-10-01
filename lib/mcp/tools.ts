@@ -358,7 +358,9 @@ export function registerPlanningTools(
     },
     async (args, extra) => {
       const { state } = await load(extra)
-      const changes = normalizeScenarioChanges(args.changes)
+      // Against the saved plan's properties, so a change-set naming only loans
+      // secures them where this household's own loans are secured.
+      const changes = normalizeScenarioChanges(args.changes, state.properties)
       const base = summarize(state)
       const scen = summarize(applyScenario(state, changes))
       return json({
@@ -387,7 +389,7 @@ export function registerPlanningTools(
         id: newId("sc"),
         name: args.name.trim() || "Scenarie",
         createdAt: new Date().toISOString(),
-        changes: normalizeScenarioChanges(args.changes),
+        changes: normalizeScenarioChanges(args.changes, state.properties),
       }
       const next: PlanningState = normalizePlanning({
         ...state,
@@ -489,7 +491,10 @@ export function registerPlanningTools(
     async (args, extra) => {
       const { state } = await load(extra)
       const effective = args.changes
-        ? applyScenario(state, normalizeScenarioChanges(args.changes))
+        ? applyScenario(
+            state,
+            normalizeScenarioChanges(args.changes, state.properties)
+          )
         : state
       const basis = args.basis ?? "real"
       let result = simulatePlanning(effective)
@@ -597,7 +602,7 @@ export function registerPlanningTools(
         ...existing,
         name: args.name?.trim() || existing.name,
         changes: args.changes
-          ? normalizeScenarioChanges(args.changes)
+          ? normalizeScenarioChanges(args.changes, state.properties)
           : existing.changes,
       }
       const next: PlanningState = normalizePlanning({
