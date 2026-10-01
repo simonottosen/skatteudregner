@@ -469,12 +469,22 @@ interface DebtCost {
  * is index 0, so such a plan settles exactly where it always did. `Infinity`
  * compares as the largest disposal year, so a property the household never sells
  * wins, and the loan is then never settled at all.
+ *
+ * Only properties the household owns at some point are candidates. A list may
+ * hold one it never owns inside the projection — sold off before `currentAge`,
+ * or bought after `endAge` — and such an entry is undated for want of a
+ * transition, not because the household keeps it (see
+ * {@link PropertySchedule.disposalYearByProperty}). Letting it win would hang
+ * the loan on a property that never changes hands, so the sale the household
+ * actually makes would neither clear the balance nor have it deducted from the
+ * proceeds.
  */
-function lastDisposedIndex(disposalYearByProperty: readonly number[]): number {
+function lastDisposedIndex(schedule: PropertySchedule): number {
+  const { disposalYearByProperty: disposal, everOwned } = schedule
   let last = -1
-  for (let i = 0; i < disposalYearByProperty.length; i++) {
-    if (last < 0 || disposalYearByProperty[i] > disposalYearByProperty[last])
-      last = i
+  for (let i = 0; i < disposal.length; i++) {
+    if (!everOwned[i]) continue
+    if (last < 0 || disposal[i] > disposal[last]) last = i
   }
   return last
 }
@@ -535,7 +545,7 @@ function debtCost(
    * The pant the plan names, falling back to {@link lastDisposedIndex} for the
    * secured loan that names none the plan has.
    */
-  const unattributed = lastDisposedIndex(schedule.disposalYearByProperty)
+  const unattributed = lastDisposedIndex(schedule)
   const settlingIndex = (loan: PlannedLoan): number => {
     if (!reducesHomeEquity(loan)) return -1
     const named = schedule.items.findIndex((p) => settledBySaleOf(loan, p.id))
@@ -948,6 +958,19 @@ interface PropertySchedule {
   items: PlannedProperty[]
   /** Whether each property is already held at the plan's starting age. */
   ownedAtStart: boolean[]
+  /**
+   * Whether each property is held at any point in the projection — at the
+   * starting age or from a later acquisition.
+   *
+   * False for an entry the plan lists but the household never owns while it
+   * runs: one disposed of before `currentAge`, or acquired after `endAge`.
+   * Those are real rows — the ages are typed freely, and a flat sold years ago
+   * is left in the list — and they change nothing about the years modelled
+   * here, except that nothing can be settled against a sale that never happens.
+   * {@link lastDisposedIndex} is the one reader, because `Infinity` in
+   * {@link disposalYearByProperty} cannot tell them from a property kept.
+   */
+  everOwned: boolean[]
   /** Indices acquired in year y (element 0 unused). */
   boughtByYear: (readonly number[])[]
   /** Indices disposed of in year y (element 0 unused). */
@@ -960,7 +983,12 @@ interface PropertySchedule {
   nedslagByYear: number[]
   /**
    * The year each property is disposed of, indexed like {@link items}, or
-   * `Infinity` for one the household never sells.
+   * `Infinity` for one no year of the projection sells.
+   *
+   * Two plans leave it at `Infinity`, and nothing here separates them: a
+   * property the household keeps to the end, and one it never owns in these
+   * years at all — see {@link everOwned}, which exists because that difference
+   * decides where an unattributed loan comes due.
    *
    * Read by {@link debtCost}, which from a property's own disposal year bills
    * nothing for the loans it secured and carries their balance forward at zero,
@@ -991,6 +1019,7 @@ function propertySchedule(
   const nedslagByYear = new Array<number>(years + 1).fill(0)
   const ownedAtStart = items.map((p) => ownsAt(p, state.currentAge))
   const owned = [...ownedAtStart]
+  const everOwned = [...ownedAtStart]
   // A move makes the household a homeowner from the year it fires, whatever the
   // plan's own list says, so the nedslag has to see it too.
   const moveAge = firstMoveAge(state.events)
@@ -1007,6 +1036,7 @@ function propertySchedule(
         if (into[y] === NO_TRANSFERS) into[y] = []
         ;(into[y] as number[]).push(i)
         owned[i] = now
+        everOwned[i] ||= now
         if (!now && disposalYearByProperty[i] === Infinity)
           disposalYearByProperty[i] = y
       }
@@ -1026,6 +1056,7 @@ function propertySchedule(
   return {
     items,
     ownedAtStart,
+    everOwned,
     boughtByYear,
     soldByYear,
     nedslagByYear,

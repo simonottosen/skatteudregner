@@ -3052,6 +3052,35 @@ describe("simulatePlanning", () => {
           )
         }
       })
+
+      it("settles it on the last property the household really owns", () => {
+        // A flat sold at 30 and left in the list, which the form is free to
+        // accept: the sale age is typed, and only the user can say whether a row
+        // is history or a mistake. The projection starts at 40, so this entry
+        // never changes hands inside it and carries no disposal year — the same
+        // `Infinity` as a property kept for good. Reading it as the household's
+        // last disposal would hang the loan on a sale that never comes.
+        const longGone = { ...home(1_500_000), disposalAge: 30 }
+        const theHome = { ...home(4_000_000), disposalAge: 42 }
+        const detached = loan({ principal: 1_000_000, propertyId: null })
+        const listed = byAge([theHome, longGone], [detached])
+        // Owed up to the home's sale, and gone with it: that sale is the last
+        // the plan makes, whatever the dead row says.
+        expect(owed(listed.get(41)!, 4_000_000)).toBeGreaterThan(800_000)
+        expect(owed(listed.get(42)!, 0)).toBeCloseTo(0, 6)
+        // And settled out of the proceeds rather than forgiven — identical, year
+        // for year, to the plan that names the home.
+        const named = byAge(
+          [theHome, longGone],
+          [{ ...detached, propertyId: theHome.id }]
+        )
+        for (const age of [41, 42, 43, 44, 45]) {
+          expect(listed.get(age)!.investments).toBeCloseTo(
+            named.get(age)!.investments,
+            6
+          )
+        }
+      })
     })
   })
 
