@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest"
 import {
+  PROPERTY_USES,
+  PROPERTY_USE_LABEL,
   newPlannedProperty,
   ownershipSummary,
   pensionerNedslagNotice,
   propertySummary,
   removeProperty,
+  rentalExclusionNotice,
   replaceProperty,
 } from "../properties"
 import type { PlannedProperty } from "../types"
@@ -13,6 +16,7 @@ const at = (fields: Partial<PlannedProperty> = {}): PlannedProperty => ({
   id: "p1",
   label: "Bolig",
   kind: "helaarsbolig",
+  use: "own",
   value: 4_000_000,
   landValue: 1_500_000,
   acquisitionAge: 0,
@@ -35,6 +39,13 @@ describe("newPlannedProperty", () => {
     const p = newPlannedProperty("helaarsbolig", 42)
     expect(p.acquisitionAge).toBe(42)
     expect(p.disposalAge).toBeNull()
+  })
+
+  it("starts out owner-occupied, the one use the projection models", () => {
+    // Any other default would have a fresh property carrying an assumption the
+    // user never made — and for "rented" an unmodelled one at that.
+    expect(newPlannedProperty("helaarsbolig", 42).use).toBe("own")
+    expect(newPlannedProperty("fritidsbolig", 42).use).toBe("own")
   })
 
   it("gives every entry an identity of its own", () => {
@@ -103,6 +114,54 @@ describe("propertySummary", () => {
     // Both amounts, so a plan that owes grundskyld on a large plot says so.
     expect(line).toMatch(/1[.\s ]?800[.\s ]?000/)
     expect(line).toMatch(/900[.\s ]?000/)
+  })
+})
+
+describe("propertySummary use", () => {
+  it("says nothing about the use every property has by default", () => {
+    // "Egen brug" on every row is noise that buries the one row which is not.
+    expect(propertySummary(at({ use: "own" }), 45)).not.toContain("Egen brug")
+  })
+
+  it("names a use that is not the default", () => {
+    expect(propertySummary(at({ use: "rented" }), 45)).toContain("Udlejet")
+    expect(propertySummary(at({ use: "vacant" }), 45)).toContain("Står tom")
+  })
+})
+
+describe("PROPERTY_USE_LABEL", () => {
+  it("has Danish for every use the form can select", () => {
+    // The dropdown renders straight from this map, so a use missing an entry
+    // would show up as a blank row the user cannot tell apart from the others.
+    for (const use of PROPERTY_USES) {
+      expect(PROPERTY_USE_LABEL[use]).toBeTruthy()
+    }
+    expect(PROPERTY_USES).toHaveLength(Object.keys(PROPERTY_USE_LABEL).length)
+  })
+})
+
+describe("rentalExclusionNotice", () => {
+  it("says nothing when nothing is let out", () => {
+    // Owner-occupied and empty are both modelled as far as they go: the house
+    // is worth what it is worth and owes the ejendomsskat it owes.
+    expect(rentalExclusionNotice([])).toBeNull()
+    expect(rentalExclusionNotice([at({ use: "own" })])).toBeNull()
+    expect(rentalExclusionNotice([at({ use: "vacant" })])).toBeNull()
+    expect(
+      rentalExclusionNotice([at({ use: "own" }), at({ use: "vacant" })])
+    ).toBeNull()
+  })
+
+  it("names all three things a let-out property leaves out", () => {
+    // Rent in, costs out, tax on the surplus — all three, or the user cannot
+    // tell which way the projection is wrong.
+    const notice =
+      rentalExclusionNotice([at({ use: "own" }), at({ use: "rented" })]) ?? ""
+    expect(notice).toContain("lejeindtægt")
+    expect(notice).toContain("driftsudgifter")
+    // The whole phrase, not "skat": the notice closes on "ejendomsskat", so the
+    // bare word is in the string whether or not the tax on the surplus is.
+    expect(notice).toContain("skat af overskuddet")
   })
 })
 

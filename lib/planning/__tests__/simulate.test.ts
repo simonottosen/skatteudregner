@@ -77,6 +77,10 @@ function property(
     id: `p${propertyIds++}`,
     label: "Bolig",
     kind: "helaarsbolig",
+    // Owner-occupied, which is what every expectation below was recorded
+    // against. The engine does not read `use` at all — `RunProperty` does not
+    // carry it — so no recorded number here turns on this line.
+    use: "own",
     landValue: 0,
     acquisitionAge: 0,
     disposalAge: null,

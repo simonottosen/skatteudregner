@@ -180,10 +180,15 @@ const eventSchema = z.object({
  * absolute kroner — a summer house and a flat share no land-to-building ratio,
  * so there is none to derive the second from the first with. Everything else has
  * a default `normalizePlanning` fills in.
+ *
+ * `use` is recorded and not projected: sending `"rented"` stores the intent and
+ * changes no figure that comes back. Say so when reporting a let-out property's
+ * numbers — see `PropertyUse` in `@/lib/planning/types`.
  */
 const propertySchema = z.object({
   label: z.string().optional(),
   kind: z.enum(["helaarsbolig", "fritidsbolig"]).optional(),
+  use: z.enum(["own", "vacant", "rented"]).optional(),
   value: z.number(),
   landValue: z.number().optional(),
   acquisitionAge: z.number().optional(),

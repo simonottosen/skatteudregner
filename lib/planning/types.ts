@@ -158,6 +158,32 @@ export type PlanningEvent =
 export type PropertyKind = "helaarsbolig" | "fritidsbolig"
 
 /**
+ * What the household does with a property it owns — lives in it, leaves it
+ * empty, or lets it out.
+ *
+ * **The projection ignores this field.** It exists because owning a property and
+ * using it are different questions, and until now the plan could only ask the
+ * first: a household that keeps its old house and rents it out could describe
+ * the keeping but not the renting, so the plan read as if they had simply
+ * acquired a second home (issue #9).
+ *
+ * Nothing is modelled on purpose. Danish rental taxation is deductible
+ * operating costs, the bundfradrag scheme against the regnskabsmæssige one, and
+ * an interaction with kapitalindkomst; half of that produces a confident number
+ * the user has no reason to distrust. So `"rented"` stores the intent and
+ * `rentalExclusionNotice` says out loud that lejeindtægt, driftsudgifter and
+ * skat are all left out. `"vacant"` likewise changes no cash flow — ejendomsskat
+ * is owed on an empty house exactly as on a lived-in one.
+ *
+ * For whoever wires this into the engine: `RunProperty` in `./simulate` is the
+ * per-property struct a path actually carries, and it deliberately does not
+ * copy `use` across. Rental cash flow belongs there, next to the housing
+ * return, and it needs a taxation decision made first — not a default guessed
+ * here.
+ */
+export type PropertyUse = "own" | "vacant" | "rented"
+
+/**
  * One property the household owns, or comes to own, during the projection.
  *
  * Ownership is the half-open age interval `[acquisitionAge, disposalAge)`: owned
@@ -169,6 +195,11 @@ export interface PlannedProperty {
   /** Name shown in the UI ("Hus i Odense", "Sommerhus"). */
   label: string
   kind: PropertyKind
+  /**
+   * What the household uses it for. Stored, shown, and ignored by the
+   * projection — see {@link PropertyUse} for why that is deliberate.
+   */
+  use: PropertyUse
   /** Market value in DKK, nominal in the year it is acquired. */
   value: number
   /**

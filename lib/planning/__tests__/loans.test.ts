@@ -36,6 +36,7 @@ const property = (fields: Partial<PlannedProperty> = {}): PlannedProperty => ({
   id: "prop-a",
   label: "Rækkehuset",
   kind: "helaarsbolig",
+  use: "own",
   value: 4_000_000,
   landValue: 1_500_000,
   acquisitionAge: 0,

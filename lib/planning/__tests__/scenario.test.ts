@@ -315,6 +315,7 @@ describe("mortgageBudgetNotice", () => {
         id: "p0",
         label: "Bolig",
         kind: "helaarsbolig",
+        use: "own",
         value: 3_000_000,
         landValue: 0,
         acquisitionAge: 0,
