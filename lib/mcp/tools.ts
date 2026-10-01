@@ -184,6 +184,10 @@ const eventSchema = z.object({
  * `use` is recorded and not projected: sending `"rented"` stores the intent and
  * changes no figure that comes back. Say so when reporting a let-out property's
  * numbers — see `PropertyUse` in `@/lib/planning/types`.
+ *
+ * `saleCostsPct` is a share, not a percentage: 0.03 is 3 %. It defaults to 0 —
+ * a sale that costs nothing — so a disposal sent without it pays the full market
+ * value into the portfolio.
  */
 const propertySchema = z.object({
   label: z.string().optional(),
@@ -193,6 +197,7 @@ const propertySchema = z.object({
   landValue: z.number().optional(),
   acquisitionAge: z.number().optional(),
   disposalAge: z.number().nullable().optional(),
+  saleCostsPct: z.number().optional(),
 })
 
 /**
@@ -200,10 +205,13 @@ const propertySchema = z.object({
  * what the plan stores, and rounding a term here would quietly reprice the loan.
  *
  * No `propertyId`: a plan's properties are identified by ids it mints itself, so
- * a client sending a list has none to point at. A `realkredit` loan counts as
- * secured on the household's home regardless — there is no unsecured kind — and
- * a `bank` loan is secured on nothing, which covers every debt this schema can
- * describe. `bidragssats` applies to realkredit loans only.
+ * a client sending a list has none to point at. `normalizePlanning` secures a
+ * `realkredit` sent without one on the first property of the list — there is no
+ * unsecured kind of realkreditlån — and leaves a `bank` loan secured on nothing,
+ * which covers every debt this schema can describe. So a loan sent here is
+ * discharged by the sale of the *first* property, whichever of them the user
+ * meant; securing it on a later one is an edit only the form can make.
+ * `bidragssats` applies to realkredit loans only.
  */
 const loanSchema = z.object({
   label: z.string().optional(),
@@ -350,7 +358,9 @@ export function registerPlanningTools(
     },
     async (args, extra) => {
       const { state } = await load(extra)
-      const changes = normalizeScenarioChanges(args.changes)
+      // Against the saved plan's properties, so a change-set naming only loans
+      // secures them where this household's own loans are secured.
+      const changes = normalizeScenarioChanges(args.changes, state.properties)
       const base = summarize(state)
       const scen = summarize(applyScenario(state, changes))
       return json({
@@ -379,7 +389,7 @@ export function registerPlanningTools(
         id: newId("sc"),
         name: args.name.trim() || "Scenarie",
         createdAt: new Date().toISOString(),
-        changes: normalizeScenarioChanges(args.changes),
+        changes: normalizeScenarioChanges(args.changes, state.properties),
       }
       const next: PlanningState = normalizePlanning({
         ...state,
@@ -481,7 +491,10 @@ export function registerPlanningTools(
     async (args, extra) => {
       const { state } = await load(extra)
       const effective = args.changes
-        ? applyScenario(state, normalizeScenarioChanges(args.changes))
+        ? applyScenario(
+            state,
+            normalizeScenarioChanges(args.changes, state.properties)
+          )
         : state
       const basis = args.basis ?? "real"
       let result = simulatePlanning(effective)
@@ -589,7 +602,7 @@ export function registerPlanningTools(
         ...existing,
         name: args.name?.trim() || existing.name,
         changes: args.changes
-          ? normalizeScenarioChanges(args.changes)
+          ? normalizeScenarioChanges(args.changes, state.properties)
           : existing.changes,
       }
       const next: PlanningState = normalizePlanning({

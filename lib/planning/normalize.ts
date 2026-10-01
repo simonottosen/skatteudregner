@@ -5,6 +5,7 @@
  */
 
 import { normalizeLoans } from "./loans"
+import { clampSaleCostsPct } from "./properties"
 import {
   DEFAULT_ASSUMPTIONS,
   DEFAULT_PENSION,
@@ -180,6 +181,11 @@ function normalizeProperty(raw: unknown): PlannedProperty | null {
     use,
     value: clampNum(o.value, 0, 0),
     landValue: clampNum(o.landValue, 0, 0),
+    // Absent on a plan saved before the field existed, and 0 is what that plan
+    // was projected with — see {@link PlannedProperty.saleCostsPct} for why the
+    // default is a free sale rather than a realistic one. The bound is the
+    // form's own, so a reload cannot change a figure the form accepted.
+    saleCostsPct: clampSaleCostsPct(o.saleCostsPct),
     acquisitionAge,
     // A disposal before the purchase would describe a property that is never
     // owned, which is a typo rather than a plan; the floor reads it as a sale in
@@ -204,6 +210,7 @@ export function homeProperty(value: number, landValue: number): PlannedProperty 
     use: "own",
     value,
     landValue,
+    saleCostsPct: 0,
     acquisitionAge: 0,
     disposalAge: null,
   }
@@ -295,8 +302,28 @@ export function normalizeTaxProfile(value: unknown): PlanningTaxProfile {
   }
 }
 
-/** Validate the optional pieces of a scenario's change-set. */
-export function normalizeScenarioChanges(value: unknown): ScenarioChanges {
+/**
+ * Validate the optional pieces of a scenario's change-set.
+ *
+ * `baseProperties` is the plan the scenario is layered on, already normalized —
+ * needed because a loan override is resolved against a property list (see
+ * {@link normalizeLoans}) and a scenario rarely restates one. "What if I
+ * refinanced" overrides the loans alone, and its realkredit is secured on the
+ * same home the base plan's is: `applyScenario` swaps the list out and leaves
+ * `properties` standing, so that is the home the scenario's loans really meet.
+ * Resolving against nothing instead would read the mortgage as securing no
+ * particular property and move its settlement to the household's last disposal.
+ *
+ * Optional because the caller may hold no plan — a change-set validated on its
+ * own, as in an MCP client's input before it is applied to anything. Such a
+ * caller has no home to offer and cannot be given one here: `propertyId` has no
+ * "unresolved" value to defer with, since null is already the user's deliberate
+ * "uden pant", so the only honest reading of an absent list is an empty one.
+ */
+export function normalizeScenarioChanges(
+  value: unknown,
+  baseProperties: readonly PlannedProperty[] = []
+): ScenarioChanges {
   if (!value || typeof value !== "object") return {}
   const o = value as Partial<ScenarioChanges>
   const changes: ScenarioChanges = {}
@@ -325,8 +352,12 @@ export function normalizeScenarioChanges(value: unknown): ScenarioChanges {
     // "What if I refinanced" is a whole list too, for the same reason: a partial
     // one cannot say which loan it means. The legacy balances are read here as
     // well, so a scenario saved against the old scalars keeps its meaning.
+    //
+    // Against the scenario's own properties where it states them — "what if I
+    // also owned a summer house, and borrowed for it" describes one household —
+    // and against the base plan's where it does not.
     if ("loans" in ov || "mortgageBalance" in ov || "otherDebtBalance" in ov)
-      out.loans = normalizeLoans(ov, out.properties ?? [])
+      out.loans = normalizeLoans(ov, out.properties ?? baseProperties)
     if (Object.keys(out).length > 0) changes.overrides = out
   }
 
@@ -380,7 +411,11 @@ export function normalizeScenarioChanges(value: unknown): ScenarioChanges {
   return changes
 }
 
-export function normalizeScenarios(value: unknown): PlanningScenario[] {
+export function normalizeScenarios(
+  value: unknown,
+  /** The plan these scenarios belong to — see {@link normalizeScenarioChanges}. */
+  baseProperties: readonly PlannedProperty[] = []
+): PlanningScenario[] {
   if (!Array.isArray(value)) return []
   const out: PlanningScenario[] = []
   for (const raw of value) {
@@ -391,7 +426,7 @@ export function normalizeScenarios(value: unknown): PlanningScenario[] {
       name: typeof o.name === "string" && o.name.trim() ? o.name : "Scenarie",
       createdAt:
         typeof o.createdAt === "string" ? o.createdAt : new Date().toISOString(),
-      changes: normalizeScenarioChanges(o.changes),
+      changes: normalizeScenarioChanges(o.changes, baseProperties),
     })
   }
   return out
@@ -402,9 +437,10 @@ export function normalizePlanning(raw: unknown): PlanningState {
   const o = raw as Partial<PlanningState>
   const currentAge = clampNum(o.currentAge, DEFAULT_PLANNING_STATE.currentAge, 0, 100)
   const endAge = clampNum(o.endAge, DEFAULT_PLANNING_STATE.endAge, currentAge + 1, 120)
-  // The loans are secured against the *normalized* list, not the blob's own: a
-  // property that arrives without an id gets a fresh one, so a second
-  // normalization of the same blob would mint ids this plan does not keep.
+  // The loans — the plan's own and every scenario's — are secured against the
+  // *normalized* list, not the blob's own: a property that arrives without an id
+  // gets a fresh one, so a second normalization of the same blob would mint ids
+  // this plan does not keep.
   const properties = normalizeProperties(o)
   return {
     version: 3,
@@ -448,6 +484,6 @@ export function normalizePlanning(raw: unknown): PlanningState {
     pension: normalizePension(o.pension),
     tax: normalizeTaxProfile(o.tax),
     events: normalizeEvents(o.events),
-    scenarios: normalizeScenarios(o.scenarios),
+    scenarios: normalizeScenarios(o.scenarios, properties),
   }
 }

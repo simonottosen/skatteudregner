@@ -7,9 +7,9 @@
  * keeps the inputs; everything that decides *what* to show lives here.
  */
 
-import { DEFAULT_PROPERTY_LABEL, newId } from "./normalize"
+import { DEFAULT_PROPERTY_LABEL, clampNum, newId } from "./normalize"
 import type { PlannedProperty, PropertyKind, PropertyUse } from "./types"
-import { formatDKK } from "@/lib/format"
+import { formatDKK, formatPercent } from "@/lib/format"
 
 /** What each kind is called in the form. */
 export const PROPERTY_KIND_LABEL: Record<PropertyKind, string> = {
@@ -27,6 +27,45 @@ export const PROPERTY_USE_LABEL: Record<PropertyUse, string> = {
 }
 
 export const PROPERTY_USES: PropertyUse[] = ["own", "vacant", "rented"]
+
+/**
+ * Most of a property a sale may cost, as a share of the price.
+ *
+ * Far above any real sale — Danish ejendomsmægler, advokat and tingbogsafgift
+ * together land in the low single digits — because the bound is here to stop a
+ * typed-in percentage from handing the household nothing, or less than nothing,
+ * for the house it sold, not to tell it what a sale costs.
+ */
+const MAX_SALE_COSTS_PCT = 0.2
+
+/**
+ * A sale-cost share held inside what a sale can cost, and defaulted to the free
+ * sale {@link PlannedProperty.saleCostsPct} describes when it is no figure at
+ * all.
+ *
+ * One function for the form and the normalizer both, the way
+ * `maxInterestOnlyYears` (`./loans`) is one bound for the loan's afdragsfrihed.
+ * The form writes straight into the plan, so a bound only the normalizer
+ * applied would let the live projection credit the household extra proceeds on
+ * a negative share, or deduct half the house on 50 — and then quietly change
+ * the figure to the bound on the next reload, so that the two projections of
+ * one saved plan disagree.
+ */
+export function clampSaleCostsPct(value: unknown): number {
+  return clampNum(value, 0, 0, MAX_SALE_COSTS_PCT)
+}
+
+/**
+ * What the sale-cost field asks for.
+ *
+ * Here rather than in the form for the reason given at the top of this module:
+ * a full Danish sentence is copy, and copy a test can reach is copy that cannot
+ * drift from what the field does. The typical range is named because the bound
+ * is not a hint — 20 % would pass and ruin the projection — so the sentence has
+ * to be where the user looks for the figure.
+ */
+export const SALE_COSTS_HELPER_TEXT =
+  "Mægler, advokat og tinglysning i procent af salgsprisen. Typisk 2–4 %."
 
 /**
  * A blank entry for the form to fill in, owned from today and never sold.
@@ -47,6 +86,10 @@ export function newPlannedProperty(
     use: "own",
     value: 0,
     landValue: 0,
+    // A sale that costs nothing, which the form then asks about — see
+    // {@link PlannedProperty.saleCostsPct} for why the default is not a
+    // realistic figure.
+    saleCostsPct: 0,
     acquisitionAge: Math.max(0, Math.round(currentAge)),
     disposalAge: null,
   }
@@ -68,7 +111,8 @@ export function removeProperty(
 }
 
 /**
- * The years a property is held, as the form says it.
+ * The years a property is held — and what letting go of it costs — as the form
+ * says it.
  *
  * Ownership is the half-open interval the simulation reads it as — held from
  * `acquisitionAge`, gone in the year of `disposalAge` — so "sælges som 70-årig"
@@ -82,9 +126,16 @@ export function ownershipSummary(
     property.acquisitionAge <= currentAge
       ? "Ejes i dag"
       : `Købes som ${property.acquisitionAge}-årig`
-  return property.disposalAge === null
-    ? bought
-    : `${bought} · sælges som ${property.disposalAge}-årig`
+  if (property.disposalAge === null) return bought
+  // Sale costs are named only when there are any, and only on a property that is
+  // sold. The field defaults to zero — see {@link PlannedProperty.saleCostsPct} —
+  // so "0,00% i salgsomkostninger" would appear on every row that has a sale age
+  // and tell the user nothing, while the one row that *was* given a figure is the
+  // one worth seeing without opening it.
+  const sale = `sælges som ${property.disposalAge}-årig`
+  return property.saleCostsPct > 0
+    ? `${bought} · ${sale} · ${formatPercent(property.saleCostsPct)} i salgsomkostninger`
+    : `${bought} · ${sale}`
 }
 
 /**

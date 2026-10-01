@@ -76,6 +76,55 @@ describe("normalizePlanning", () => {
       expect(both.loans[0]).toMatchObject({ type: "bank", principal: 50_000 })
     })
 
+    it("secures a listed loan that names no property on the home", () => {
+      // The keystone of per-property settlement. The engine used to settle the
+      // whole secured balance against the first property whatever each loan
+      // named, so a plan saved before `propertyId` decided anything has to come
+      // out saying what that plan always meant — otherwise the same household
+      // would suddenly carry its mortgage until the summer house went too.
+      //
+      // Keyed on the key being absent rather than on `version`, because a blob
+      // reaches this from localStorage, Supabase or an MCP client with any
+      // version field it likes. And the version is *not* bumped: the migration
+      // writes down an assumption the old engine made, so a plan is worth the
+      // same before and after it, and an older build reading the plan back
+      // finds a `propertyId` it already understood.
+      const migrated = normalizePlanning({
+        properties: [
+          { id: "prop-home", value: 4_000_000 },
+          { id: "prop-summer", kind: "fritidsbolig", value: 2_000_000 },
+        ],
+        loans: [
+          { id: "l1", type: "realkredit", principal: 2_000_000 },
+          { id: "l2", type: "bank", principal: 150_000 },
+          {
+            id: "l3",
+            type: "realkredit",
+            principal: 500_000,
+            propertyId: null,
+          },
+        ],
+      })
+      expect(migrated.loans[0].propertyId).toBe("prop-home")
+      expect(migrated.version).toBe(3)
+      // A banklån is no one's pant and no sale settled it before either.
+      expect(migrated.loans[1].propertyId).toBeNull()
+      // An explicit null is the user's own answer — `loan-list.tsx` offers
+      // "Uden pant" — and has to survive the plan being loaded again.
+      expect(migrated.loans[2].propertyId).toBeNull()
+    })
+
+    it("has no home to secure a renter's listed loan on", () => {
+      // The one plan where the fallback is reached on purpose: nothing to name,
+      // so the loan comes due when the household's last property goes — and it
+      // has none, so never.
+      const migrated = normalizePlanning({
+        loans: [{ type: "realkredit", principal: 2_000_000 }],
+      })
+      expect(migrated.properties).toEqual([])
+      expect(migrated.loans[0].propertyId).toBeNull()
+    })
+
     it("owes nothing on a plan that says nothing about debt", () => {
       expect(normalizePlanning({}).loans).toEqual([])
       expect(DEFAULT_PLANNING_STATE.loans).toEqual([])
@@ -240,6 +289,7 @@ describe("normalizePlanning", () => {
           use: "own",
           value: 4_000_000,
           landValue: 1_500_000,
+          saleCostsPct: 0,
           acquisitionAge: 0,
           disposalAge: 80,
         },
@@ -250,6 +300,7 @@ describe("normalizePlanning", () => {
           use: "own",
           value: 1_800_000,
           landValue: 900_000,
+          saleCostsPct: 0,
           acquisitionAge: 55,
           disposalAge: null,
         },

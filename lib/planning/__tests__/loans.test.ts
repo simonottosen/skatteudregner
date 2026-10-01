@@ -39,6 +39,7 @@ const property = (fields: Partial<PlannedProperty> = {}): PlannedProperty => ({
   use: "own",
   value: 4_000_000,
   landValue: 1_500_000,
+  saleCostsPct: 0,
   acquisitionAge: 0,
   disposalAge: null,
   ...fields,
@@ -252,6 +253,18 @@ describe("missingSecurityNotice", () => {
     )
     expect(notice).toContain("bolig")
     expect(notice).toContain("uden pant")
+  })
+
+  it("says what the projection does with the loan in the meantime", () => {
+    // Not just that something is wrong. The balance is not dropped and no sale
+    // in the plan need settle it, so the engine holds it against the portfolio
+    // and discharges it with the last property — a reading the user cannot
+    // arrive at from the plan, and so one the notice has to state.
+    const notice =
+      missingSecurityNotice([at({ propertyId: "prop-gone" })], [property()]) ??
+      ""
+    expect(notice).toContain("indfrier")
+    expect(notice).toContain("sidste bolig er solgt")
   })
 })
 

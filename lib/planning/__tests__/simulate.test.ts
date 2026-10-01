@@ -6,6 +6,7 @@ import {
   DEFAULT_TAX_PROFILE,
   type PlannedLoan,
   type PlannedProperty,
+  type PlanningPoint,
   type PlanningResult,
   type PlanningState,
 } from "../types"
@@ -82,6 +83,9 @@ function property(
     // carry it — so no recorded number here turns on this line.
     use: "own",
     landValue: 0,
+    // A sale that costs nothing, which is the field's own default and so the
+    // value every expectation below was recorded against.
+    saleCostsPct: 0,
     acquisitionAge: 0,
     disposalAge: null,
     ...fields,
@@ -95,10 +99,15 @@ let loanIds = 0
  * 30-year realkreditlån at 4 %, repaying from the first year, free of bidrag.
  *
  * `propertyId` is left null and the loan is still a claim on the home — see
- * `securedByProperty` in `../simulate` — which is what lets the one-home
+ * `reducesHomeEquity` in `../simulate` — which is what lets the one-home
  * shorthand below stay a shorthand. The property list is built inside
  * {@link makeState} and has no id a call site could name; the tests that are
  * about which property secures what pass `properties` and `loans` together.
+ *
+ * Which property's *sale* settles such a loan is the household's last, and in a
+ * one-home plan that is the home — so the shorthand means what it has always
+ * meant. A plan with a second property has to say: `propertyId` is what the
+ * engine settles on, and a loan that names none outlives the first sale.
  */
 function loan(
   fields: Partial<PlannedLoan> & { principal: number }
@@ -2862,6 +2871,217 @@ describe("simulatePlanning", () => {
         )
       })
     })
+
+    /**
+     * Which sale settles which loan. `PlannedLoan.propertyId` used to be
+     * decorative: the whole secured balance was settled against the *first*
+     * property and nothing was settled against any other, whichever property
+     * each loan named. So selling the home discharged a loan the summer house
+     * secured, and selling the summer house discharged nothing — not even its
+     * own mortgage, which the household then went on being billed for (#9).
+     */
+    describe("settling each loan against the property that secures it", () => {
+      /**
+       * A working household that owns `properties`, owes `loans` and does
+       * nothing else: no contribution, no spending, no pension, no property tax
+       * and no cash buffer. The loan service is the only recurring flow and
+       * `still` leaves the portfolio flat, so a sale is the only thing that can
+       * move `investments` by a round figure.
+       */
+      const settling = (properties: PlannedProperty[], loans: PlannedLoan[]) =>
+        makeState({
+          currentAge: 40,
+          endAge: 45,
+          retirementAge: 65,
+          startInvestments: 2_000_000,
+          monthlyContribution: 0,
+          annualSpending: 0,
+          properties,
+          loans,
+          assumptions: still,
+        })
+
+      const byAge = (properties: PlannedProperty[], loans: PlannedLoan[]) =>
+        new Map(
+          simulatePlanning(settling(properties, loans)).points.map((p) => [
+            p.age,
+            p,
+          ])
+        )
+
+      /**
+       * What is still owed on the properties at that age. Equity is value less
+       * the secured balance, and under `still` the value is the plan's own
+       * figure for as long as it is owned, so the balance is the difference.
+       */
+      const owed = (point: PlanningPoint, valueOwned: number) =>
+        valueOwned - point.homeEquity
+
+      it("settles the summer house's own loan, and leaves the mortgage alone", () => {
+        const theHome = home(4_000_000)
+        const theSummer = { ...summer(2_000_000), disposalAge: 42 }
+        const mortgage = loan({ principal: 1_000_000, propertyId: theHome.id })
+        const onTheSummer = loan({
+          principal: 600_000,
+          propertyId: theSummer.id,
+        })
+        const sold = byAge([theHome, theSummer], [mortgage, onTheSummer])
+        // From the sale on, the household owes its mortgage and nothing else —
+        // and owes exactly what a household that never had the second loan
+        // would. Both halves in one comparison: the summer house took its own
+        // loan with it, and took nothing else.
+        const mortgageOnly = byAge([theHome], [mortgage])
+        for (const age of [42, 43, 44, 45]) {
+          expect(owed(sold.get(age)!, 4_000_000)).toBeCloseTo(
+            owed(mortgageOnly.get(age)!, 4_000_000),
+            6
+          )
+        }
+        // Against a mortgage large enough that settling it would have shown: a
+        // loan already paid off agrees with everything.
+        expect(owed(sold.get(45)!, 4_000_000)).toBeGreaterThan(800_000)
+
+        // And out of its own proceeds, not forgiven: what reached the portfolio
+        // is 2.000.000 less the balance the sale year opened with — one year of
+        // a 30-year 4 % annuity, from the amortisation module rather than
+        // restated from the engine. Read as the step in `investments` the sale
+        // year adds over the one before it, which is what the pair above leaves
+        // undetermined.
+        const opening = amortizeYear(600_000, 0.04, 30 * 12, false).balance
+        const banked = (at: number) =>
+          sold.get(at)!.investments - mortgageOnly.get(at)!.investments
+        expect(banked(42) - banked(41)).toBeCloseTo(2_000_000 - opening, 6)
+      })
+
+      it("keeps servicing a loan on the summer house after the home is sold", () => {
+        const theHome = { ...home(4_000_000), disposalAge: 42 }
+        const theSummer = summer(2_000_000)
+        const onTheSummer = loan({
+          principal: 1_000_000,
+          propertyId: theSummer.id,
+        })
+        const after = byAge([theHome, theSummer], [onTheSummer])
+        // Still owed in every year after the sale, and falling: the household
+        // is paying the loan off, not carrying a balance nothing touches.
+        const balances = [42, 43, 44, 45].map((age) =>
+          owed(after.get(age)!, 2_000_000)
+        )
+        expect(balances[0]).toBeGreaterThan(800_000)
+        for (let i = 1; i < balances.length; i++)
+          expect(balances[i]).toBeLessThan(balances[i - 1])
+
+        // And the whole 4.000.000 reached the portfolio, because the sale
+        // settled nothing. Measured against the same plan with the home kept,
+        // where the loan on the summer house costs exactly the same to service.
+        const unsold = byAge([home(4_000_000), theSummer], [onTheSummer])
+        for (const age of [42, 43, 44, 45]) {
+          expect(
+            after.get(age)!.investments - unsold.get(age)!.investments
+          ).toBeCloseTo(4_000_000, 6)
+        }
+      })
+
+      it("leaves a household that sold for less than it owed still owing it", () => {
+        const owing = (value: number) =>
+          byAge(
+            [{ ...home(value), disposalAge: 42 }],
+            [loan({ principal: 1_500_000, propertyId: null })]
+          )
+        const over = owing(2_000_000)
+        const under = owing(1_000_000)
+        // The two plans differ in the sale price alone, so until the sale year
+        // they are the same household.
+        expect(under.get(41)!.investments).toBeCloseTo(
+          over.get(41)!.investments,
+          6
+        )
+        // 500.000 banked against 500.000 drawn to cover the shortfall: the
+        // whole million of difference in the price lands on the household. A
+        // settlement floored at zero would have swallowed half of it.
+        expect(
+          over.get(42)!.investments - under.get(42)!.investments
+        ).toBeCloseTo(1_000_000, 6)
+      })
+
+      it("takes the sale costs off the price the property has grown to", () => {
+        const GROWTH = 0.05
+        const START = 2_000_000
+        // Two years of appreciation, because a percentage of the plan's own
+        // figure would be a different number — and the wrong one.
+        const GROWN = START * Math.pow(1 + GROWTH, 2)
+        const proceeds = (saleCostsPct: number) =>
+          simulatePlanning(
+            makeState({
+              ...settling(
+                [{ ...home(START), disposalAge: 42, saleCostsPct }],
+                []
+              ),
+              assumptions: { ...still, housingReturn: GROWTH },
+            })
+          ).points.find((p) => p.age === 42)!.investments - START
+
+        // Nothing is withheld at 0, which is the field's default: every plan
+        // saved before it existed projects exactly what it used to.
+        expect(proceeds(0)).toBeCloseTo(GROWN, 6)
+        expect(proceeds(0) - proceeds(0.03)).toBeCloseTo(GROWN * 0.03, 6)
+        // 3 % of what it grew to, not 3 % of what the plan says it is worth.
+        expect(GROWN * 0.03).not.toBeCloseTo(START * 0.03, 2)
+      })
+
+      it("holds an unattributed loan until the last property is gone", () => {
+        const theHome = { ...home(4_000_000), disposalAge: 42 }
+        const theSummer = { ...summer(2_000_000), disposalAge: 44 }
+        // No pant: a realkredit whose property the plan does not name, which is
+        // every migrated plan where the user detached the loan by hand.
+        const detached = loan({ principal: 1_000_000, propertyId: null })
+        const unnamed = byAge([theHome, theSummer], [detached])
+        // The first sale settles nothing, so it is still owed afterwards.
+        expect(owed(unnamed.get(43)!, 2_000_000)).toBeGreaterThan(800_000)
+        // The second leaves the household owning nothing and owing nothing.
+        expect(owed(unnamed.get(44)!, 0)).toBeCloseTo(0, 6)
+        // And it comes due exactly where naming that property would have put
+        // it — one rule, reached two ways, rather than a second settlement.
+        const named = byAge(
+          [theHome, theSummer],
+          [{ ...detached, propertyId: theSummer.id }]
+        )
+        for (const age of [41, 42, 43, 44, 45]) {
+          expect(unnamed.get(age)!.investments).toBeCloseTo(
+            named.get(age)!.investments,
+            6
+          )
+        }
+      })
+
+      it("settles it on the last property the household really owns", () => {
+        // A flat sold at 30 and left in the list, which the form is free to
+        // accept: the sale age is typed, and only the user can say whether a row
+        // is history or a mistake. The projection starts at 40, so this entry
+        // never changes hands inside it and carries no disposal year — the same
+        // `Infinity` as a property kept for good. Reading it as the household's
+        // last disposal would hang the loan on a sale that never comes.
+        const longGone = { ...home(1_500_000), disposalAge: 30 }
+        const theHome = { ...home(4_000_000), disposalAge: 42 }
+        const detached = loan({ principal: 1_000_000, propertyId: null })
+        const listed = byAge([theHome, longGone], [detached])
+        // Owed up to the home's sale, and gone with it: that sale is the last
+        // the plan makes, whatever the dead row says.
+        expect(owed(listed.get(41)!, 4_000_000)).toBeGreaterThan(800_000)
+        expect(owed(listed.get(42)!, 0)).toBeCloseTo(0, 6)
+        // And settled out of the proceeds rather than forgiven — identical, year
+        // for year, to the plan that names the home.
+        const named = byAge(
+          [theHome, longGone],
+          [{ ...detached, propertyId: theHome.id }]
+        )
+        for (const age of [41, 42, 43, 44, 45]) {
+          expect(listed.get(age)!.investments).toBeCloseTo(
+            named.get(age)!.investments,
+            6
+          )
+        }
+      })
+    })
   })
 
   /**
@@ -3542,6 +3762,18 @@ describe("simulatePlanning", () => {
      * same household.
      */
     it("reproduces the whole projection of a plan that uses every loan branch", () => {
+      // Named rather than left to the shorthand, because this is the one fixture
+      // with a property that outlives the home: the mortgage has to say it is
+      // the *home's*, or it would be settled by the last sale the plan makes —
+      // the summer house's, which never comes — instead of at 78. Naming it is
+      // the plan saying what the engine used to assume, and the figures below
+      // are unchanged by it.
+      const home = property({
+        value: 3_600_000,
+        landValue: 1_100_000,
+        acquisitionAge: 0,
+        disposalAge: 78,
+      })
       const r = simulatePlanning(
         makeState({
           currentAge: 40,
@@ -3552,12 +3784,7 @@ describe("simulatePlanning", () => {
           monthlyContribution: 9_000,
           annualSpending: 700_000,
           properties: [
-            property({
-              value: 3_600_000,
-              landValue: 1_100_000,
-              acquisitionAge: 0,
-              disposalAge: 78,
-            }),
+            home,
             property({
               value: 1_400_000,
               landValue: 500_000,
@@ -3568,6 +3795,7 @@ describe("simulatePlanning", () => {
           includePropertyTax: true,
           loans: [
             loan({
+              propertyId: home.id,
               principal: 2_400_000,
               rate: 0.042,
               bidragssats: 0.0085,

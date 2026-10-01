@@ -127,9 +127,11 @@ export interface RecurringEvent {
  *
  * The move settles *every* secured loan on {@link PlanningState.loans} and leaves
  * one fresh 30-year loan behind, whichever property each of them names as
- * security. That is the projection's limit rather than the plan's: secured debt
- * is subtracted from the portfolio's equity as a whole, so the engine has no
- * per-property balance to settle a sale against (issue #9).
+ * security. That is this event's limit and no longer the engine's: a disposal
+ * stated on a {@link PlannedProperty} settles the loans naming that property and
+ * leaves the rest alone. A move cannot, because it names no property — it is one
+ * event for the household — so the rest of issue #9 is replacing it with an
+ * entry in the list that can.
  */
 export interface PropertyEvent {
   id: string
@@ -218,6 +220,21 @@ export interface PlannedProperty {
   acquisitionAge: number
   /** Age it is sold at; null means held for the whole projection. */
   disposalAge: number | null
+  /**
+   * What selling it costs, as a share of the price it fetches: ejendomsmægler,
+   * advokat, tingbogsafgift. 0.03 is 3 %. Taken off the proceeds the sale pays
+   * into the portfolio, and off nothing else — the household stops owning the
+   * whole house, not the house less the agent's fee.
+   *
+   * Defaults to 0, a sale that costs nothing, which no real sale is. That is
+   * deliberate rather than an oversight: a default worth having would move the
+   * projection of every plan already saved, in the same commit that reorganised
+   * the settlement those projections are the regression lock on — leaving no way
+   * to tell a refactor that changed nothing from one that changed something. So
+   * the mechanism ships opt-in, with an input in the form asking for the figure,
+   * and a default can be chosen later against numbers known to be unchanged.
+   */
+  saleCostsPct: number
 }
 
 /**
@@ -246,6 +263,12 @@ export interface PlannedLoan {
    * The {@link PlannedProperty} the loan is secured on; null for unsecured debt
    * (car, student, consumer). Interest is deductible either way — the link says
    * which property's equity the debt sits behind, not how it is taxed.
+   *
+   * Also which sale discharges it: selling that property settles this balance
+   * out of the proceeds and stops the billing, and selling any other property
+   * leaves it alone. A `realkredit` with no property named is the one debt that
+   * is secured without naming its security — there is no unsecured kind — and it
+   * comes due when the household's last property is gone.
    */
   propertyId: string | null
   /** Name shown in the UI ("Realkreditlån", "Billån"). */
@@ -412,10 +435,12 @@ export interface PlanningState {
    * Every property the household owns or plans to own; empty if renting.
    *
    * The first entry is "the home": the one a {@link PropertyEvent} move replaces,
-   * and the one whose sale settles the household's secured debt. A
-   * {@link PlannedLoan} may name any entry as its security, but the projection
-   * subtracts every secured balance from the portfolio's equity as a whole, so
-   * that is the only property a sale can settle against (issue #9).
+   * settling every secured loan against it whichever property each names. That
+   * is the move's doing and not the list's — a {@link PlannedLoan} names the
+   * entry that secures it, and selling that entry settles that loan and no
+   * other. Secured balances are still subtracted from the portfolio's equity as
+   * a whole, because that is what the household can borrow against; it is the
+   * *settlement* that is per property.
    */
   properties: PlannedProperty[]
   /** Whether to model ongoing property tax (ejendomsværdiskat + grundskyld). */
