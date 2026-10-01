@@ -17,6 +17,8 @@ import {
   PROPERTY_KIND_LABEL,
   PROPERTY_USES,
   PROPERTY_USE_LABEL,
+  SALE_COSTS_HELPER_TEXT,
+  clampSaleCostsPct,
   newPlannedProperty,
   pensionerNedslagNotice,
   propertySummary,
@@ -197,9 +199,16 @@ export function PropertyList({
                         <PercentField
                           id={`prop-sale-costs-${p.id}`}
                           label="Salgsomkostninger"
-                          helperText="Mægler, advokat og tinglysning i procent af salgsprisen. Typisk 2–4 %."
+                          helperText={SALE_COSTS_HELPER_TEXT}
                           value={p.saleCostsPct}
-                          onChange={(v) => patch({ saleCostsPct: v })}
+                          // Bounded here and not only on reload: this writes
+                          // into the plan the projection reads, so an unbounded
+                          // share would hand the household extra proceeds or
+                          // most of its house — and the saved figure would then
+                          // come back changed.
+                          onChange={(v) =>
+                            patch({ saleCostsPct: clampSaleCostsPct(v) })
+                          }
                         />
                       )}
                     </div>

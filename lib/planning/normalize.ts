@@ -5,6 +5,7 @@
  */
 
 import { normalizeLoans } from "./loans"
+import { clampSaleCostsPct } from "./properties"
 import {
   DEFAULT_ASSUMPTIONS,
   DEFAULT_PENSION,
@@ -151,16 +152,6 @@ export function normalizeEvents(value: unknown): PlanningEvent[] {
   return out
 }
 
-/**
- * Most of a property a sale may cost, as a share of the price.
- *
- * Far above any real sale — Danish ejendomsmægler, advokat and tingbogsafgift
- * together land in the low single digits — because the bound is here to stop a
- * typed-in percentage from handing the household nothing, or less than nothing,
- * for the house it sold, not to tell it what a sale costs.
- */
-const MAX_SALE_COSTS_PCT = 0.2
-
 /** Danish label a migrated or freshly added property starts out with. */
 export const DEFAULT_PROPERTY_LABEL: Record<PropertyKind, string> = {
   helaarsbolig: "Bolig",
@@ -192,8 +183,9 @@ function normalizeProperty(raw: unknown): PlannedProperty | null {
     landValue: clampNum(o.landValue, 0, 0),
     // Absent on a plan saved before the field existed, and 0 is what that plan
     // was projected with — see {@link PlannedProperty.saleCostsPct} for why the
-    // default is a free sale rather than a realistic one.
-    saleCostsPct: clampNum(o.saleCostsPct, 0, 0, MAX_SALE_COSTS_PCT),
+    // default is a free sale rather than a realistic one. The bound is the
+    // form's own, so a reload cannot change a figure the form accepted.
+    saleCostsPct: clampSaleCostsPct(o.saleCostsPct),
     acquisitionAge,
     // A disposal before the purchase would describe a property that is never
     // owned, which is a typo rather than a plan; the floor reads it as a sale in
