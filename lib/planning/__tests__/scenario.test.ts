@@ -318,6 +318,7 @@ describe("mortgageBudgetNotice", () => {
         use: "own",
         value: 3_000_000,
         landValue: 0,
+        saleCostsPct: 0,
         acquisitionAge: 0,
         disposalAge: null,
       },

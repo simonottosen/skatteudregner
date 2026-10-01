@@ -86,6 +86,11 @@ const mortgageAfterMove = (ev: PropertyEvent) =>
  * Whether the debt is a claim on the household's property — i.e. whether it
  * comes off home equity rather than standing beside it as a balance of its own.
  *
+ * That, and nothing more: it does not decide *which* property answers for the
+ * debt, and so says nothing about which sale settles it. That is
+ * {@link settledBySaleOf}'s question, and the two deliberately disagree about
+ * the loan described below.
+ *
  * A realkredit loan counts even when the plan names no property for it to fall
  * on. A realkreditlån is a lån mod pant i fast ejendom; there is no unsecured
  * kind, so a plan carrying one while listing no property has left its home
@@ -97,8 +102,22 @@ const mortgageAfterMove = (ev: PropertyEvent) =>
  * interest has a loan and no home. Reading that loan as unsecured would lift it
  * out of the home equity the projection has always subtracted it from.
  */
-const securedByProperty = (loan: PlannedLoan) =>
+const reducesHomeEquity = (loan: PlannedLoan) =>
   loan.propertyId !== null || loan.type === "realkredit"
+
+/**
+ * Whether selling that property settles this loan: the pant the plan names, and
+ * only it.
+ *
+ * Narrower than {@link reducesHomeEquity} on purpose — no fallback to the loan's
+ * type. A realkredit naming no property is a claim on the household's equity
+ * that no *particular* sale discharges, and answering "yes" for whichever
+ * property this happens to be asked about first would settle it on the earliest
+ * sale the plan makes. Where such a loan does come due is `settlingIndex` in
+ * {@link debtCost}.
+ */
+const settledBySaleOf = (loan: PlannedLoan, propertyId: string) =>
+  loan.propertyId === propertyId
 
 /** Mutable per-year balances tracked through the simulation. */
 interface SimState {
@@ -388,6 +407,23 @@ interface DebtCost {
    */
   securedBalanceByYear: number[]
   /**
+   * What each property's own secured loans owed as each year *opened*, indexed
+   * `[year][property]` — the properties in {@link PropertySchedule.items}' order.
+   * This is the balance a sale settles against, which is why there is one figure
+   * per property where {@link securedBalanceByYear} has one for the household:
+   * equity is portfolio-wide, a sale is not, and selling the summer house must
+   * leave the home's mortgage alone (issue #9).
+   *
+   * The opening balance rather than the closing one, because the close of a
+   * disposal year is zero by construction: the walk settles a property's loans
+   * before it services them, so that the household is billed nothing for a year
+   * it no longer owned the house. The previous year's close would not do either —
+   * a move lands at the end of a year, and the loan it draws is the one the next
+   * year's sale discharges. Element 0 is today's, before any event at the
+   * starting age, as in {@link securedBalanceByYear}.
+   */
+  securedOpeningByProperty: number[][]
+  /**
    * What the loans no property secures still owe at the close of each year;
    * element 0 is today's. Reported as the plan's `otherDebt` and subtracted from
    * net worth on its own, since it sits outside the home equity
@@ -415,6 +451,35 @@ interface DebtCost {
 }
 
 /**
+ * Where a secured loan the plan attributes to no property comes due: the index
+ * of the property the household lets go of last, or −1 when it lists none.
+ *
+ * Two plans reach here. One carries a realkredit with no pant named — see
+ * {@link reducesHomeEquity} for why that is a real plan and not a malformed one
+ * — and one names a property that has since been deleted from the list
+ * (`hasDanglingSecurity` in `./loans`). Both describe a debt the household's
+ * property answers for without saying which property, so it stays owed as long
+ * as the household owns anything to answer with, and comes due when the last of
+ * it is gone. Attributing it to the final disposal is that rule said in the one
+ * vocabulary the settlement already speaks, which is what keeps this walk and
+ * {@link runPath}'s step 2e from reaching different conclusions about the same
+ * loan.
+ *
+ * For a plan with one property — every plan saved before the list arrived — this
+ * is index 0, so such a plan settles exactly where it always did. `Infinity`
+ * compares as the largest disposal year, so a property the household never sells
+ * wins, and the loan is then never settled at all.
+ */
+function lastDisposedIndex(disposalYearByProperty: readonly number[]): number {
+  let last = -1
+  for (let i = 0; i < disposalYearByProperty.length; i++) {
+    if (last < 0 || disposalYearByProperty[i] > disposalYearByProperty[last])
+      last = i
+  }
+  return last
+}
+
+/**
  * Pure in `state` and `loans`, so the Monte Carlo paths all share one schedule.
  *
  * A move takes out a loan that does not exist yet and so has no terms of its own
@@ -435,6 +500,9 @@ function debtCost(
   const bankServiceByYear = new Array<number>(length).fill(0)
   const deductibleByYear = new Array<number>(length).fill(0)
   const securedBalanceByYear = new Array<number>(length).fill(0)
+  const securedOpeningByProperty = Array.from({ length }, () =>
+    new Array<number>(schedule.items.length).fill(0)
+  )
   const unsecuredBalanceByYear = new Array<number>(length).fill(0)
   const byAge = eventsByAge(state.events)
 
@@ -453,12 +521,31 @@ function debtCost(
     bidragssats: number
     realkredit: boolean
     secured: boolean
+    /**
+     * Index into {@link PropertySchedule.items} of the property whose sale
+     * settles this loan, or −1 for a loan no sale does: unsecured debt, and
+     * secured debt in a plan that lists no property at all.
+     */
+    propertyIndex: number
   }
 
   /**
-   * A contract as the walk starts it. The two flags are derived here and nowhere
-   * else, so that a loan the projection mints mid-walk is classified by the same
-   * rules as one the household arrived with.
+   * Which property's sale settles the loan, as an index into the schedule.
+   *
+   * The pant the plan names, falling back to {@link lastDisposedIndex} for the
+   * secured loan that names none the plan has.
+   */
+  const unattributed = lastDisposedIndex(schedule.disposalYearByProperty)
+  const settlingIndex = (loan: PlannedLoan): number => {
+    if (!reducesHomeEquity(loan)) return -1
+    const named = schedule.items.findIndex((p) => settledBySaleOf(loan, p.id))
+    return named >= 0 ? named : unattributed
+  }
+
+  /**
+   * A contract as the walk starts it. The three derived fields are settled here
+   * and nowhere else, so that a loan the projection mints mid-walk is classified
+   * by the same rules as one the household arrived with.
    */
   const liveLoanOf = (loan: PlannedLoan): LiveLoan => ({
     balance: loan.principal,
@@ -467,7 +554,8 @@ function debtCost(
     interestOnlyYears: loan.interestOnlyYears,
     bidragssats: loan.bidragssats,
     realkredit: loan.type === "realkredit",
-    secured: securedByProperty(loan),
+    secured: reducesHomeEquity(loan),
+    propertyIndex: settlingIndex(loan),
   })
 
   const live: LiveLoan[] = loans.map(liveLoanOf)
@@ -479,16 +567,28 @@ function debtCost(
   }
 
   /**
+   * Charge what the loan owes as the year opens to the property that answers for
+   * it — the balance a sale that year is settled against. A loan no sale settles
+   * is charged to nothing, which is why this is not simply `recordBalance` read
+   * a year earlier.
+   */
+  const recordOpening = (y: number, loan: LiveLoan) => {
+    if (loan.propertyIndex >= 0)
+      securedOpeningByProperty[y][loan.propertyIndex] += loan.balance
+  }
+
+  /**
    * A move sells the home and buys another, so the debt it secured goes with it
    * — `runPath` takes that balance out of the proceeds — and the household wakes
    * up owing one fresh 30-year loan at the event's LTV.
    *
    * Every secured loan goes, whichever property it names, because the plan holds
    * one move event for the household and not one per property — so there is no
-   * saying which of them was sold. Settling only the loans on the property being
-   * sold is issue #9, which gives a move a property to name. The replacement is
-   * secured on the first entry: a move is modelled as the home changing value,
-   * not as a second property.
+   * saying which of them was sold. A *disposal* from the property list does
+   * settle only the loans naming the property sold (see {@link runPath} step 2e);
+   * the move is the one transfer that cannot, and giving it a property to name is
+   * the rest of issue #9. The replacement is secured on the first entry: a move
+   * is modelled as the home changing value, not as a second property.
    *
    * The new loan's terms are the biggest replaced one's, measured by what is
    * still owed rather than what was borrowed, because that is the loan the
@@ -529,16 +629,25 @@ function debtCost(
 
   // Events at the starting age fire before year 1, as they do in `runPath` —
   // which is why today's balances are recorded before them and not after.
-  for (const loan of live) recordBalance(0, loan)
+  for (const loan of live) {
+    recordBalance(0, loan)
+    recordOpening(0, loan)
+  }
   swapLoansAt(state.currentAge)
   for (let y = 1; y < length; y++) {
     for (const loan of live) {
-      // The sale settles the home's debt out of the proceeds (`runPath`, step
-      // 2e), so the household is billed nothing for it from that year on. Fired
-      // once, at the sale, rather than in every later year: a move afterwards
-      // takes out a new loan, and blanking that balance too would bill nothing
-      // for a debt `runPath` does charge interest on.
-      if (loan.secured && y === schedule.loanRepaidYear) loan.balance = 0
+      recordOpening(y, loan)
+      // Selling the property settles the loans it secured out of the proceeds
+      // (`runPath`, step 2e), so the household is billed nothing for them from
+      // that year on — and nothing for a loan on a property it still owns.
+      // Fired once, at the sale, rather than in every later year: a move
+      // afterwards takes out a new loan, and blanking that balance too would
+      // bill nothing for a debt `runPath` does charge interest on.
+      if (
+        loan.propertyIndex >= 0 &&
+        y === schedule.disposalYearByProperty[loan.propertyIndex]
+      )
+        loan.balance = 0
       const year = serviceYear(
         loan.balance,
         loan.rate,
@@ -560,6 +669,7 @@ function debtCost(
     bankServiceByYear,
     deductibleByYear,
     securedBalanceByYear,
+    securedOpeningByProperty,
     unsecuredBalanceByYear,
     budgeted: state.mortgageBudgetedMonthly * 12,
   }
@@ -674,9 +784,11 @@ function nextNormal(rng: () => number): number {
  * Apply a single life event to the running state (mutates `s`), and return the
  * scheduled secured balance the event leaves behind.
  *
- * `properties` is the path's live list; a move rewrites its first entry, the one
- * the plan's secured loans are all on. Giving a move its own choice of which
- * property to replace is issue #9.
+ * `properties` is the path's live list; a move rewrites its first entry and
+ * settles every secured loan against it, whichever property each of them names
+ * — see `swapLoansAt`, which is the other half of that. Giving a move its own
+ * choice of which property to replace is the rest of issue #9; a disposal from
+ * the list already settles only the loans naming the property sold.
  *
  * The balance is threaded in and out rather than read straight from
  * {@link DebtCost.securedBalanceByYear}, because a move needs it to work out the
@@ -799,6 +911,10 @@ function planProperties(state: PlanningState): PlannedProperty[] {
       use: "own",
       value: 0,
       landValue: 0,
+      // Nothing sells this slot — `disposalAge` is null and a move replaces it
+      // rather than disposing of it — and a {@link PropertyEvent} states no sale
+      // costs of its own to put here.
+      saleCostsPct: 0,
       acquisitionAge: moveAge,
       disposalAge: null,
     },
@@ -843,17 +959,22 @@ interface PropertySchedule {
    */
   nedslagByYear: number[]
   /**
-   * The year the loan-bearing property (index 0) is disposed of, or `Infinity`
-   * if it never is.
+   * The year each property is disposed of, indexed like {@link items}, or
+   * `Infinity` for one the household never sells.
    *
-   * Read by {@link debtCost}, which from that year bills nothing for the secured
-   * loans and carries a zero balance forward, so that what {@link runPath} takes
-   * out of the sale proceeds is the balance the household last paid for.
+   * Read by {@link debtCost}, which from a property's own disposal year bills
+   * nothing for the loans it secured and carries their balance forward at zero,
+   * so that what {@link runPath} takes out of the sale proceeds is the balance
+   * the household last paid for. One year per property rather than one for the
+   * household: the loans are settled against the property they name, so the
+   * summer house's sale must not stop the billing on the home's mortgage
+   * (issue #9).
+   *
    * Derived from the same ownership transitions as {@link soldByYear} rather
    * than from `disposalAge` directly, which is what keeps the two from
    * disagreeing about a property that is disposed of in the year it is bought.
    */
-  loanRepaidYear: number
+  disposalYearByProperty: number[]
 }
 
 function propertySchedule(
@@ -874,7 +995,7 @@ function propertySchedule(
   // plan's own list says, so the nedslag has to see it too.
   const moveAge = firstMoveAge(state.events)
   const claiming: TaxableProperty[] = []
-  let loanRepaidYear = Infinity
+  const disposalYearByProperty = new Array<number>(items.length).fill(Infinity)
 
   for (let y = 0; y <= years; y++) {
     const age = state.currentAge + y
@@ -886,7 +1007,8 @@ function propertySchedule(
         if (into[y] === NO_TRANSFERS) into[y] = []
         ;(into[y] as number[]).push(i)
         owned[i] = now
-        if (i === 0 && !now && loanRepaidYear === Infinity) loanRepaidYear = y
+        if (!now && disposalYearByProperty[i] === Infinity)
+          disposalYearByProperty[i] = y
       }
     }
     claiming.length = 0
@@ -907,7 +1029,7 @@ function propertySchedule(
     boughtByYear,
     soldByYear,
     nedslagByYear,
-    loanRepaidYear,
+    disposalYearByProperty,
   }
 }
 
@@ -1260,12 +1382,15 @@ function runPath(
   /**
    * What the plan's secured loans owe as this path has reached them: read from
    * `debt` at the top of every year and moved only by a move. One aggregate
-   * rather than a balance per loan, because nothing in the cash flow asks about
-   * an individual contract — home equity is portfolio-wide, and a sale settles
-   * whatever the home secured. It is a local rather than a field of
-   * {@link SimState} because it is not path state at all — no return draw can
-   * touch it — and a field is what would invite it to be walked here a second
-   * time.
+   * rather than a balance per loan, because what reads it asks only what the
+   * household owes against its property as a whole — home equity is
+   * portfolio-wide, and so is the borrowing capacity derived from it. A
+   * *disposal* needs the one property's share instead, and reads
+   * {@link DebtCost.securedOpeningByProperty} rather than this.
+   *
+   * It is a local rather than a field of {@link SimState} because it is not path
+   * state at all — no return draw can touch it — and a field is what would
+   * invite it to be walked here a second time.
    */
   let secured = debt.securedBalanceByYear[0]
 
@@ -1343,10 +1468,9 @@ function runPath(
     // differently from the home. Grundværdi rides along at the same rate — the
     // plan has no separate land-price assumption to grow it by.
     //
-    // What the household owes as the year opens — the balance last year closed
-    // on, the move it may have ended in included.
-    const openingSecured = secured
-    const equityBefore = homeEquityOf(s, openingSecured)
+    // Measured against what the household owes as the year opens — the balance
+    // last year closed on, the move it may have ended in included.
+    const equityBefore = homeEquityOf(s, secured)
     const shock = housingShockFor(y)
     let ownedValueNow = 0
     for (const p of properties) {
@@ -1358,8 +1482,8 @@ function runPath(
     }
     s.propertyValue = ownedValueNow
     // The loans have already had their year — once, in `debtCost`, for all 401
-    // paths. That walk is where afdragsfrihed is applied and where the year the
-    // loan-bearing property is sold leaves a settled balance behind, so reading
+    // paths. That walk is where afdragsfrihed is applied and where each
+    // property's disposal year leaves the loans it secured settled, so reading
     // the schedule is also what keeps the household from being billed for a
     // year's afdrag it never paid.
     secured = debt.securedBalanceByYear[y]
@@ -1395,29 +1519,30 @@ function runPath(
       s.borrowedForSpending * state.assumptions.equityBorrowingRate
 
     // 2e) Properties change hands. A disposal is settled at the value it has
-    // just grown to; an acquisition is paid at the value the plan states, which
-    // is the price in the year it is bought, and starts appreciating from there.
-    // Both are all-equity except the home: the plan can secure a loan on any
-    // property, but a disposal does not say which one it settles, so the secured
-    // debt is all taken off the first (issue #9) — and a helårsbolig sale is
-    // tax-free under EBL § 8, a fritidsbolig sale under stk. 2, so no gain is
-    // realised either way.
+    // just grown to, less what the plan says selling it costs; an acquisition is
+    // paid at the value the plan states, which is the price in the year it is
+    // bought, and starts appreciating from there. An acquisition is all-equity —
+    // no {@link PlannedLoan} can be drawn to fund one (see there) — and a
+    // helårsbolig sale is tax-free under EBL § 8, a fritidsbolig sale under
+    // stk. 2, so no gain is realised either way.
     let housingCash = 0
     for (const i of schedule.soldByYear[y]) {
       const p = properties[i]
       if (!p.owned) continue
       p.owned = false
       s.propertyValue -= p.value
-      housingCash += p.value
-      if (i === 0 && openingSecured > 0) {
-        // The secured loans are all on this property, so the sale settles them —
-        // out of the balance the year opened with, because this is
-        // `loanRepaidYear` by construction and `debtCost` neither bills nor
-        // amortises that year. Not floored at zero: a household selling for less
-        // than it owes still owes the difference, and hiding that would forgive
-        // a real debt.
-        housingCash -= openingSecured
-      }
+      // Sale costs come off the proceeds and not off the value: what the
+      // household stops owning is the whole house. The percentage is the plan's
+      // own and so is read from the schedule — a move leaves the slot's value
+      // rewritten but says nothing about what selling the new home costs.
+      housingCash += p.value * (1 - schedule.items[i].saleCostsPct)
+      // The loans this property secures are settled out of its proceeds, and no
+      // others — out of the balance the year opened with, because this is the
+      // property's own disposal year by construction and `debtCost` neither
+      // bills nor amortises it. Not floored at zero: a household selling for
+      // less than it owes still owes the difference, and hiding that would
+      // forgive a real debt.
+      housingCash -= debt.securedOpeningByProperty[y][i]
       if (s.propertyValue <= 0 && s.borrowedForSpending > 0) {
         // Equity borrowing is secured on the portfolio as a whole, so it comes
         // due only when the last of it is gone.
@@ -1695,7 +1820,7 @@ export function simulatePlanning(state: PlanningState): PlanningResult {
   const schedule = propertySchedule(state, years)
 
   // The loan schedule doesn't care about return draws either, but it does care
-  // about the year the property its secured loans are on is sold.
+  // about the year each property its loans are secured on is sold.
   const debt = debtCost(state, state.loans, years, schedule)
 
   // Retirement income per year (deterministic — shared by all paths). Computed

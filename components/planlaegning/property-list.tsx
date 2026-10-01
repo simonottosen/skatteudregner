@@ -11,7 +11,7 @@ import {
   TextInput,
 } from "@carbon/react"
 import { Add, ChevronDown, ChevronUp, TrashCan } from "@carbon/icons-react"
-import { MoneyInput, num } from "./money-input"
+import { MoneyInput, PercentField, num } from "./money-input"
 import {
   PROPERTY_KINDS,
   PROPERTY_KIND_LABEL,
@@ -30,10 +30,10 @@ import type { PlannedProperty, PropertyKind } from "@/lib/planning/types"
  * The household's properties: what each is worth, what its plot is worth, and
  * the years it is owned.
  *
- * Every entry is edited in place rather than in a modal. A property is four
- * numbers the user checks against each other — a value against a grundværdi, a
- * purchase age against a sale age — and a dialog would hide the rest of the list
- * exactly when it is being compared.
+ * Every entry is edited in place rather than in a modal. A property is a handful
+ * of numbers the user checks against each other — a value against a grundværdi,
+ * a purchase age against a sale age — and a dialog would hide the rest of the
+ * list exactly when it is being compared.
  */
 export function PropertyList({
   properties,
@@ -72,9 +72,13 @@ export function PropertyList({
             return (
               <li key={p.id} className="border bg-muted/20">
                 <div className="flex items-center gap-2 p-2">
+                  {/* Not "Bolig med lån" any more: each loan names the property
+                      that secures it, and selling that property is what settles
+                      it. What is still true of the first entry alone is that a
+                      flytning rewrites it. */}
                   {i === 0 && (
                     <Tag type="cool-gray" size="sm">
-                      Bolig med lån
+                      Primær bolig
                     </Tag>
                   )}
                   <div className="min-w-0 flex-1">
@@ -183,6 +187,19 @@ export function PropertyList({
                               disposalAge: num(value ?? 0, p.disposalAge ?? 0),
                             })
                           }
+                        />
+                      )}
+                      {/* Shown with the sale age and not above it: a household
+                          that never sells has nothing to pay an agent for, and
+                          the field would otherwise ask every entry for a figure
+                          that changes nothing. */}
+                      {p.disposalAge !== null && (
+                        <PercentField
+                          id={`prop-sale-costs-${p.id}`}
+                          label="Salgsomkostninger"
+                          helperText="Mægler, advokat og tinglysning i procent af salgsprisen. Typisk 2–4 %."
+                          value={p.saleCostsPct}
+                          onChange={(v) => patch({ saleCostsPct: v })}
                         />
                       )}
                     </div>

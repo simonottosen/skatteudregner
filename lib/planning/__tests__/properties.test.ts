@@ -19,6 +19,7 @@ const at = (fields: Partial<PlannedProperty> = {}): PlannedProperty => ({
   use: "own",
   value: 4_000_000,
   landValue: 1_500_000,
+  saleCostsPct: 0,
   acquisitionAge: 0,
   disposalAge: null,
   ...fields,
@@ -99,6 +100,22 @@ describe("ownershipSummary", () => {
     expect(ownershipSummary(at({ acquisitionAge: 30, disposalAge: 70 }), 45)).toBe(
       "Ejes i dag · sælges som 70-årig"
     )
+  })
+
+  it("names the sale costs only where there are any to name", () => {
+    // The field defaults to zero, so "0,00% i salgsomkostninger" would stand on
+    // every row with a sale age and bury the one row that was given a figure.
+    expect(
+      ownershipSummary(at({ disposalAge: 70, saleCostsPct: 0.03 }), 45)
+    ).toBe("Ejes i dag · sælges som 70-årig · 3,00% i salgsomkostninger")
+    expect(
+      ownershipSummary(at({ disposalAge: 70, saleCostsPct: 0 }), 45)
+    ).not.toContain("salgsomkostninger")
+    // And nothing at all on a property the plan never sells: there is no sale
+    // for the percentage to be charged on.
+    expect(
+      ownershipSummary(at({ disposalAge: null, saleCostsPct: 0.03 }), 45)
+    ).not.toContain("salgsomkostninger")
   })
 })
 
