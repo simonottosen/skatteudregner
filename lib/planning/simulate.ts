@@ -452,7 +452,8 @@ interface DebtCost {
 
 /**
  * Where a secured loan the plan attributes to no property comes due: the index
- * of the property the household lets go of last, or −1 when it lists none.
+ * of the property the household lets go of last, or −1 when it owns none in the
+ * years projected.
  *
  * Two plans reach here. One carries a realkredit with no pant named — see
  * {@link reducesHomeEquity} for why that is a real plan and not a malformed one
@@ -534,7 +535,8 @@ function debtCost(
     /**
      * Index into {@link PropertySchedule.items} of the property whose sale
      * settles this loan, or −1 for a loan no sale does: unsecured debt, and
-     * secured debt in a plan that lists no property at all.
+     * secured debt in a plan the household owns no property under while it
+     * runs.
      */
     propertyIndex: number
   }

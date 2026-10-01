@@ -202,10 +202,9 @@ export function PropertyList({
                           helperText={SALE_COSTS_HELPER_TEXT}
                           value={p.saleCostsPct}
                           // Bounded here and not only on reload: this writes
-                          // into the plan the projection reads, so an unbounded
-                          // share would hand the household extra proceeds or
-                          // most of its house — and the saved figure would then
-                          // come back changed.
+                          // straight into the plan the projection reads — see
+                          // {@link clampSaleCostsPct} for what an unbounded
+                          // share does to it.
                           onChange={(v) =>
                             patch({ saleCostsPct: clampSaleCostsPct(v) })
                           }
