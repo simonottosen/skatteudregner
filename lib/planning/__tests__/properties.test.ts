@@ -159,7 +159,9 @@ describe("rentalExclusionNotice", () => {
       rentalExclusionNotice([at({ use: "own" }), at({ use: "rented" })]) ?? ""
     expect(notice).toContain("lejeindtægt")
     expect(notice).toContain("driftsudgifter")
-    expect(notice).toContain("skat")
+    // The whole phrase, not "skat": the notice closes on "ejendomsskat", so the
+    // bare word is in the string whether or not the tax on the surplus is.
+    expect(notice).toContain("skat af overskuddet")
   })
 })
 
