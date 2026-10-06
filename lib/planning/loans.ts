@@ -220,6 +220,14 @@ export function hasDanglingSecurity(
 /**
  * What the user has to settle before the plan means what it says — or null when
  * every loan's security is accounted for.
+ *
+ * It says what the projection does in the meantime, not only what is wrong.
+ * There is no sale to settle a loan nobody's house secures, so the engine holds
+ * it against the household's property as a whole and discharges it when the last
+ * of that is gone (`lastDisposedIndex` in `./simulate`). That is a defensible
+ * reading and an invisible one: a household expecting the sale of the deleted
+ * house's replacement to clear the debt would otherwise see the balance survive
+ * it with nothing on the screen accounting for that.
  */
 export function missingSecurityNotice(
   loans: readonly PlannedLoan[],
@@ -227,8 +235,9 @@ export function missingSecurityNotice(
 ): string | null {
   if (!loans.some((l) => hasDanglingSecurity(l, properties))) return null
   return (
-    "Et lån er knyttet til en bolig, planen ikke har. Vælg en anden bolig, " +
-    "eller sæt lånet til uden pant."
+    "Et lån er knyttet til en bolig, planen ikke har. Beregningen indfrier " +
+    "det først, når den sidste bolig er solgt. Vælg en anden bolig, eller " +
+    "sæt lånet til uden pant."
   )
 }
 
@@ -252,11 +261,47 @@ const legacyTermMonths = (years: unknown, type: LoanType) =>
   clampNum(years, LOAN_TYPE_DEFAULTS[type].termMonths / 12, 1) * 12
 
 /**
+ * Which property a loan arriving in a blob is secured on.
+ *
+ * A `propertyId` the blob states is taken as it stands — including the null the
+ * user chose by setting the loan to "uden pant" in the form, and including an id
+ * no property answers to (see {@link missingSecurityNotice} for why that link is
+ * not dropped here).
+ *
+ * The key being *absent* is the thing being migrated, and the migration is the
+ * projection's old assumption written down. A plan saved before the link could
+ * be edited was simulated with its whole secured balance settled against the
+ * first property, so that is what the first property's sale must still settle —
+ * and the only way to say so once the settlement follows the link is to put the
+ * link there. Without it every such plan's mortgage would fall through to the
+ * engine's last-property fallback and be discharged by the wrong sale.
+ *
+ * Only a `realkredit` gets it: a bank loan with no `propertyId` is the lumped
+ * other debt the scalars this list replaced held, secured on nothing. Keyed on
+ * the key rather than on `version` for the reason {@link normalizeLoans} gives,
+ * and that is also why this cannot read `type` from the typed loan — the type is
+ * resolved from the same blob, in the caller.
+ */
+function securityOf(
+  o: Record<string, unknown>,
+  type: LoanType,
+  home: string | null
+): string | null {
+  if (typeof o.propertyId === "string") return o.propertyId
+  if (o.propertyId === undefined && type === "realkredit") return home
+  return null
+}
+
+/**
  * Validate the fields of something already known to be an object — split from
  * {@link normalizeLoan} so the migration below, which builds its own object, can
  * reuse every bound without asserting away a null it cannot get.
  */
-function loanFrom(o: Record<string, unknown>): PlannedLoan {
+function loanFrom(
+  o: Record<string, unknown>,
+  /** The first property's id, which a legacy secured loan is migrated onto. */
+  home: string | null
+): PlannedLoan {
   const type: LoanType = o.type === "bank" ? "bank" : "realkredit"
   const defaults = LOAN_TYPE_DEFAULTS[type]
   const termMonths = Math.round(
@@ -264,9 +309,7 @@ function loanFrom(o: Record<string, unknown>): PlannedLoan {
   )
   return {
     id: typeof o.id === "string" ? o.id : newId("loan"),
-    // Kept as it stands even when no property answers to it — see
-    // `missingSecurityNotice` for why the link is not dropped here.
-    propertyId: typeof o.propertyId === "string" ? o.propertyId : null,
+    propertyId: securityOf(o, type, home),
     label:
       typeof o.label === "string" && o.label.trim()
         ? o.label
@@ -292,9 +335,9 @@ function loanFrom(o: Record<string, unknown>): PlannedLoan {
 }
 
 /** Normalize one loan; returns null if it describes no loan at all. */
-function normalizeLoan(raw: unknown): PlannedLoan | null {
+function normalizeLoan(raw: unknown, home: string | null): PlannedLoan | null {
   if (!raw || typeof raw !== "object") return null
-  return loanFrom(raw as Record<string, unknown>)
+  return loanFrom(raw as Record<string, unknown>, home)
 }
 
 /**
@@ -311,6 +354,10 @@ function normalizeLoan(raw: unknown): PlannedLoan | null {
  * likes, and the shape is the thing actually being asked about. That is also why
  * this takes the whole blob: the legacy amounts it falls back to are siblings of
  * the field it reads, not something a caller could pass separately.
+ *
+ * A list already present is migrated too, in one respect: a realkredit entry
+ * with no `propertyId` key is secured on the first property — see
+ * {@link securityOf}, which is where that matters and why.
  *
  * `properties` must be the plan's *normalized* list rather than the blob's own,
  * because `normalizeProperties` mints an id for every property that arrives
@@ -330,12 +377,13 @@ export function normalizeLoans(
   properties: readonly PlannedProperty[]
 ): PlannedLoan[] {
   const o = (blob ?? {}) as Record<string, unknown>
+  const home = properties[0]?.id ?? null
   if (Array.isArray(o.loans)) {
     const out: PlannedLoan[] = []
     for (const raw of o.loans) {
       // A zero balance survives here, unlike in the migration below: this is a
       // row the user has just added and has yet to fill in.
-      const loan = normalizeLoan(raw)
+      const loan = normalizeLoan(raw, home)
       if (loan) out.push(loan)
     }
     return out
@@ -345,28 +393,34 @@ export function normalizeLoans(
   const mortgageBalance = clampNum(o.mortgageBalance, 0, 0)
   if (mortgageBalance > 0) {
     out.push(
-      loanFrom({
-        type: "realkredit",
-        propertyId: properties[0]?.id ?? null,
-        principal: mortgageBalance,
-        rate: o.mortgageRate,
-        termMonths: legacyTermMonths(o.mortgageTermYears, "realkredit"),
-        interestOnlyYears: o.mortgageInterestOnlyYears,
-        bidragssats: o.mortgageBidragssats,
-      })
+      loanFrom(
+        {
+          type: "realkredit",
+          propertyId: home,
+          principal: mortgageBalance,
+          rate: o.mortgageRate,
+          termMonths: legacyTermMonths(o.mortgageTermYears, "realkredit"),
+          interestOnlyYears: o.mortgageInterestOnlyYears,
+          bidragssats: o.mortgageBidragssats,
+        },
+        home
+      )
     )
   }
   const otherDebtBalance = clampNum(o.otherDebtBalance, 0, 0)
   if (otherDebtBalance > 0) {
     out.push(
-      loanFrom({
-        type: "bank",
-        label: LEGACY_OTHER_DEBT_LABEL,
-        propertyId: null,
-        principal: otherDebtBalance,
-        rate: o.otherDebtRate,
-        termMonths: legacyTermMonths(o.otherDebtTermYears, "bank"),
-      })
+      loanFrom(
+        {
+          type: "bank",
+          label: LEGACY_OTHER_DEBT_LABEL,
+          propertyId: null,
+          principal: otherDebtBalance,
+          rate: o.otherDebtRate,
+          termMonths: legacyTermMonths(o.otherDebtTermYears, "bank"),
+        },
+        home
+      )
     )
   }
   return out

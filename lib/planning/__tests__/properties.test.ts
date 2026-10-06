@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest"
 import {
   PROPERTY_USES,
   PROPERTY_USE_LABEL,
+  SALE_COSTS_HELPER_TEXT,
+  clampSaleCostsPct,
   newPlannedProperty,
   ownershipSummary,
   pensionerNedslagNotice,
@@ -10,6 +12,7 @@ import {
   rentalExclusionNotice,
   replaceProperty,
 } from "../properties"
+import { normalizeProperties } from "../normalize"
 import type { PlannedProperty } from "../types"
 
 const at = (fields: Partial<PlannedProperty> = {}): PlannedProperty => ({
@@ -19,6 +22,7 @@ const at = (fields: Partial<PlannedProperty> = {}): PlannedProperty => ({
   use: "own",
   value: 4_000_000,
   landValue: 1_500_000,
+  saleCostsPct: 0,
   acquisitionAge: 0,
   disposalAge: null,
   ...fields,
@@ -82,6 +86,43 @@ describe("removeProperty", () => {
   })
 })
 
+/**
+ * The form writes this field straight into the plan the projection reads, so the
+ * bound has to hold there and not only on the way back out of storage. An
+ * unbounded share pays the household *more* than the house sold for at −3 %, or
+ * takes half of it at 50 %, and the figure then comes back changed on the next
+ * reload — two projections of one saved plan.
+ */
+describe("clampSaleCostsPct", () => {
+  it("holds the share at both ends and leaves a real figure alone", () => {
+    expect(clampSaleCostsPct(-0.03)).toBe(0)
+    expect(clampSaleCostsPct(0.5)).toBe(0.2)
+    // A typical Danish sale, untouched.
+    expect(clampSaleCostsPct(0.03)).toBe(0.03)
+    // Carbon's NumberInput reports a half-typed field as something that is not
+    // a number at all, and NaN would reach the projection as a NaN sale price.
+    expect(clampSaleCostsPct(NaN)).toBe(0)
+  })
+
+  it("agrees with what a reload makes of the same figure", () => {
+    // One bound with one owner: the live clamp and the normalizer have to reach
+    // the same number, or the plan on screen is not the plan that was saved.
+    for (const typed of [-0.03, 0, 0.025, 0.2, 0.5]) {
+      const reloaded = normalizeProperties({
+        properties: [at({ saleCostsPct: typed })],
+      })[0].saleCostsPct
+      expect(reloaded).toBe(clampSaleCostsPct(typed))
+    }
+  })
+
+  it("asks for the figure in the range a real sale lands in", () => {
+    // The bound is not a hint — 20 % passes and ruins the projection — so the
+    // copy has to name the range the user is actually looking for.
+    expect(SALE_COSTS_HELPER_TEXT).toContain("2–4 %")
+    expect(SALE_COSTS_HELPER_TEXT).toContain("salgsprisen")
+  })
+})
+
 describe("ownershipSummary", () => {
   it("says a property already held is held", () => {
     expect(ownershipSummary(at({ acquisitionAge: 30 }), 45)).toBe("Ejes i dag")
@@ -99,6 +140,22 @@ describe("ownershipSummary", () => {
     expect(ownershipSummary(at({ acquisitionAge: 30, disposalAge: 70 }), 45)).toBe(
       "Ejes i dag · sælges som 70-årig"
     )
+  })
+
+  it("names the sale costs only where there are any to name", () => {
+    // The field defaults to zero, so "0,00% i salgsomkostninger" would stand on
+    // every row with a sale age and bury the one row that was given a figure.
+    expect(
+      ownershipSummary(at({ disposalAge: 70, saleCostsPct: 0.03 }), 45)
+    ).toBe("Ejes i dag · sælges som 70-årig · 3,00% i salgsomkostninger")
+    expect(
+      ownershipSummary(at({ disposalAge: 70, saleCostsPct: 0 }), 45)
+    ).not.toContain("salgsomkostninger")
+    // And nothing at all on a property the plan never sells: there is no sale
+    // for the percentage to be charged on.
+    expect(
+      ownershipSummary(at({ disposalAge: null, saleCostsPct: 0.03 }), 45)
+    ).not.toContain("salgsomkostninger")
   })
 })
 

@@ -411,6 +411,7 @@ const summerHouse: PlannedProperty = {
   use: "own",
   value: 1_800_000,
   landValue: 900_000,
+  saleCostsPct: 0,
   acquisitionAge: 55,
   disposalAge: null,
 }
@@ -421,6 +422,7 @@ const theHome: PlannedProperty = {
   use: "own",
   value: 3_000_000,
   landValue: 1_000_000,
+  saleCostsPct: 0,
   acquisitionAge: 0,
   disposalAge: 80,
 }
