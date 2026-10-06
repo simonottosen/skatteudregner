@@ -66,6 +66,85 @@ const MAX_TERM_MONTHS = 40 * 12
 const MAX_BIDRAGSSATS = 0.05
 
 /**
+ * Most any loan may charge, as a yearly fraction.
+ *
+ * One bound for both types, rather than the 0,2 the mortgage field had and the
+ * 0,5 the other-debt field had: the type is a dropdown now, and a bound that
+ * moved with it would rewrite a rate the user never touched.
+ */
+const MAX_RATE = 0.5
+
+/**
+ * A balance held at nothing or more.
+ *
+ * No ceiling, because a household may owe any amount and the plan has no
+ * business ruling on which amounts are plausible. The floor is the whole bound:
+ * a negative balance is a deposit rather than a debt, and `amortizeYear`
+ * (`./amortisation`) would credit the household the interest on it.
+ *
+ * Exported for the reason {@link maxInterestOnlyYears} is — the form writes
+ * straight into the plan the projection reads, so a bound only {@link
+ * normalizeLoans} applied is a bound the live figure never meets. `MoneyInput`
+ * strips the sign before the field reports it, so today this holds nothing the
+ * form could hand it; what it holds is the bound itself, in one place, where
+ * the two sides cannot drift apart.
+ */
+export function clampPrincipal(value: unknown): number {
+  return clampNum(value, 0, 0)
+}
+
+/**
+ * A rate held inside what a loan can charge.
+ *
+ * Shared with the form, which is where the rate actually gets typed: a 900 %
+ * reported by `PercentField` went straight into the plan, priced the
+ * household's debt on screen at nine hundred percent, and came back as fifty on
+ * the next reload — two projections of one saved plan.
+ *
+ * The fallback is the caller's, because the two callers are not asking the same
+ * question. {@link normalizeLoans} is reading a blob that may hold anything and
+ * has nothing but the type's default to fall back on; the form is bounding a
+ * number the loan already carries, and resetting that to the type's default
+ * would change a rate the user never touched. The bound is the same on both
+ * sides, which is the half that has to be.
+ */
+export function clampLoanRate(value: unknown, fallback: number): number {
+  return clampNum(value, fallback, 0, MAX_RATE)
+}
+
+/**
+ * A term held inside what a loan can run for, in the whole months the annuity
+ * step counts its maturity down in.
+ *
+ * Shared with the form for the reason {@link clampLoanRate} is, and the form is
+ * where this one bites: Carbon's `min` and `max` mark a typed-in 500 years
+ * invalid but report the figure anyway, so the plan ran a loan of five
+ * centuries until a reload pulled it back to forty years. The fallback is the
+ * caller's, as there.
+ */
+export function clampTermMonths(value: unknown, fallback: number): number {
+  return Math.round(clampNum(value, fallback, 1, MAX_TERM_MONTHS))
+}
+
+/**
+ * The bidragssats a loan of this type may carry.
+ *
+ * Takes the type because the type answers first: bidrag is what a
+ * realkreditinstitut charges for lending against property, and a banklån
+ * carries none whatever was typed or stored. That rule reaches the form twice —
+ * the field itself, and the type dropdown, which has to drop the fee when a
+ * realkreditlån is switched over — so it is stated here rather than copied into
+ * both and left to disagree.
+ *
+ * Zero is the fallback on both sides: /planlaegning never asks the user to
+ * invent a bidragssats, since the real one arrives with the budget's own
+ * figure.
+ */
+export function clampBidragssats(value: unknown, type: LoanType): number {
+  return type === "bank" ? 0 : clampNum(value, 0, 0, MAX_BIDRAGSSATS)
+}
+
+/**
  * A blank entry for the form to fill in: nothing borrowed yet, on the type's
  * usual rate and term, repaying from the first month.
  *
@@ -304,9 +383,7 @@ function loanFrom(
 ): PlannedLoan {
   const type: LoanType = o.type === "bank" ? "bank" : "realkredit"
   const defaults = LOAN_TYPE_DEFAULTS[type]
-  const termMonths = Math.round(
-    clampNum(o.termMonths, defaults.termMonths, 1, MAX_TERM_MONTHS)
-  )
+  const termMonths = clampTermMonths(o.termMonths, defaults.termMonths)
   return {
     id: typeof o.id === "string" ? o.id : newId("loan"),
     propertyId: securityOf(o, type, home),
@@ -315,11 +392,10 @@ function loanFrom(
         ? o.label
         : LOAN_TYPE_LABEL[type],
     type,
-    principal: clampNum(o.principal, 0, 0),
-    // One bound for both types, rather than the 0,2 the mortgage field had and
-    // the 0,5 the other-debt field had: the type is a dropdown now, and a bound
-    // that moved with it would rewrite a rate the user never touched.
-    rate: clampNum(o.rate, defaults.rate, 0, 0.5),
+    // Each of these is the form's own bound, so a reload cannot change a figure
+    // the form accepted — see {@link clampPrincipal} for why they are shared.
+    principal: clampPrincipal(o.principal),
+    rate: clampLoanRate(o.rate, defaults.rate),
     termMonths,
     interestOnlyYears: clampNum(
       o.interestOnlyYears,
@@ -327,10 +403,7 @@ function loanFrom(
       0,
       maxInterestOnlyYears({ termMonths })
     ),
-    // Bidrag is what a realkreditinstitut charges for lending against property.
-    // A banklån carries none, whatever a blob says it carries.
-    bidragssats:
-      type === "bank" ? 0 : clampNum(o.bidragssats, 0, 0, MAX_BIDRAGSSATS),
+    bidragssats: clampBidragssats(o.bidragssats, type),
   }
 }
 

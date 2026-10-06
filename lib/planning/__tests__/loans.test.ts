@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest"
 import { amortizeYear } from "../amortisation"
 import {
+  LOAN_TYPES,
   LOAN_TYPE_DEFAULTS,
+  clampBidragssats,
+  clampLoanRate,
+  clampPrincipal,
+  clampTermMonths,
   hasDanglingSecurity,
   loanSummary,
   missingSecurityNotice,
@@ -110,6 +115,131 @@ describe("removeLoan", () => {
   it("drops only the entry with that id", () => {
     const list = [at({ id: "a" }), at({ id: "b" }), at({ id: "c" })]
     expect(removeLoan(list, "b").map((l) => l.id)).toEqual(["a", "c"])
+  })
+})
+
+/**
+ * The form writes these fields straight into the plan the projection reads, so
+ * each bound has to hold there and not only on the way back out of storage.
+ * Reached here rather than through the field itself because `vitest.config.ts`
+ * collects only `.ts` — which is the reason the bounds live in `../loans` at
+ * all, and the reason every one of these ends in an agreement check: a bound the
+ * form and {@link normalizeLoans} read differently is still two projections of
+ * one saved plan.
+ */
+describe("the bounds the form and the normalizer share", () => {
+  /** What the same figure comes back as once the plan is saved and reloaded. */
+  const reloaded = (fields: Partial<PlannedLoan>): PlannedLoan =>
+    normalizeLoans({ loans: [{ ...at(), ...fields }] }, [])[0]
+
+  describe("clampPrincipal", () => {
+    it("holds the balance at nothing and lets any real debt through", () => {
+      expect(clampPrincipal(-1)).toBe(0)
+      expect(clampPrincipal(0)).toBe(0)
+      expect(clampPrincipal(2_000_000)).toBe(2_000_000)
+      // No ceiling: the plan has no business ruling on how much a household
+      // may owe, only on the balance that is not a debt at all.
+      expect(clampPrincipal(1e12)).toBe(1e12)
+      expect(clampPrincipal(NaN)).toBe(0)
+      expect(clampPrincipal("2000000")).toBe(0)
+    })
+
+    it("agrees with what a reload makes of the same balance", () => {
+      for (const typed of [-1, 0, 2_000_000, 1e12])
+        expect(reloaded({ principal: typed }).principal).toBe(
+          clampPrincipal(typed)
+        )
+    })
+  })
+
+  describe("clampLoanRate", () => {
+    it("holds the rate at both ends and leaves a quoted one alone", () => {
+      expect(clampLoanRate(-1, 0.041)).toBe(0)
+      // A typed-in 900 % reaches this as 9; the loan may charge half.
+      expect(clampLoanRate(9, 0.041)).toBe(0.5)
+      expect(clampLoanRate(0.041, 0.041)).toBe(0.041)
+      expect(clampLoanRate(0.5, 0.041)).toBe(0.5)
+    })
+
+    it("falls back to whatever the caller had to fall back on", () => {
+      // The normalizer has only the type's default; the form has the rate the
+      // loan already carries, and resetting that to a default the user never
+      // chose would change a rate they never touched.
+      expect(clampLoanRate("0,07", LOAN_TYPE_DEFAULTS.bank.rate)).toBe(
+        LOAN_TYPE_DEFAULTS.bank.rate
+      )
+      expect(clampLoanRate(NaN, 0.038)).toBe(0.038)
+    })
+
+    it("agrees with what a reload makes of the same rate", () => {
+      for (const type of LOAN_TYPES)
+        for (const typed of [-1, 0, 0.041, 0.5, 9])
+          expect(reloaded({ type, rate: typed }).rate).toBe(
+            clampLoanRate(typed, LOAN_TYPE_DEFAULTS[type].rate)
+          )
+    })
+  })
+
+  describe("clampTermMonths", () => {
+    it("holds the term at both ends, in whole months", () => {
+      expect(clampTermMonths(0, 360)).toBe(1)
+      expect(clampTermMonths(-120, 360)).toBe(1)
+      // 500 years, which Carbon's max={40} marks invalid and reports anyway.
+      expect(clampTermMonths(500 * 12, 360)).toBe(40 * 12)
+      expect(clampTermMonths(342, 360)).toBe(342)
+      // The annuity step counts the maturity down a whole month at a time.
+      expect(clampTermMonths(60.4, 360)).toBe(60)
+      expect(clampTermMonths(NaN, 360)).toBe(360)
+      expect(clampTermMonths("30", 360)).toBe(360)
+    })
+
+    it("agrees with what a reload makes of the same term", () => {
+      for (const typed of [0, -120, 1, 60.4, 342, 480, 6000])
+        expect(reloaded({ termMonths: typed }).termMonths).toBe(
+          clampTermMonths(typed, LOAN_TYPE_DEFAULTS.realkredit.termMonths)
+        )
+    })
+  })
+
+  describe("clampBidragssats", () => {
+    it("holds a realkreditlån's fee at both ends", () => {
+      expect(clampBidragssats(-1, "realkredit")).toBe(0)
+      expect(clampBidragssats(0.5, "realkredit")).toBe(0.05)
+      expect(clampBidragssats(0.006, "realkredit")).toBe(0.006)
+      expect(clampBidragssats(NaN, "realkredit")).toBe(0)
+    })
+
+    it("charges a banklån no fee, whatever it is handed", () => {
+      // The one rule the form states twice — at the field and at the type
+      // dropdown — so it has to come from one place or the two will disagree
+      // about a loan that was switched over after the fee was typed.
+      expect(clampBidragssats(0.006, "bank")).toBe(0)
+      expect(clampBidragssats(-1, "bank")).toBe(0)
+      expect(clampBidragssats(NaN, "bank")).toBe(0)
+    })
+
+    it("agrees with what a reload makes of the same fee", () => {
+      for (const type of LOAN_TYPES)
+        for (const typed of [-1, 0, 0.006, 0.05, 0.5])
+          expect(reloaded({ type, bidragssats: typed }).bidragssats).toBe(
+            clampBidragssats(typed, type)
+          )
+    })
+  })
+
+  it("is the difference between a debt and a joke once the projection runs it", () => {
+    // What the form wrote before it shared the bound: the 9 a typed-in 900 %
+    // reports, straight into the plan. `amortizeYear` is the step the
+    // projection bills a year of debt with, so this is the figure the household
+    // was shown — eighteen million kroner of interest on two million of debt,
+    // in one year, with the plan still calling it a realkreditlån.
+    const typed = 9
+    expect(amortizeYear(2_000_000, typed, 360).interest).toBeGreaterThan(
+      17_000_000
+    )
+    expect(
+      amortizeYear(2_000_000, clampLoanRate(typed, 0.041), 360).interest
+    ).toBeLessThan(1_100_000)
   })
 })
 

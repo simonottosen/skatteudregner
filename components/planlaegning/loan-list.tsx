@@ -14,6 +14,10 @@ import { MoneyInput, PercentField, num } from "./money-input"
 import {
   LOAN_TYPES,
   LOAN_TYPE_LABEL,
+  clampBidragssats,
+  clampLoanRate,
+  clampPrincipal,
+  clampTermMonths,
   hasDanglingSecurity,
   loanSummary,
   maxInterestOnlyYears,
@@ -150,24 +154,37 @@ export function LoanList({
                         // The fee goes with the type: a banklån has no
                         // reservefonds- og administrationsbidrag to charge, and
                         // leaving the old rate behind would bill one anyway.
+                        // `clampBidragssats` owns that rule, so the dropdown
+                        // and the field below cannot come to disagree on it.
                         patch({
                           type: selectedItem,
-                          bidragssats:
-                            selectedItem === "bank" ? 0 : loan.bidragssats,
+                          bidragssats: clampBidragssats(
+                            loan.bidragssats,
+                            selectedItem
+                          ),
                         })
                       }}
                     />
+                    {/* These write into the plan the projection reads, so each
+                        is bounded here and not only on reload: a rate of 900 %
+                        or a term of 500 years otherwise prices the household's
+                        debt on screen and then comes back trimmed, leaving two
+                        projections of one saved plan. The bounds belong to
+                        `lib/planning/loans.ts`, where the normalizer takes them
+                        from too, so the two sides cannot disagree. */}
                     <MoneyInput
                       id={`loan-principal-${loan.id}`}
                       label="Restgæld"
                       value={loan.principal}
-                      onChange={(v) => patch({ principal: v })}
+                      onChange={(v) => patch({ principal: clampPrincipal(v) })}
                     />
                     <PercentField
                       id={`loan-rate-${loan.id}`}
                       label="Rente"
                       value={loan.rate}
-                      onChange={(v) => patch({ rate: v })}
+                      onChange={(v) =>
+                        patch({ rate: clampLoanRate(v, loan.rate) })
+                      }
                     />
                     <NumberInput
                       id={`loan-term-${loan.id}`}
@@ -177,7 +194,12 @@ export function LoanList({
                       value={Math.round(loan.termMonths / 12)}
                       onChange={(_e, { value }) => {
                         const years = num(value, loan.termMonths / 12)
-                        const termMonths = Math.max(1, Math.round(years * 12))
+                        // Carbon's min and max only mark the field invalid —
+                        // the figure is reported either way.
+                        const termMonths = clampTermMonths(
+                          years * 12,
+                          loan.termMonths
+                        )
                         // The afdragsfrihed comes down with the term, so
                         // shortening a loan cannot leave one that is never
                         // repaid — which the normalizer would trim silently.
@@ -230,7 +252,9 @@ export function LoanList({
                         step={0.01}
                         helperText="Hentes fra budgettets realkreditlån. Bidraget kan fratrækkes som renteudgift."
                         value={loan.bidragssats}
-                        onChange={(v) => patch({ bidragssats: v })}
+                        onChange={(v) =>
+                          patch({ bidragssats: clampBidragssats(v, loan.type) })
+                        }
                       />
                     )}
                   </div>
