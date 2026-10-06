@@ -1,6 +1,15 @@
 import { describe, it, expect } from "vitest"
-import { newId, normalizePlanning } from "../normalize"
-import { DEFAULT_ASSUMPTIONS, DEFAULT_PLANNING_STATE } from "../types"
+import {
+  foldPropertyEvents,
+  newId,
+  normalizePlanning,
+  normalizeProperties,
+} from "../normalize"
+import {
+  DEFAULT_ASSUMPTIONS,
+  DEFAULT_PLANNING_STATE,
+  type PlannedProperty,
+} from "../types"
 // The migration's whole claim is about what a plan *projects* to, so the one
 // test that can check it has to run the projection. Stating the expected list
 // alone would lock the shape of the migration without ever asking whether the
@@ -784,6 +793,149 @@ describe("normalizePlanning", () => {
         expect.objectContaining({ id: "prop-home", disposalAge: 41 }),
         expect.objectContaining({ label: "Lejlighed", acquisitionAge: 41 }),
       ])
+    })
+
+    /**
+     * A plan that moves and a scenario that moves again. The list the scenario
+     * is folded against is the plan's, with the plan's own move already
+     * replayed into it — so its first entry is a house the household sold years
+     * before the scenario's move lands, and starting the second chain there
+     * reopened that sale, left the first successor never sold, and dropped the
+     * scenario's own purchase for having a disposal older than its acquisition.
+     */
+    describe("a scenario that moves again after the plan already moved", () => {
+      const moving = (scenarioAge: number) =>
+        normalizePlanning({
+          version: 3,
+          currentAge: 40,
+          properties: [
+            { id: "prop-home", value: 3_000_000, landValue: 900_000 },
+          ],
+          events: [
+            {
+              id: "m1",
+              type: "property",
+              label: "Rækkehus",
+              age: 50,
+              newValue: 4_000_000,
+              mortgageLtv: 0.8,
+            },
+          ],
+          scenarios: [
+            {
+              id: "sc-1",
+              name: "Flyt igen",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              changes: {
+                addEvents: [
+                  {
+                    type: "property",
+                    label: "Lejlighed",
+                    age: scenarioAge,
+                    newValue: 2_500_000,
+                    mortgageLtv: 0.4,
+                  },
+                ],
+              },
+            },
+          ],
+        })
+
+      it("sells the house the plan's own move bought", () => {
+        const s = moving(60)
+        expect(s.scenarios[0].changes.overrides?.properties).toEqual([
+          // The plan's move still ends here, not ten years later.
+          expect.objectContaining({ id: "prop-home", disposalAge: 50 }),
+          // And the house it bought is the one the scenario sells.
+          expect.objectContaining({
+            label: "Rækkehus",
+            acquisitionAge: 50,
+            disposalAge: 60,
+          }),
+          expect.objectContaining({
+            label: "Lejlighed",
+            value: 2_500_000,
+            landValue: 750_000,
+            acquisitionAge: 60,
+            disposalAge: null,
+            financing: { ltv: 0.4 },
+          }),
+        ])
+        // The plan itself keeps the household its own move left it with.
+        expect(s.properties).toEqual([
+          expect.objectContaining({ id: "prop-home", disposalAge: 50 }),
+          expect.objectContaining({ label: "Rækkehus", disposalAge: null }),
+        ])
+      })
+
+      /**
+       * What makes folding twice legitimate at all. `applyScenario` *appends*
+       * `addEvents` to the plan's own, so in the old vocabulary the plan's move
+       * and the scenario's fired as one chain on one timeline — and the only
+       * honest test of a second fold is that it lands the household where
+       * folding that one chain against the untouched list would have.
+       *
+       * Compared as a set of windows rather than as a list: the second fold
+       * appends the scenario's purchase after the plan's, so a scenario move
+       * dated *before* the plan's comes out in a different order. Nothing reads
+       * that order except `normalizeLoans`, which reads the first entry — the
+       * household's own home, first in both.
+       */
+      it("lands where folding the two chains as one would", () => {
+        const window = (p: {
+          value: number
+          landValue: number
+          saleCostsPct: number
+          acquisitionAge: number
+          disposalAge: number | null
+          financing: { ltv: number } | null
+        }) => ({
+          value: p.value,
+          landValue: p.landValue,
+          saleCostsPct: p.saleCostsPct,
+          acquisitionAge: p.acquisitionAge,
+          disposalAge: p.disposalAge,
+          financing: p.financing,
+        })
+        const windows = (list: readonly PlannedProperty[]) =>
+          list
+            .map(window)
+            .sort((a, b) => a.acquisitionAge - b.acquisitionAge)
+
+        const plansMove = {
+          id: "m1",
+          type: "property",
+          label: "Rækkehus",
+          age: 50,
+          newValue: 4_000_000,
+          mortgageLtv: 0.8,
+        }
+        const scenariosMove = (age: number) => ({
+          id: "m2",
+          type: "property",
+          label: "Lejlighed",
+          age,
+          newValue: 2_500_000,
+          mortgageLtv: 0.4,
+        })
+        // The one chain, folded once against the list the plan states.
+        const asOneChain = (age: number) =>
+          foldPropertyEvents(
+            normalizeProperties({
+              properties: [
+                { id: "prop-home", value: 3_000_000, landValue: 900_000 },
+              ],
+            }),
+            [plansMove, scenariosMove(age)],
+            40
+          )
+
+        for (const age of [60, 45]) {
+          expect(
+            windows(moving(age).scenarios[0].changes.overrides!.properties!)
+          ).toEqual(windows(asOneChain(age)))
+        }
+      })
     })
   })
 

@@ -343,6 +343,44 @@ export function hasPropertyEvents(
 }
 
 /**
+ * The entry a move dated `age` sells: the home the household is living in then.
+ *
+ * Not simply `list[0]`. {@link normalizePlanning} hands a scenario the plan's
+ * list with the *plan's* own moves already replayed into it, and a scenario's
+ * `addEvents` are appended to the plan's events rather than replacing them (see
+ * `applyScenario`) — so the two chains are one chain on one timeline, and the
+ * second half of it has to start where the first half left the household. The
+ * first entry there is a house sold years before the scenario's move lands.
+ *
+ * The most recently acquired entry still owned at the move is where the chain
+ * has got to, ownership being the half-open `[acquisitionAge, disposalAge)` the
+ * projection reads (`ownsAt` in `./simulate`). Ties go to the earliest entry, so
+ * a plan that simply lists a home and a summer house still moves out of the
+ * home — the first entry is the only one the old vocabulary could touch, and the
+ * one every migrated loan is secured on.
+ *
+ * Falls back to the first entry when the household owns nothing that year: a
+ * list whose every window has closed still has to say what the new house is
+ * worth and what it will cost to sell, and the entry the old engine would have
+ * rewritten is the only figure there is. Nothing of that entry's own is
+ * disturbed — its sale has already fired, so the move does not close it.
+ */
+function homeAt(
+  list: readonly PlannedProperty[],
+  age: number
+): PlannedProperty | null {
+  let home: PlannedProperty | null = null
+  for (const p of list)
+    if (
+      age >= p.acquisitionAge &&
+      (p.disposalAge === null || age < p.disposalAge) &&
+      (!home || p.acquisitionAge > home.acquisitionAge)
+    )
+      home = p
+  return home ?? list[0] ?? null
+}
+
+/**
  * Replay a version-3 plan's moves into its property list (issue #9).
  *
  * A move said "sell the home, buy one worth `newValue` at `mortgageLtv`", where
@@ -351,7 +389,8 @@ export function hasPropertyEvents(
  * and a new entry acquired that same year, carrying the
  * {@link PlannedProperty.financing} the move's LTV becomes. So each move closes
  * the current home's window and appends its successor, and a chain of moves
- * walks that forward.
+ * walks that forward from whichever entry {@link homeAt} says the household is
+ * living in when the first of them lands.
  *
  * Appended rather than inserted, so the first entry stays the first entry:
  * {@link normalizeLoans} secures a migrated mortgage on it, and reordering the
@@ -392,11 +431,13 @@ export function foldPropertyEvents(
   // list — which must not come back carrying a disposal age the plan never had.
   const out = base.map((p) => ({ ...p }))
   if (moves.length === 0) return out
-  // The entry a move replaces, and then the entry that replaced it. Null for a
-  // plan that listed no property at all: there was no home to sell, and the
-  // engine likewise reserved a slot worth nothing until the first move filled
-  // it, so the first purchase is simply an acquisition.
-  let home: PlannedProperty | null = out[0] ?? null
+  // The entry a move replaces, and then the entry that replaced it. Chosen only
+  // once: from the second move on, the entry the household is living in is the
+  // one the move before it bought. Null for a plan that listed no property at
+  // all — there was no home to sell, and the engine likewise reserved a slot
+  // worth nothing until the first move filled it, so the first purchase is
+  // simply an acquisition.
+  let home: PlannedProperty | null = homeAt(out, moves[0].age)
   const added: PlannedProperty[] = []
   for (const move of moves) {
     // The entry the move actually takes over from — `home`, unless that entry's
@@ -619,6 +660,11 @@ export function normalizeScenarioChanges(
     // — because that override is what `applyScenario` lays over the plan, so a
     // top-level `properties` here would be read by nothing and the move would be
     // lost in silence.
+    //
+    // The base plan's list has the base plan's own moves folded into it already,
+    // so this is the second half of one chain rather than a chain of its own —
+    // `applyScenario` appends `addEvents` to the plan's events, it does not
+    // replace them. {@link homeAt} is what picks the entry it continues from.
     if (hasPropertyEvents(o.addEvents, currentAge))
       out.properties = foldPropertyEvents(
         out.properties ?? baseProperties,
