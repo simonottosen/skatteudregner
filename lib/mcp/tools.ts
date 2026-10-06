@@ -164,15 +164,17 @@ function json(value: unknown) {
 
 // Zod shapes (mirror the planning types; everything is re-validated/clamped by
 // normalizeScenarioChanges / normalizePlanning before use).
+//
+// No `"property"` event: moving house is stated in `properties` instead — a
+// `disposalAge` on the home being left and a second entry acquired the same
+// year, carrying the `financing` that pays for it (issue #9). A client that
+// sends one gets a schema error rather than a silently dropped move.
 const eventSchema = z.object({
-  type: z.enum(["expense", "windfall", "recurring", "property"]),
+  type: z.enum(["expense", "windfall", "recurring"]),
   label: z.string().optional(),
   age: z.number(),
   amount: z.number().optional(),
   monthlyDelta: z.number().optional(),
-  newValue: z.number().optional(),
-  mortgageLtv: z.number().optional(),
-  housingReturnOverride: z.number().optional(),
 })
 
 /**
@@ -188,6 +190,16 @@ const eventSchema = z.object({
  * `saleCostsPct` is a share, not a percentage: 0.03 is 3 %. It defaults to 0 —
  * a sale that costs nothing — so a disposal sent without it pays the full market
  * value into the portfolio.
+ *
+ * `financing` is how a purchase *after* the plan's `currentAge` is paid for: a
+ * loan of `value × ltv` drawn in the acquisition year, with the rest coming out
+ * of the portfolio. Omit it for an all-equity purchase, and omit it on a property
+ * the household already owns — what is owed on that is a `loans` entry with its
+ * real terms, and an LTV here would invent a second mortgage beside it. `ltv` is
+ * a share too: 0.8 is 80 %.
+ *
+ * `housingReturn` overrides the plan's global appreciation for this property
+ * alone, as a share per year. Omit it to follow the plan.
  */
 const propertySchema = z.object({
   label: z.string().optional(),
@@ -198,6 +210,8 @@ const propertySchema = z.object({
   acquisitionAge: z.number().optional(),
   disposalAge: z.number().nullable().optional(),
   saleCostsPct: z.number().optional(),
+  financing: z.object({ ltv: z.number() }).nullable().optional(),
+  housingReturn: z.number().nullable().optional(),
 })
 
 /**
@@ -232,8 +246,9 @@ const planFieldsSchema = z.object({
   cashBuffer: z.number().optional(),
   investmentTaxMode: z.enum(["realisation", "lager", "ask"]).optional(),
   // The whole list, since a partial one cannot say which entry it means. The
-  // first is the household's own home: a move is modelled as that property
-  // changing value, and a sale settles the secured loans.
+  // first is the household's own home, which is where a loan sent without a
+  // property is secured; moving house is two entries, one disposed of and one
+  // acquired the same year.
   properties: z.array(propertySchema).optional(),
   includePropertyTax: z.boolean().optional(),
   propertyTaxInBudget: z.boolean().optional(),
@@ -323,6 +338,16 @@ export function registerPlanningTools(
   /** Per-request auth when the transport has it, else the process-wide session. */
   const load = (extra: ToolExtra) => loadPlan(extra, options.getAuthInfo)
 
+  /**
+   * A change-set read against the plan it will be laid over, which is the only
+   * way to read one at all: a change-set naming a loan but no property secures
+   * it where *this* household's loans are secured, and a version-3 move among
+   * its `addEvents` is dated against *this* household's clock — see
+   * `normalizeScenarioChanges`.
+   */
+  const changesFor = (changes: unknown, state: PlanningState) =>
+    normalizeScenarioChanges(changes, state.properties, state.currentAge)
+
   server.registerTool(
     "get_plan",
     {
@@ -358,9 +383,7 @@ export function registerPlanningTools(
     },
     async (args, extra) => {
       const { state } = await load(extra)
-      // Against the saved plan's properties, so a change-set naming only loans
-      // secures them where this household's own loans are secured.
-      const changes = normalizeScenarioChanges(args.changes, state.properties)
+      const changes = changesFor(args.changes, state)
       const base = summarize(state)
       const scen = summarize(applyScenario(state, changes))
       return json({
@@ -389,7 +412,7 @@ export function registerPlanningTools(
         id: newId("sc"),
         name: args.name.trim() || "Scenarie",
         createdAt: new Date().toISOString(),
-        changes: normalizeScenarioChanges(args.changes, state.properties),
+        changes: changesFor(args.changes, state),
       }
       const next: PlanningState = normalizePlanning({
         ...state,
@@ -491,10 +514,7 @@ export function registerPlanningTools(
     async (args, extra) => {
       const { state } = await load(extra)
       const effective = args.changes
-        ? applyScenario(
-            state,
-            normalizeScenarioChanges(args.changes, state.properties)
-          )
+        ? applyScenario(state, changesFor(args.changes, state))
         : state
       const basis = args.basis ?? "real"
       let result = simulatePlanning(effective)
@@ -602,7 +622,7 @@ export function registerPlanningTools(
         ...existing,
         name: args.name?.trim() || existing.name,
         changes: args.changes
-          ? normalizeScenarioChanges(args.changes, state.properties)
+          ? changesFor(args.changes, state)
           : existing.changes,
       }
       const next: PlanningState = normalizePlanning({
@@ -771,8 +791,9 @@ export function registerPlanningTools(
       title: "Add a life event to the plan",
       description:
         "Add a one-off/recurring life event to the base plan's 'Større " +
-        "ændringer' (expense, windfall, recurring saving change, or property " +
-        "sale/buy). Writes — only call on the user's request.",
+        "ændringer' (expense, windfall, or a change to the monthly saving). " +
+        "Buying or selling a home is not an event — edit the property list " +
+        "instead. Writes — only call on the user's request.",
       inputSchema: { event: eventSchema },
     },
     async (args, extra) => {
