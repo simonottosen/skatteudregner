@@ -527,6 +527,54 @@ describe("normalizePlanning", () => {
       ])
     })
 
+    it("leaves a disposal that has already fired where the plan put it", () => {
+      // The carry forward is for a disposal the move has not reached yet. One
+      // dated *before* the move describes a home the household has already
+      // sold, and handing it to the successor dated the new purchase's sale
+      // before its own acquisition — so the purchase was dropped as a window
+      // owned for no year, while the old home's own sale was pushed out to the
+      // year of the move. The plan lost a house and kept one five years too
+      // long, both at once.
+      const s = normalizePlanning({
+        version: 3,
+        currentAge: 40,
+        properties: [
+          {
+            id: "prop-home",
+            label: "Huset",
+            value: 3_000_000,
+            landValue: 900_000,
+            saleCostsPct: 0.03,
+            disposalAge: 45,
+          },
+        ],
+        events: [
+          {
+            id: "m1",
+            type: "property",
+            label: "Lejlighed",
+            age: 50,
+            newValue: 2_000_000,
+            mortgageLtv: 0.6,
+          },
+        ],
+      })
+      expect(s.properties).toEqual([
+        expect.objectContaining({ id: "prop-home", disposalAge: 45 }),
+        expect.objectContaining({
+          label: "Lejlighed",
+          value: 2_000_000,
+          // Still scaled off the entry the move replaces, and still sold on
+          // that entry's terms: only the *date* of the sale fails to carry.
+          landValue: 600_000,
+          saleCostsPct: 0.03,
+          acquisitionAge: 50,
+          disposalAge: null,
+          financing: { ltv: 0.6 },
+        }),
+      ])
+    })
+
     it("drops a move the household has already made", () => {
       // The engine only ever looked up events from `currentAge` forward, so a
       // move dated in the past never fired. Migrating it would invent a

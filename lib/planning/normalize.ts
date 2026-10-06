@@ -363,10 +363,13 @@ export function hasPropertyEvents(
  *   did. Not an approximation: `simulate.ts` grows `value` and `landValue` by
  *   one factor, so their ratio is the same in the year of the move as it is
  *   today, and the figure can be computed here from today's numbers.
- * - `saleCostsPct` and `disposalAge` carry onto the successor. The move left the
- *   first entry's own fields standing and the engine read them at the sale, so
- *   "sold at 78" stated on a home that is moved out of at 52 was a sale of the
- *   *new* home at 78 — and what it cost to sell was the old entry's figure.
+ * - `saleCostsPct` carries onto the successor, and so does `disposalAge` when
+ *   the move has not reached it yet. The move left the first entry's own fields
+ *   standing and the engine read them at the sale, so "sold at 78" stated on a
+ *   home that is moved out of at 52 was a sale of the *new* home at 78 — and
+ *   what it cost to sell was the old entry's figure. A disposal dated at or
+ *   before the move is the one that does not travel: it was a sale the
+ *   household had already made, so it stays on the entry that made it.
  * - a successor with `acquisitionAge === disposalAge` is dropped. Two moves at
  *   one age leave the first purchase owned for no year at all, and the engine
  *   reads such a window as never owned — so its value would hang on the list
@@ -396,6 +399,18 @@ export function foldPropertyEvents(
   let home: PlannedProperty | null = out[0] ?? null
   const added: PlannedProperty[] = []
   for (const move of moves) {
+    // The entry the move actually takes over from — `home`, unless that entry's
+    // own sale has already fired by the year the move lands. There is then no
+    // window for the move to close and no date for it to hand on: closing it
+    // anyway would keep a home the plan sold at 45 until the move at 50, and
+    // handing the date on would date the new purchase's sale before its own
+    // acquisition, which the drop below reads as a house never bought. What the
+    // successor is worth and what it costs to sell still come from `home`: the
+    // move stated neither, and the entry it rewrote is the only figure there is.
+    const succeeded =
+      home && (home.disposalAge === null || home.disposalAge > move.age)
+        ? home
+        : null
     const next: PlannedProperty = {
       id: newId("prop"),
       label: move.label.trim() || DEFAULT_PROPERTY_LABEL.helaarsbolig,
@@ -410,11 +425,11 @@ export function foldPropertyEvents(
           : 0,
       saleCostsPct: home?.saleCostsPct ?? 0,
       acquisitionAge: move.age,
-      disposalAge: home?.disposalAge ?? null,
+      disposalAge: succeeded?.disposalAge ?? null,
       financing: { ltv: move.ltv },
       housingReturn: move.housingReturn,
     }
-    if (home) home.disposalAge = move.age
+    if (succeeded) succeeded.disposalAge = move.age
     added.push(next)
     home = next
   }
