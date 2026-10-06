@@ -56,6 +56,32 @@ export function clampSaleCostsPct(value: unknown): number {
 }
 
 /**
+ * The loan-to-value the form offers on a new property, and what a plan saved
+ * with no figure of its own is read as once it has one at all. 80 % is the
+ * realkreditlovens limit for a helårsbolig (lov om realkreditlån § 5), so it is
+ * the most a household can expect to be lent rather than a guess at what it will
+ * borrow.
+ */
+export const DEFAULT_LTV = 0.8
+
+/**
+ * A loan-to-value held inside what can be borrowed against a house.
+ *
+ * Bounded at 1 rather than at the 80 % the law allows: a household can carry a
+ * boligkredit or a seller's loan on top of the realkreditlån, and the projection
+ * models what the plan says is owed rather than policing how it was raised.
+ * Above 1 it would hand the household a house and change besides, and below 0 it
+ * would pay the household for buying one — see `financedPrincipal` in
+ * `./simulate`, which holds the same bound for a state it did not normalize.
+ *
+ * One function for the form and the normalizer both, like
+ * {@link clampSaleCostsPct} above and for the same reason.
+ */
+export function clampLtv(value: unknown): number {
+  return clampNum(value, DEFAULT_LTV, 0, 1)
+}
+
+/**
  * What the sale-cost field asks for.
  *
  * Here rather than in the form for the reason given at the top of this module:
@@ -92,6 +118,12 @@ export function newPlannedProperty(
     saleCostsPct: 0,
     acquisitionAge: Math.max(0, Math.round(currentAge)),
     disposalAge: null,
+    // All-equity, and the plan's own housing return. A row added to the list is
+    // owned from today, and financing an already-owned house would invent a
+    // mortgage beside the {@link PlannedLoan} that states the real one. The form
+    // offers both as soon as the row is dated into the future.
+    financing: null,
+    housingReturn: null,
   }
 }
 
