@@ -5,7 +5,7 @@
  */
 
 import { normalizeLoans } from "./loans"
-import { clampLtv, clampSaleCostsPct } from "./properties"
+import { clampHousingReturn, clampLtv, clampSaleCostsPct } from "./properties"
 import {
   DEFAULT_ASSUMPTIONS,
   DEFAULT_PENSION,
@@ -187,16 +187,21 @@ function normalizeProperty(raw: unknown): PlannedProperty | null {
         : clampNum(o.disposalAge, 0, acquisitionAge, 120),
     // Absent on every plan saved before the field existed, and an all-equity
     // purchase is what those plans were projected with — see
-    // {@link PlannedProperty.financing}. A `financing` block with no usable
-    // number in it reads as all-equity too, rather than as the form's 80 %
-    // default: a figure nobody typed has no business leveraging a house.
+    // {@link PlannedProperty.financing}. The absence is the whole of the
+    // all-equity reading: a `financing` block that *is* there with no usable
+    // number in it asked to be financed and said nothing about how much, so
+    // {@link clampLtv} answers with the realkreditlovens 80 %, which is the most
+    // the household could have been lent rather than a guess at what it chose.
     financing:
       o.financing && typeof o.financing === "object"
         ? { ltv: clampLtv((o.financing as Record<string, unknown>).ltv) }
         : null,
+    // Likewise: absent is "follow the plan's own appreciation", which is what
+    // every entry did before the field existed. Held to a share per year that a
+    // projection can survive — see {@link PlannedProperty.housingReturn}.
     housingReturn:
       typeof o.housingReturn === "number"
-        ? clampNum(o.housingReturn, 0, -1, 1)
+        ? clampHousingReturn(o.housingReturn)
         : null,
   }
 }
@@ -262,23 +267,55 @@ interface LegacyMove {
 }
 
 /**
- * The version-3 moves in a raw `events` array, earliest first.
+ * The version-3 moves in a raw `events` array, earliest first, each dated at a
+ * year the property list can state a transaction in.
  *
  * Read off the blob rather than off {@link normalizeEvents}' output, which drops
  * them: `PropertyEvent` is no longer a type, so there is nothing left for it to
  * return. The bounds are the ones `normalizeEvent` held these fields to while it
  * still had a branch for them, so a move migrates to the figures it was last
  * projected with and not to the ones that were typed.
+ *
+ * The dates are the one thing that cannot migrate unchanged, because the two
+ * vocabularies disagree about the current year:
+ *
+ * - A move *before* `currentAge` is dropped. The engine only ever looked up
+ *   events from `currentAge` forward, so such a move has never fired and
+ *   migrating it would invent a transaction the plan was not projected with.
+ * - A move *at* `currentAge` is dated to `currentAge + 1`. The list reads
+ *   `acquisitionAge <= currentAge` as "owned today" — part of the opening
+ *   position, bought before the projection starts and so never paid for inside
+ *   it — and a disposal in the same year as "never owned at all". Migrating a
+ *   move to that year would therefore hand the household its new home for free
+ *   and leave the old home's mortgage standing, which is strictly worse than the
+ *   old projection. The projection's first year is the earliest one that can
+ *   carry the sale, the settlement and the down payment the move describes, so
+ *   that is where it goes.
+ *
+ * The cost of the second rule is that such a move lands a year later than the
+ * old engine put it, which applied events at `currentAge` before it recorded
+ * year 0 — i.e. treated an immediate move as an opening-position rewrite. The
+ * alternative was to migrate it as one: fold the down payment into
+ * `startInvestments`, mint a {@link PlannedLoan} for the new mortgage and delete
+ * the old one. That is rejected on two counts. It would have to restate
+ * `drawLoansAt`'s term-inheritance rule here, in a second place that can drift
+ * from the engine; and taking the down payment off `startInvestments` is
+ * precisely the untaxed, unrecorded withdrawal that issue #9 exists to remove —
+ * the projection's own purchase routes it through the year's `fundShortfall`, so
+ * it realises gains, pays the tax and shows up in `investmentsSold`. A year's
+ * delay is the honest price of putting the money through the books.
  */
-function legacyMoves(events: unknown): LegacyMove[] {
+function legacyMoves(events: unknown, currentAge: number): LegacyMove[] {
   if (!Array.isArray(events)) return []
   const out: LegacyMove[] = []
   for (const raw of events) {
     if (!raw || typeof raw !== "object") continue
     const e = raw as Record<string, unknown>
     if (e.type !== "property") continue
+    const age = clampNum(e.age, 0, 0, 120)
+    if (age < currentAge) continue
     out.push({
-      age: clampNum(e.age, 0, 0, 120),
+      age: Math.max(age, currentAge + 1),
       label: typeof e.label === "string" ? e.label : "",
       newValue: clampNum(e.newValue, 0, 0),
       ltv: clampLtv(e.mortgageLtv),
@@ -293,9 +330,16 @@ function legacyMoves(events: unknown): LegacyMove[] {
   return out.sort((a, b) => a.age - b.age)
 }
 
-/** Whether a blob's `events` still describe a move as an event of its own. */
-export function hasPropertyEvents(events: unknown): boolean {
-  return legacyMoves(events).length > 0
+/**
+ * Whether a blob's `events` still describe a move this migration has somewhere
+ * to put — so a plan whose only move is dated in the household's past reads as
+ * having none, which is how it was projected.
+ */
+export function hasPropertyEvents(
+  events: unknown,
+  currentAge: number
+): boolean {
+  return legacyMoves(events, currentAge).length > 0
 }
 
 /**
@@ -330,12 +374,16 @@ export function hasPropertyEvents(events: unknown): boolean {
  *   `(1 − ltv) · V` for it and taking `V − ltv · V` back the same year cancel,
  *   and `drawLoansAt` prices the next loan off the mortgage the household
  *   actually carries either way.
+ *
+ * When each move lands is {@link legacyMoves}' to explain: the current year is
+ * the one date the two vocabularies disagree about.
  */
 export function foldPropertyEvents(
   base: readonly PlannedProperty[],
-  events: unknown
+  events: unknown,
+  currentAge: number
 ): PlannedProperty[] {
-  const moves = legacyMoves(events)
+  const moves = legacyMoves(events, currentAge)
   // Copied, not aliased: a move closes the window on the entry it replaces, and
   // {@link normalizeScenarioChanges} folds a scenario's move against the *plan's*
   // list — which must not come back carrying a disposal age the plan never had.
@@ -455,10 +503,16 @@ export function normalizeTaxProfile(value: unknown): PlanningTaxProfile {
  * caller has no home to offer and cannot be given one here: `propertyId` has no
  * "unresolved" value to defer with, since null is already the user's deliberate
  * "uden pant", so the only honest reading of an absent list is an empty one.
+ *
+ * `currentAge` is the plan's, for the same reason and with the same caveat: a
+ * scenario's `addEvents` fire on the plan's timeline, so a version-3 move among
+ * them is dated against it (see {@link legacyMoves}). 0 for a caller with no
+ * plan, which is the age that drops nothing.
  */
 export function normalizeScenarioChanges(
   value: unknown,
-  baseProperties: readonly PlannedProperty[] = []
+  baseProperties: readonly PlannedProperty[] = [],
+  currentAge = 0
 ): ScenarioChanges {
   if (!value || typeof value !== "object") return {}
   const o = value as Partial<ScenarioChanges>
@@ -550,10 +604,11 @@ export function normalizeScenarioChanges(
     // — because that override is what `applyScenario` lays over the plan, so a
     // top-level `properties` here would be read by nothing and the move would be
     // lost in silence.
-    if (hasPropertyEvents(o.addEvents))
+    if (hasPropertyEvents(o.addEvents, currentAge))
       out.properties = foldPropertyEvents(
         out.properties ?? baseProperties,
-        o.addEvents
+        o.addEvents,
+        currentAge
       )
   }
   if (Object.keys(out).length > 0) changes.overrides = out
@@ -564,7 +619,8 @@ export function normalizeScenarioChanges(
 export function normalizeScenarios(
   value: unknown,
   /** The plan these scenarios belong to — see {@link normalizeScenarioChanges}. */
-  baseProperties: readonly PlannedProperty[] = []
+  baseProperties: readonly PlannedProperty[] = [],
+  currentAge = 0
 ): PlanningScenario[] {
   if (!Array.isArray(value)) return []
   const out: PlanningScenario[] = []
@@ -576,7 +632,7 @@ export function normalizeScenarios(
       name: typeof o.name === "string" && o.name.trim() ? o.name : "Scenarie",
       createdAt:
         typeof o.createdAt === "string" ? o.createdAt : new Date().toISOString(),
-      changes: normalizeScenarioChanges(o.changes, baseProperties),
+      changes: normalizeScenarioChanges(o.changes, baseProperties, currentAge),
     })
   }
   return out
@@ -593,7 +649,11 @@ export function normalizePlanning(raw: unknown): PlanningState {
   // this plan does not keep.
   // A version-3 plan states its moves on `events`; the list is where they live
   // now, so they are replayed into it before anything is secured against it.
-  const properties = foldPropertyEvents(normalizeProperties(o), o.events)
+  const properties = foldPropertyEvents(
+    normalizeProperties(o),
+    o.events,
+    currentAge
+  )
   return {
     version: 4,
     currentAge,
@@ -636,6 +696,6 @@ export function normalizePlanning(raw: unknown): PlanningState {
     pension: normalizePension(o.pension),
     tax: normalizeTaxProfile(o.tax),
     events: normalizeEvents(o.events),
-    scenarios: normalizeScenarios(o.scenarios, properties),
+    scenarios: normalizeScenarios(o.scenarios, properties, currentAge),
   }
 }

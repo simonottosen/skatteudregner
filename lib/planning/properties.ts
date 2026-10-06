@@ -82,6 +82,67 @@ export function clampLtv(value: unknown): number {
 }
 
 /**
+ * A per-property appreciation held to a share a projection can survive.
+ *
+ * Below −1 the house would be worth less than nothing after a single year, and
+ * above 1 it doubles every year until it is the whole of the household's net
+ * worth — in both cases the fremskrivning stops saying anything about the plan.
+ * Defaulted to 0 rather than to the plan's own rate, because an entry that
+ * states a rate at all has opted out of the plan's: `null` is how it follows it.
+ *
+ * One function for the form and the normalizer both, like {@link clampLtv} and
+ * {@link clampSaleCostsPct} above and for the same reason.
+ */
+export function clampHousingReturn(value: unknown): number {
+  return clampNum(value, 0, -1, 1)
+}
+
+/**
+ * Whether the form offers to finance this entry.
+ *
+ * Only a purchase the projection carries out, which is one dated strictly after
+ * today: an entry acquired at or before `currentAge` is part of the opening
+ * position, so there is no purchase to borrow for and whatever is owed on it is
+ * a {@link PlannedLoan} stating the real terms. Offering an LTV there would
+ * invent a second mortgage beside it — see {@link PlannedProperty.financing}.
+ */
+export function offersFinancing(
+  property: Pick<PlannedProperty, "acquisitionAge">,
+  currentAge: number
+): boolean {
+  return property.acquisitionAge > currentAge
+}
+
+/**
+ * An entry's acquisition age, with financing it can no longer carry taken off.
+ *
+ * Moving the age back to today or earlier turns the purchase into part of the
+ * opening position, and a leftover LTV would then sit on the entry unread —
+ * inert while it is there, and silently back in force the moment the age is
+ * pushed out again. The form shows what the plan says, so the plan has to stop
+ * saying it.
+ */
+export function withAcquisitionAge(
+  property: PlannedProperty,
+  acquisitionAge: number,
+  currentAge: number
+): PlannedProperty {
+  const next = { ...property, acquisitionAge }
+  return offersFinancing(next, currentAge) ? next : { ...next, financing: null }
+}
+
+/** What the belåningsgrad field asks for. */
+export const FINANCING_HELPER_TEXT =
+  "Andel af købsprisen der lånes. Resten betales af opsparingen i købsåret. " +
+  "Lånet får samme rente, bidragssats og afdragsfrihed som det største " +
+  "realkreditlån, det afløser."
+
+/** What the per-property return field asks for. */
+export const HOUSING_RETURN_HELPER_TEXT =
+  "Årlig værdistigning for netop denne bolig. Uden egen sats følger den " +
+  "fremskrivningens generelle boligafkast."
+
+/**
  * What the sale-cost field asks for.
  *
  * Here rather than in the form for the reason given at the top of this module:
@@ -154,10 +215,19 @@ export function ownershipSummary(
   property: PlannedProperty,
   currentAge: number
 ): string {
+  // The LTV rides on the purchase clause rather than standing on its own,
+  // because that is the year it describes — and it is named only where
+  // {@link offersFinancing} says the projection reads it, so a figure left over
+  // from an entry that has since been dated to today is not reported as if it
+  // still financed anything.
+  const financed =
+    property.financing && offersFinancing(property, currentAge)
+      ? ` med ${formatPercent(property.financing.ltv)} lån`
+      : ""
   const bought =
     property.acquisitionAge <= currentAge
       ? "Ejes i dag"
-      : `Købes som ${property.acquisitionAge}-årig`
+      : `Købes som ${property.acquisitionAge}-årig${financed}`
   if (property.disposalAge === null) return bought
   // Sale costs are named only when there are any, and only on a property that is
   // sold. The field defaults to zero — see {@link PlannedProperty.saleCostsPct} —
@@ -173,9 +243,10 @@ export function ownershipSummary(
 /**
  * Value, grundværdi and ownership window on one line.
  *
- * The use is named only when it is not `"own"`: it is the default on every
- * entry, so spelling out "Egen brug" on each row would bury the one row that
- * says something the projection does not model.
+ * The use is named only when it is not `"own"`, and the appreciation only when
+ * the entry states one of its own: both are defaults carried by most rows, so
+ * spelling them out everywhere would bury the one row that says something the
+ * rest do not.
  */
 export function propertySummary(
   property: PlannedProperty,
@@ -187,6 +258,9 @@ export function propertySummary(
     formatDKK(Math.round(property.value)),
     `grund ${formatDKK(Math.round(property.landValue))}`,
     ownershipSummary(property, currentAge),
+    ...(property.housingReturn === null
+      ? []
+      : [`${formatPercent(property.housingReturn)} om året`]),
   ].join(" · ")
 }
 
