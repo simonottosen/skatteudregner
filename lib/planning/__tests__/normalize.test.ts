@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest"
 import { newId, normalizePlanning } from "../normalize"
 import { DEFAULT_ASSUMPTIONS, DEFAULT_PLANNING_STATE } from "../types"
+// The migration's whole claim is about what a plan *projects* to, so the one
+// test that can check it has to run the projection. Stating the expected list
+// alone would lock the shape of the migration without ever asking whether the
+// household it describes still sells its house, settles its mortgage and pays
+// for the next one.
+import { simulatePlanning } from "../simulate"
+import { applyScenario } from "../scenario"
+import { DEFAULT_LTV } from "../properties"
 
 describe("normalizePlanning", () => {
   describe("loans", () => {
@@ -24,7 +32,7 @@ describe("normalizePlanning", () => {
         otherDebtRate: 0.07,
         otherDebtTermYears: 10,
       })
-      expect(migrated.version).toBe(3)
+      expect(migrated.version).toBe(4)
       expect(migrated.loans).toHaveLength(2)
       expect(migrated.loans[0]).toMatchObject({
         type: "realkredit",
@@ -85,10 +93,8 @@ describe("normalizePlanning", () => {
       //
       // Keyed on the key being absent rather than on `version`, because a blob
       // reaches this from localStorage, Supabase or an MCP client with any
-      // version field it likes. And the version is *not* bumped: the migration
-      // writes down an assumption the old engine made, so a plan is worth the
-      // same before and after it, and an older build reading the plan back
-      // finds a `propertyId` it already understood.
+      // version field it likes — this one carries none at all and still comes
+      // back stamped with the current one.
       const migrated = normalizePlanning({
         properties: [
           { id: "prop-home", value: 4_000_000 },
@@ -106,7 +112,7 @@ describe("normalizePlanning", () => {
         ],
       })
       expect(migrated.loans[0].propertyId).toBe("prop-home")
-      expect(migrated.version).toBe(3)
+      expect(migrated.version).toBe(4)
       // A banklån is no one's pant and no sale settled it before either.
       expect(migrated.loans[1].propertyId).toBeNull()
       // An explicit null is the user's own answer — `loan-list.tsx` offers
@@ -226,7 +232,7 @@ describe("normalizePlanning", () => {
         homeValue: 3_500_000,
         landValue: 1_200_000,
       })
-      expect(migrated.version).toBe(3)
+      expect(migrated.version).toBe(4)
       expect(migrated.properties).toHaveLength(1)
       expect(migrated.properties[0]).toMatchObject({
         kind: "helaarsbolig",
@@ -292,6 +298,11 @@ describe("normalizePlanning", () => {
           saleCostsPct: 0,
           acquisitionAge: 0,
           disposalAge: 80,
+          // Both are additive fields with a default, and the default is what the
+          // plan was projected with before they existed: paid for in full, and
+          // appreciating at the projection's own rate.
+          financing: null,
+          housingReturn: null,
         },
         {
           id: "prop-b",
@@ -303,6 +314,8 @@ describe("normalizePlanning", () => {
           saleCostsPct: 0,
           acquisitionAge: 55,
           disposalAge: null,
+          financing: null,
+          housingReturn: null,
         },
       ])
     })
@@ -377,6 +390,352 @@ describe("normalizePlanning", () => {
       }).properties
       expect(p.value).toBe(0)
       expect(p.landValue).toBe(0)
+    })
+
+    it("carries a purchase's financing and its own return back out again", () => {
+      // Every saved plan goes out through `JSON.stringify` and comes back in
+      // through here, so a field this drops is a field the user types once and
+      // loses on reload — and both of these are what the deleted move event used
+      // to carry, which makes dropping them the quiet way to undo issue #9.
+      const [p] = normalizePlanning({
+        properties: [
+          {
+            value: 3_000_000,
+            acquisitionAge: 55,
+            financing: { ltv: 0.8 },
+            housingReturn: 0.015,
+          },
+        ],
+      }).properties
+      expect(p.financing).toEqual({ ltv: 0.8 })
+      expect(p.housingReturn).toBe(0.015)
+    })
+
+    it("reads no financing block at all as an all-equity purchase", () => {
+      // The absence is what every plan saved before the field existed says, and
+      // all-equity is how those plans were projected. A block that *is* there
+      // with nothing usable in it asked to be financed, so it gets the
+      // realkreditlovens 80 % rather than nothing — the two cases are only a
+      // key apart in a blob, so this is the boundary worth stating.
+      const ltvOf = (financing: unknown) =>
+        normalizePlanning({ properties: [{ value: 3_000_000, financing }] })
+          .properties[0].financing
+      expect(ltvOf(undefined)).toBeNull()
+      expect(ltvOf(null)).toBeNull()
+      expect(ltvOf("80%")).toBeNull()
+      expect(ltvOf({})).toEqual({ ltv: DEFAULT_LTV })
+      // And a share, bounded: lov om realkreditlån § 5 caps a helårsbolig at
+      // 80 %, but a household can carry a boligkredit on top, so the bound here
+      // is only the one that keeps the arithmetic a purchase.
+      expect(ltvOf({ ltv: 2 })).toEqual({ ltv: 1 })
+      expect(ltvOf({ ltv: -1 })).toEqual({ ltv: 0 })
+    })
+  })
+
+  /**
+   * A version-3 plan said "I move house at 52" with a `PropertyEvent`; the list
+   * says it with a disposal age and a second entry. Replaying one into the other
+   * is what lets issue #9 delete the event type outright instead of leaving two
+   * mechanisms that do not know about each other.
+   */
+  describe("replaying version-3 moves into the property list", () => {
+    it("walks a chain of moves forward through the list", () => {
+      const s = normalizePlanning({
+        version: 3,
+        currentAge: 40,
+        properties: [
+          {
+            id: "prop-home",
+            label: "Huset",
+            value: 3_000_000,
+            landValue: 900_000,
+            saleCostsPct: 0.03,
+            disposalAge: 70,
+          },
+        ],
+        events: [
+          {
+            id: "m1",
+            type: "property",
+            label: "Rækkehus",
+            age: 50,
+            newValue: 4_000_000,
+            mortgageLtv: 0.8,
+          },
+          {
+            id: "m2",
+            type: "property",
+            label: "Lejlighed",
+            age: 60,
+            newValue: 2_500_000,
+            mortgageLtv: 0.4,
+            housingReturnOverride: 0.01,
+          },
+        ],
+      })
+      // The events are gone: a move is not a life event any more, and leaving
+      // one on the list would have the household move twice.
+      expect(s.events).toEqual([])
+      expect(s.properties).toEqual([
+        {
+          id: "prop-home",
+          label: "Huset",
+          kind: "helaarsbolig",
+          use: "own",
+          value: 3_000_000,
+          landValue: 900_000,
+          saleCostsPct: 0.03,
+          acquisitionAge: 0,
+          // Closed by the first move, where the plan said 70 before.
+          disposalAge: 50,
+          financing: null,
+          housingReturn: null,
+        },
+        {
+          id: expect.any(String),
+          label: "Rækkehus",
+          kind: "helaarsbolig",
+          use: "own",
+          value: 4_000_000,
+          // The grundværdi follows the home, scaled by the change in value —
+          // which is what the move event itself did to it.
+          landValue: 1_200_000,
+          // What it costs to sell is the entry's own figure, and the move left
+          // that standing.
+          saleCostsPct: 0.03,
+          acquisitionAge: 50,
+          disposalAge: 60,
+          financing: { ltv: 0.8 },
+          housingReturn: null,
+        },
+        {
+          id: expect.any(String),
+          label: "Lejlighed",
+          kind: "helaarsbolig",
+          use: "own",
+          value: 2_500_000,
+          landValue: 750_000,
+          saleCostsPct: 0.03,
+          acquisitionAge: 60,
+          // "Sold at 70" was stated on the home the household moves out of at
+          // 50, and the engine read it at the sale — so it was always a sale of
+          // whatever the household was living in by then.
+          disposalAge: 70,
+          financing: { ltv: 0.4 },
+          housingReturn: 0.01,
+        },
+      ])
+    })
+
+    it("drops a move the household has already made", () => {
+      // The engine only ever looked up events from `currentAge` forward, so a
+      // move dated in the past never fired. Migrating it would invent a
+      // transaction the plan was never projected with — and, worse, one dated
+      // before the projection starts, which the list reads as the household's
+      // opening position.
+      const s = normalizePlanning({
+        version: 3,
+        currentAge: 40,
+        properties: [{ id: "prop-home", value: 3_000_000 }],
+        events: [
+          {
+            id: "m1",
+            type: "property",
+            label: "Gammel flytning",
+            age: 35,
+            newValue: 9_000_000,
+            mortgageLtv: 0.8,
+          },
+        ],
+      })
+      expect(s.properties).toHaveLength(1)
+      expect(s.properties[0]).toMatchObject({
+        id: "prop-home",
+        value: 3_000_000,
+        disposalAge: null,
+      })
+    })
+
+    /**
+     * The one date the two vocabularies disagree about. A move at `currentAge`
+     * cannot migrate to an acquisition at `currentAge`: the list reads that as
+     * part of the opening position — bought before the projection starts, and so
+     * never paid for inside it — and reads a disposal in the same year as never
+     * owned at all. The household would be handed its new home for free and keep
+     * the old home's mortgage. The projection's first year is the earliest one
+     * that can carry all three halves of the transaction, so that is where it
+     * goes, and these are the three.
+     */
+    describe("a move dated at the household's own age", () => {
+      const moved = (mortgageLtv: number, startInvestments = 0) =>
+        normalizePlanning({
+          version: 3,
+          currentAge: 40,
+          endAge: 42,
+          retirementAge: 65,
+          startInvestments,
+          monthlyContribution: 0,
+          properties: [{ id: "prop-home", value: 2_000_000 }],
+          loans: [
+            {
+              id: "l1",
+              type: "realkredit",
+              propertyId: "prop-home",
+              principal: 500_000,
+              rate: 0.04,
+              termMonths: 360,
+            },
+          ],
+          assumptions: {
+            investmentReturn: 0,
+            investmentFee: 0,
+            housingReturn: 0,
+            volatility: 0,
+            housingVolatility: 0,
+            inflation: 0,
+            contributionGrowth: 0,
+          },
+          events: [
+            {
+              id: "m1",
+              type: "property",
+              label: "Nyt hus",
+              age: 40,
+              newValue: 3_000_000,
+              mortgageLtv,
+            },
+          ],
+        })
+
+      it("lands in the projection's first year", () => {
+        const s = moved(0.8)
+        expect(s.properties).toHaveLength(2)
+        expect(s.properties[0]).toMatchObject({
+          id: "prop-home",
+          disposalAge: 41,
+        })
+        expect(s.properties[1]).toMatchObject({
+          value: 3_000_000,
+          acquisitionAge: 41,
+          financing: { ltv: 0.8 },
+        })
+      })
+
+      it("still realises the equity, settles the mortgage and pays the down payment", () => {
+        const points = simulatePlanning(moved(0.8)).points
+        // Year 0 is the opening position, unchanged: the old home, the old
+        // mortgage, an empty portfolio.
+        expect(points[0].age).toBe(40)
+        expect(points[0].investments).toBe(0)
+        expect(points[0].homeEquity).toBeCloseTo(1_500_000, 6)
+
+        const at41 = points.find((p) => p.age === 41)!
+        // 2.000.000 of house sold, less the 500.000 mortgage it secured, less
+        // the 600.000 down payment on a 3.000.000 home financed at 80 %. Each
+        // of the three is the difference between this figure and a projection
+        // that skipped that half of the transaction.
+        expect(at41.investments).toBeCloseTo(2_000_000 - 500_000 - 600_000, 6)
+        // And the new mortgage — and only it — stands against the new house: an
+        // unsettled old loan would leave 100.000 here instead.
+        expect(at41.homeEquity).toBeCloseTo(3_000_000 - 2_400_000, 6)
+      })
+
+      it("costs the price of the house when the move borrows nothing", () => {
+        // At an LTV of zero the down payment is the whole price, so the
+        // portfolio has to carry it: 3.000.000 in, plus the 1.500.000 the sale
+        // realised, less the 3.000.000 the house cost. That the figure moves
+        // with the LTV at all is what says the down payment above was really
+        // paid out rather than netted off the price.
+        const at41 = simulatePlanning(moved(0, 3_000_000)).points.find(
+          (p) => p.age === 41
+        )!
+        expect(at41.investments).toBeCloseTo(1_500_000, 6)
+        // Nothing is owed on the house, so it is worth its price.
+        expect(at41.homeEquity).toBeCloseTo(3_000_000, 6)
+      })
+    })
+
+    it("folds a scenario's move into the properties it overrides", () => {
+      // "What if I moved" could be saved as a scenario, and `applyScenario`
+      // spreads `changes.overrides` over the plan and reads nothing else — so a
+      // migrated move has to land *inside* `overrides`, or it would be dropped
+      // without a word.
+      const s = normalizePlanning({
+        version: 3,
+        currentAge: 40,
+        properties: [{ id: "prop-home", value: 3_000_000 }],
+        scenarios: [
+          {
+            id: "sc-1",
+            name: "Mindre hus",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            changes: {
+              addEvents: [
+                {
+                  type: "property",
+                  label: "Lejlighed",
+                  age: 55,
+                  newValue: 2_000_000,
+                  mortgageLtv: 0.6,
+                },
+              ],
+            },
+          },
+        ],
+      })
+      const { changes } = s.scenarios[0]
+      expect(changes.addEvents).toBeUndefined()
+      expect(changes.overrides?.properties).toEqual([
+        expect.objectContaining({ id: "prop-home", disposalAge: 55 }),
+        expect.objectContaining({
+          label: "Lejlighed",
+          value: 2_000_000,
+          acquisitionAge: 55,
+          financing: { ltv: 0.6 },
+        }),
+      ])
+      // The plan itself keeps its one house: the scenario's list is a copy, so
+      // asking "what if I moved" must not close the window on the home the
+      // household actually has.
+      expect(s.properties).toEqual([
+        expect.objectContaining({ id: "prop-home", disposalAge: null }),
+      ])
+      // And the override really reaches the plan the scenario projects.
+      expect(applyScenario(s, changes).properties).toHaveLength(2)
+    })
+
+    it("dates a scenario's move on the plan's own timeline", () => {
+      // A scenario's `addEvents` fire on the plan's clock, so the current-year
+      // rule has to be applied against the *plan's* `currentAge` and not against
+      // the 0 a caller with no plan falls back to — which would date this move
+      // at 40 and hand the household the new flat for nothing.
+      const s = normalizePlanning({
+        version: 3,
+        currentAge: 40,
+        properties: [{ id: "prop-home", value: 3_000_000 }],
+        scenarios: [
+          {
+            id: "sc-1",
+            name: "Flyt nu",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            changes: {
+              addEvents: [
+                {
+                  type: "property",
+                  label: "Lejlighed",
+                  age: 40,
+                  newValue: 2_000_000,
+                  mortgageLtv: 0.6,
+                },
+              ],
+            },
+          },
+        ],
+      })
+      expect(s.scenarios[0].changes.overrides?.properties).toEqual([
+        expect.objectContaining({ id: "prop-home", disposalAge: 41 }),
+        expect.objectContaining({ label: "Lejlighed", acquisitionAge: 41 }),
+      ])
     })
   })
 

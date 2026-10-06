@@ -92,6 +92,50 @@ describe("MCP route handler", () => {
     }
   })
 
+  /**
+   * The schema is the only thing a client ever sees, so it is where "a move is
+   * not an event any more" has to be true (issue #9). Advertising `"property"`
+   * would be worse than useless: `normalizeEvents` has no branch for it, so the
+   * move would be accepted and then dropped without a word. Stated here rather
+   * than against `eventSchema` directly because this is the published form of
+   * it — what the client validates against before it ever calls.
+   */
+  it("advertises no property event, and the fields that replaced it", async () => {
+    const out = await rpc({ jsonrpc: "2.0", id: 4, method: "tools/list", params: {} })
+    const tools = (
+      out.result as {
+        tools: { name: string; inputSchema: Record<string, unknown> }[]
+      }
+    ).tools
+
+    const event = (
+      tools.find((t) => t.name === "add_event")!.inputSchema.properties as {
+        event: { properties: { type: { enum: string[] } } }
+      }
+    ).event
+    expect(event.properties.type.enum.sort()).toEqual(
+      ["expense", "recurring", "windfall"].sort()
+    )
+    // And the dead payload is gone with it, rather than lingering as fields a
+    // client could fill in and watch disappear.
+    for (const dead of ["newValue", "mortgageLtv", "housingReturnOverride"])
+      expect(Object.keys(event.properties)).not.toContain(dead)
+
+    // Where a move is said instead: on the property list, which is the same
+    // list the UI edits.
+    const property = (
+      tools.find((t) => t.name === "update_plan")!.inputSchema.properties as {
+        fields: {
+          properties: {
+            properties: { items: { properties: Record<string, unknown> } }
+          }
+        }
+      }
+    ).fields.properties.properties.items.properties
+    for (const live of ["acquisitionAge", "disposalAge", "financing", "housingReturn"])
+      expect(Object.keys(property)).toContain(live)
+  })
+
   it("exposes the argument shape for a tool that takes parameters", async () => {
     const out = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} })
     const tools = (

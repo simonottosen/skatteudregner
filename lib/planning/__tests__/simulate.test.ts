@@ -88,6 +88,10 @@ function property(
     saleCostsPct: 0,
     acquisitionAge: 0,
     disposalAge: null,
+    // All-equity, and the plan's own housing return: the two defaults every
+    // expectation below predates. The tests about financing pass their own.
+    financing: null,
+    housingReturn: null,
     ...fields,
   }
 }
@@ -304,15 +308,28 @@ describe("simulatePlanning", () => {
     )
   })
 
-  it("handles a property reallocation (sell + buy with mortgage)", () => {
+  it("handles a move (sell + buy with mortgage) stated as two list entries", () => {
+    // A move is a disposal age on the home being left and a second entry bought
+    // the same year, carrying the financing that pays for it. The household's
+    // old mortgage comes off that sale's proceeds and the new one is drawn
+    // against the new house, so only the down payment touches the portfolio.
+    const old = property({ value: 2_000_000, disposalAge: 41 })
+    const next = property({
+      value: 3_000_000,
+      acquisitionAge: 41,
+      financing: { ltv: 0.8 },
+    })
     const res = simulatePlanning(
       makeState({
         currentAge: 40,
         endAge: 41,
         startInvestments: 0,
         monthlyContribution: 0,
-        homeValue: 2_000_000,
-        loans: [loan({ principal: 500_000 })], // equity = 1.5M
+        properties: [old, next],
+        // Named, because the sale of the house that secures it is what settles
+        // it: an unattributed loan would attach to the property the household
+        // lets go of last, which here is the one it never sells.
+        loans: [loan({ principal: 500_000, propertyId: old.id })], // equity = 1.5M
         assumptions: {
           ...DEFAULT_PLANNING_STATE.assumptions,
           investmentReturn: 0,
@@ -320,22 +337,12 @@ describe("simulatePlanning", () => {
           housingReturn: 0,
           volatility: 0,
         },
-        events: [
-          {
-            id: "p1",
-            type: "property",
-            label: "Nyt hus",
-            age: 40,
-            newValue: 3_000_000,
-            mortgageLtv: 0.8,
-          },
-        ],
       })
     )
-    // At age 40: realise 1.5M equity, pay 20% down (600k) → investments = 0.9M.
-    const at40 = res.points.find((p) => p.age === 40)!
-    expect(at40.investments).toBeCloseTo(900_000, 0)
-    expect(at40.homeEquity).toBeCloseTo(600_000, 0) // 3.0M - 2.4M mortgage
+    // At age 41: realise 1.5M equity, pay 20% down (600k) → investments = 0.9M.
+    const at41 = res.points.find((p) => p.age === 41)!
+    expect(at41.investments).toBeCloseTo(900_000, 0)
+    expect(at41.homeEquity).toBeCloseTo(600_000, 0) // 3.0M - 2.4M mortgage
   })
 
   it("detects FI age when investments reach 25x annual spending", () => {
@@ -829,27 +836,45 @@ describe("simulatePlanning", () => {
       expect(drawdownAtCliff - drawdownBefore).toBeCloseTo(stepUp, 6)
     })
 
-    describe("a property event re-prices the payment", () => {
-      // A bigger contribution than above, so the larger payment still fits
-      // inside it and the whole reconciliation stays visible in the deposit.
-      const move = (mortgageLtv: number) =>
-        simulatePlanning(
-          makeState({
-            ...withBudget(0),
-            monthlyContribution: 30_000, // 360.000/yr
-            events: [
-              {
-                id: "p1",
-                type: "property",
-                label: "Nyt hus",
-                age: 45,
-                newValue: 5_000_000,
-                mortgageLtv,
-              },
-            ],
-          })
-        )
-      // The event's own loan: 30 years, per MORTGAGE_TERM_MONTHS in simulate.ts.
+    describe("a move re-prices the payment", () => {
+      /**
+       * A move is two rows of the property list: the home being left, carrying
+       * a disposal age, and the one being bought, carrying the financing that
+       * pays for it. Nothing else says it — there is no move event any more
+       * (issue #9).
+       *
+       * The contribution is bigger than above, so the larger payment still fits
+       * inside it and the whole reconciliation stays visible in the deposit.
+       */
+      const movePlan = (ltv: number, sellAt = 45, buyAt = 45) => {
+        const leaving = property({ value: 3_000_000, disposalAge: sellAt })
+        const arriving = property({
+          value: 5_000_000,
+          acquisitionAge: buyAt,
+          financing: ltv > 0 ? { ltv } : null,
+        })
+        return makeState({
+          ...withBudget(0),
+          monthlyContribution: 30_000, // 360.000/yr
+          // Deep enough that an all-equity purchase is paid for out of the
+          // portfolio rather than by borrowing against the new house, whose
+          // interest would otherwise follow the household through every later
+          // year and muddy the reconciliation these tests are about. Nothing
+          // grows, so the pot is inert.
+          startInvestments: 6_000_000,
+          // The same home `base` describes, spelled as a list because
+          // `makeState`'s `homeValue` shorthand would otherwise win.
+          homeValue: undefined,
+          properties: [leaving, arriving],
+          // Named, because the sale of the house it is lent against is what
+          // settles it: an unattributed loan attaches to the property the
+          // household lets go of last, which here is the one it never sells.
+          loans: [{ ...theLoan, propertyId: leaving.id }],
+        })
+      }
+      const move = (ltv: number) => simulatePlanning(movePlan(ltv))
+      // The purchase's own loan: 30 years, per MORTGAGE_TERM_MONTHS in
+      // simulate.ts, and priced at the mortgage it replaces.
       const newPayment = service(5_000_000 * 0.8, 30 * 12)
 
       it("keeps the old payment as the baseline after the loan is swapped", () => {
@@ -859,7 +884,10 @@ describe("simulatePlanning", () => {
         // payment (which would charge the old one twice).
         const r = move(0.8)
         expect(newPayment).toBeGreaterThan(payment)
-        expect(contribAt(r, 45)).toBeCloseTo(360_000, 6)
+        // The sale year itself is billed nothing: the old mortgage is settled
+        // out of the proceeds before it is serviced, and the new one is drawn
+        // at that year's close. So the budget's whole deduction comes back.
+        expect(contribAt(r, 45)).toBeCloseTo(360_000 + payment, 6)
         expect(contribAt(r, 46)).toBeCloseTo(360_000 + payment - newPayment, 6)
         expect(contribAt(r, 70)).toBeCloseTo(360_000 + payment - newPayment, 6)
       })
@@ -878,26 +906,7 @@ describe("simulatePlanning", () => {
        * pays a krone of service on it.
        */
       it("bills the loan a move takes out after the old one was repaid", () => {
-        const r = simulatePlanning(
-          makeState({
-            ...withBudget(0),
-            monthlyContribution: 30_000,
-            // The same home as `base`, but with a disposal — spelled as a list
-            // because `makeState`'s `homeValue` shorthand would otherwise win.
-            homeValue: undefined,
-            properties: [property({ value: 3_000_000, disposalAge: 45 })],
-            events: [
-              {
-                id: "p1",
-                type: "property",
-                label: "Nyt hus",
-                age: 50,
-                newValue: 5_000_000,
-                mortgageLtv: 0.8,
-              },
-            ],
-          })
-        )
+        const r = simulatePlanning(movePlan(0.8, 45, 50))
         // Sold at 45 and not yet re-bought: no loan to service, and the budget
         // hands its whole deduction back.
         expect(contribAt(r, 47)).toBeCloseTo(360_000 + payment, 6)
@@ -921,36 +930,42 @@ describe("simulatePlanning", () => {
        * anything — and taking the first or the last entry passes half of this.
        */
       it("prices a move's loan at the bigger of two realkreditlån", () => {
-        const big = loan({ principal: 2_000_000, rate: 0.06 })
-        const small = loan({ principal: 1_000_000, rate: 0.02 })
         // What the year after the move charges: the budget deducted nothing, so
         // the whole modelled payment comes off the contribution.
-        const chargedAfterMove = (loans: PlannedLoan[]) => {
+        const chargedAfterMove = (order: "big first" | "small first") => {
+          const leaving = property({ value: 3_000_000, disposalAge: 45 })
+          const arriving = property({
+            value: 5_000_000,
+            acquisitionAge: 45,
+            financing: { ltv: 0.8 },
+          })
+          const big = loan({
+            principal: 2_000_000,
+            rate: 0.06,
+            propertyId: leaving.id,
+          })
+          const small = loan({
+            principal: 1_000_000,
+            rate: 0.02,
+            propertyId: leaving.id,
+          })
           const r = simulatePlanning(
             makeState({
               ...base,
               monthlyContribution: 30_000, // 360.000/yr, above either payment
-              loans,
+              homeValue: undefined,
+              properties: [leaving, arriving],
+              loans: order === "big first" ? [big, small] : [small, big],
               mortgageBudgetedMonthly: 0,
-              events: [
-                {
-                  id: "p1",
-                  type: "property",
-                  label: "Nyt hus",
-                  age: 45,
-                  newValue: 5_000_000,
-                  mortgageLtv: 0.8,
-                },
-              ],
             })
           )
           return 360_000 - contribAt(r, 46)
         }
-        const atBigRate = serviceOf(4_000_000, big.rate, 30 * 12)
-        const atSmallRate = serviceOf(4_000_000, small.rate, 30 * 12)
+        const atBigRate = serviceOf(4_000_000, 0.06, 30 * 12)
+        const atSmallRate = serviceOf(4_000_000, 0.02, 30 * 12)
         expect(atBigRate).toBeGreaterThan(atSmallRate)
-        expect(chargedAfterMove([big, small])).toBeCloseTo(atBigRate, 6)
-        expect(chargedAfterMove([small, big])).toBeCloseTo(atBigRate, 6)
+        expect(chargedAfterMove("big first")).toBeCloseTo(atBigRate, 6)
+        expect(chargedAfterMove("small first")).toBeCloseTo(atBigRate, 6)
       })
     })
   })
@@ -1599,25 +1614,24 @@ describe("simulatePlanning", () => {
 
     it("settles the borrowing when the house is sold", () => {
       // A move pays off every claim on the old home, so what the household
-      // takes with it is the net equity — not a loan that follows it.
+      // takes with it is the net equity — not a loan that follows it. Equity
+      // borrowing is secured on the portfolio as a whole, so what settles it is
+      // owning nothing, which is true for as long as the sale and the purchase
+      // take: both are the same year here.
       const res = simulatePlanning(
         makeState({
           ...repro(0),
           endAge: 69,
-          events: [
-            {
-              id: "p1",
-              type: "property",
-              label: "Nyt hus",
-              age: 67,
-              newValue: 2_000_000,
-              mortgageLtv: 0,
-            },
+          properties: [
+            property({ value: 5_000_000, disposalAge: 67 }),
+            property({ value: 2_000_000, acquisitionAge: 67 }),
           ],
         })
       )
-      // Borrowed 100k at 66 and 67 → 4.8M of equity realised on the move, of
-      // which 2M buys the new home outright and 2.8M lands in the portfolio.
+      // Borrowed 100k at 66; the sale lands at the top of 67, before that
+      // year's spending is funded. So 4.9M of equity is realised on the move,
+      // of which 2M buys the new home outright, 2.9M lands in the portfolio and
+      // the year's own 100.000 kr. then comes out of it.
       const at67 = res.points.find((p) => p.age === 67)!
       expect(at67.homeEquity).toBeCloseTo(2_000_000, 6)
       expect(at67.investments).toBeCloseTo(2_800_000, 6)
@@ -2880,43 +2894,43 @@ describe("simulatePlanning", () => {
      * secured, and selling the summer house discharged nothing — not even its
      * own mortgage, which the household then went on being billed for (#9).
      */
+    /**
+     * A working household that owns `properties`, owes `loans` and does nothing
+     * else: no contribution, no spending, no pension, no property tax and no
+     * cash buffer. The loan service is the only recurring flow and `still`
+     * leaves the portfolio flat, so a transfer is the only thing that can move
+     * `investments` by a round figure.
+     */
+    const settling = (properties: PlannedProperty[], loans: PlannedLoan[]) =>
+      makeState({
+        currentAge: 40,
+        endAge: 45,
+        retirementAge: 65,
+        startInvestments: 2_000_000,
+        monthlyContribution: 0,
+        annualSpending: 0,
+        properties,
+        loans,
+        assumptions: still,
+      })
+
+    const byAge = (properties: PlannedProperty[], loans: PlannedLoan[]) =>
+      new Map(
+        simulatePlanning(settling(properties, loans)).points.map((p) => [
+          p.age,
+          p,
+        ])
+      )
+
+    /**
+     * What is still owed on the properties at that age. Equity is value less
+     * the secured balance, and under `still` the value is the plan's own figure
+     * for as long as it is owned, so the balance is the difference.
+     */
+    const owed = (point: PlanningPoint, valueOwned: number) =>
+      valueOwned - point.homeEquity
+
     describe("settling each loan against the property that secures it", () => {
-      /**
-       * A working household that owns `properties`, owes `loans` and does
-       * nothing else: no contribution, no spending, no pension, no property tax
-       * and no cash buffer. The loan service is the only recurring flow and
-       * `still` leaves the portfolio flat, so a sale is the only thing that can
-       * move `investments` by a round figure.
-       */
-      const settling = (properties: PlannedProperty[], loans: PlannedLoan[]) =>
-        makeState({
-          currentAge: 40,
-          endAge: 45,
-          retirementAge: 65,
-          startInvestments: 2_000_000,
-          monthlyContribution: 0,
-          annualSpending: 0,
-          properties,
-          loans,
-          assumptions: still,
-        })
-
-      const byAge = (properties: PlannedProperty[], loans: PlannedLoan[]) =>
-        new Map(
-          simulatePlanning(settling(properties, loans)).points.map((p) => [
-            p.age,
-            p,
-          ])
-        )
-
-      /**
-       * What is still owed on the properties at that age. Equity is value less
-       * the secured balance, and under `still` the value is the plan's own
-       * figure for as long as it is owned, so the balance is the difference.
-       */
-      const owed = (point: PlanningPoint, valueOwned: number) =>
-        valueOwned - point.homeEquity
-
       it("settles the summer house's own loan, and leaves the mortgage alone", () => {
         const theHome = home(4_000_000)
         const theSummer = { ...summer(2_000_000), disposalAge: 42 }
@@ -3080,6 +3094,141 @@ describe("simulatePlanning", () => {
             6
           )
         }
+      })
+    })
+
+    it("appreciates a property at its own rate where it states one", () => {
+      // The other half of what a move event used to carry alone: its
+      // `housingReturnOverride` applied to the one house it bought, and every
+      // other entry was stuck with the plan's single figure. Stated per
+      // property, a sommerhus and a lejlighed can grow apart — and an entry
+      // that states nothing still follows the plan, which is what every plan
+      // saved before the field existed says about every entry it has.
+      const grown = byAge(
+        [
+          { ...home(4_000_000), housingReturn: 0.1 },
+          { ...summer(2_000_000), housingReturn: null },
+        ],
+        []
+      )
+      // `still` zeroes the plan's own appreciation, so all of the growth here
+      // is the home's own and the summer house is flat.
+      expect(grown.get(41)!.homeEquity).toBeCloseTo(4_400_000 + 2_000_000, 6)
+    })
+
+    /**
+     * What a purchase costs the household. A property with
+     * {@link PlannedProperty.financing} draws a mortgage of its own at the close
+     * of the year it is bought, so the portfolio pays the down payment and the
+     * lender pays the rest; one without pays for the whole house out of the pot.
+     *
+     * This is the half of issue #9 the property list never had: a listed
+     * acquisition used to be a house the household received for nothing — it
+     * appeared on the balance sheet, no money left the portfolio and no debt
+     * stood against it — and the only way to pay for a house was a move event,
+     * which could buy exactly one and settled every mortgage the household had
+     * on the way.
+     */
+    describe("paying for a property the plan buys", () => {
+      const buying = (financing: { ltv: number } | null) =>
+        byAge(
+          [
+            home(4_000_000),
+            { ...summer(2_000_000), acquisitionAge: 42, financing },
+          ],
+          []
+        )
+
+      it("draws a loan for a financed purchase instead of paying cash", () => {
+        const financed = buying({ ltv: 0.6 })
+        const cash = buying(null)
+        // The two plans differ in the financing alone, so until the purchase
+        // they are the same household.
+        expect(financed.get(41)!.investments).toBeCloseTo(
+          cash.get(41)!.investments,
+          6
+        )
+        // The portfolio pays 40 % of 2.000.000 and the lender pays the rest, so
+        // what is left in it is the 1.200.000 the lender put up.
+        expect(cash.get(42)!.investments).toBeCloseTo(0, 6)
+        expect(
+          financed.get(42)!.investments - cash.get(42)!.investments
+        ).toBeCloseTo(1_200_000, 6)
+        // And the debt stands against the house rather than vanishing: the same
+        // 1.200.000 is missing from the household's equity.
+        expect(
+          cash.get(42)!.homeEquity - financed.get(42)!.homeEquity
+        ).toBeCloseTo(1_200_000, 6)
+        // It is a real loan, billed from the first full year the household has
+        // it. Nothing here is a realkredit for it to be priced off, so it takes
+        // the plan's own `equityBorrowingRate` over 30 years, with no bidrag and
+        // no afdragsfrihed — the documented fallback, and the only branch of the
+        // pricing rule a move cannot reach.
+        expect(
+          financed.get(42)!.investments - financed.get(43)!.investments
+        ).toBeCloseTo(
+          serviceOf(
+            1_200_000,
+            DEFAULT_PLANNING_STATE.assumptions.equityBorrowingRate,
+            30 * 12
+          ),
+          6
+        )
+      })
+
+      it("pays the whole price out of the portfolio when nothing finances it", () => {
+        // `financing: null` is the field's default, so this is what every plan
+        // saved before it existed says about every property on its list.
+        const cash = buying(null)
+        expect(cash.get(41)!.investments).toBeCloseTo(2_000_000, 6)
+        expect(cash.get(42)!.investments).toBeCloseTo(0, 6)
+        // Owned outright: both houses in full, and nothing to service, so the
+        // emptied portfolio stays empty instead of being drawn on further.
+        expect(cash.get(42)!.homeEquity).toBeCloseTo(6_000_000, 6)
+        expect(cash.get(45)!.homeEquity).toBeCloseTo(6_000_000, 6)
+        expect(cash.get(45)!.investments).toBeCloseTo(0, 6)
+      })
+
+      it("carries a second mortgage without discharging the first", () => {
+        // The whole of issue #9 in one plan. Financing a second house used to
+        // mean a move event, and a move settled *every* secured loan whichever
+        // property it named — so buying the summer house paid off the mortgage
+        // on the home. The two loans now come due at the two sales, three years
+        // apart, in the order the plan makes them.
+        const theHome = { ...home(4_000_000), disposalAge: 44 }
+        const theSummer = {
+          ...summer(2_000_000),
+          acquisitionAge: 42,
+          disposalAge: 43,
+          financing: { ltv: 0.5 },
+        }
+        const mortgage = loan({ principal: 1_000_000, propertyId: theHome.id })
+        const both = byAge([theHome, theSummer], [mortgage])
+        const homeOnly = byAge([theHome], [mortgage])
+
+        // The purchase leaves the mortgage exactly where it was: all the
+        // household owes over the one that never bought is the new loan, drawn
+        // at the close of the year of the purchase and so at full principal.
+        expect(
+          owed(both.get(42)!, 6_000_000) - owed(homeOnly.get(42)!, 4_000_000)
+        ).toBeCloseTo(1_000_000, 6)
+        // The summer house's sale settles the summer house's loan and nothing
+        // else: from there on the two households owe the same mortgage, and it
+        // is a balance large enough that discharging it would have shown.
+        expect(owed(both.get(43)!, 4_000_000)).toBeCloseTo(
+          owed(homeOnly.get(43)!, 4_000_000),
+          6
+        )
+        expect(owed(both.get(43)!, 4_000_000)).toBeGreaterThan(900_000)
+        // And the home's own sale settles the mortgage, a year later.
+        expect(owed(both.get(44)!, 0)).toBeCloseTo(0, 6)
+
+        // Each out of its own proceeds, not forgiven: the summer house is sold
+        // for 2.000.000 the year after its loan is drawn, so the whole
+        // 1.000.000 principal comes off the price.
+        const banked = (at: number) =>
+          both.get(at)!.investments - homeOnly.get(at)!.investments
+        expect(banked(43) - banked(42)).toBeCloseTo(1_000_000, 6)
       })
     })
   })
@@ -3747,6 +3896,136 @@ describe("simulatePlanning", () => {
     }
 
     /**
+     * A household that says everything about its homes in the property list and
+     * nothing in an event: a home sold at 55 and replaced the same year, a
+     * summer house bought at 48 and sold at 72, a mortgage settled by the sale
+     * that secures it, bank debt, property tax on two dwellings at once, and a
+     * retirement long enough to run the portfolio down and start borrowing
+     * against the house.
+     *
+     * This is the one fixture here that locks a *comparison* rather than a
+     * projection. Every figure below was produced by the engine as it stood
+     * before `PropertyEvent` was removed (05a415b) as well as by the engine as
+     * it stands now — all twenty-two series and all five scalars, identical to
+     * within {@link TOLERANCE}. Unifying the two mechanisms was meant to change
+     * only what a move does; a plan that never had a move is where that claim is
+     * falsifiable, and this is it, kept so the claim survives the branch it was
+     * made on.
+     *
+     * Nothing here is financed: {@link PlannedProperty.financing} and
+     * {@link PlannedProperty.housingReturn} are new fields and a plan saved
+     * before them has neither, so leaving them at their defaults is what makes
+     * the two engines comparable at all.
+     */
+    it("projects a plan stated only in the property list as it always did", () => {
+      // Named: this household owns two properties at once from 48, so the
+      // mortgage has to say which of them it is a claim on.
+      const home = property({
+        value: 3_200_000,
+        landValue: 950_000,
+        acquisitionAge: 0,
+        disposalAge: 55,
+        saleCostsPct: 0.03,
+      })
+      const r = simulatePlanning(
+        makeState({
+          currentAge: 40,
+          endAge: 90,
+          retirementAge: 66,
+          startInvestments: 800_000,
+          cashBuffer: 100_000,
+          monthlyContribution: 8_500,
+          annualSpending: 620_000,
+          properties: [
+            home,
+            property({
+              value: 2_400_000,
+              landValue: 700_000,
+              acquisitionAge: 55,
+            }),
+            property({
+              value: 1_300_000,
+              landValue: 450_000,
+              kind: "fritidsbolig",
+              acquisitionAge: 48,
+              disposalAge: 72,
+            }),
+          ],
+          includePropertyTax: true,
+          loans: [
+            loan({
+              propertyId: home.id,
+              principal: 1_900_000,
+              rate: 0.043,
+              bidragssats: 0.008,
+              termMonths: 27 * 12,
+              interestOnlyYears: 5,
+            }),
+            loan({
+              label: "Banklån",
+              type: "bank",
+              principal: 300_000,
+              rate: 0.071,
+              termMonths: 8 * 12,
+            }),
+          ],
+          mortgageBudgetedMonthly: 10_500,
+          assumptions: {
+            ...DEFAULT_PLANNING_STATE.assumptions,
+            equityBorrowingRate: 0.043,
+          },
+          events: [
+            {
+              id: "e1",
+              type: "expense",
+              label: "Bil",
+              age: 47,
+              amount: 220_000,
+            },
+            {
+              id: "e2",
+              type: "recurring",
+              label: "Lønhop",
+              age: 57,
+              monthlyDelta: 2_000,
+            },
+            {
+              id: "e3",
+              type: "windfall",
+              label: "Arv",
+              age: 63,
+              amount: 350_000,
+            },
+          ],
+          pension: {
+            ...DEFAULT_PLANNING_STATE.pension,
+            person1: {
+              ...DEFAULT_PENSION_PERSON,
+              ratepensionBalance: 1_500_000,
+              livrenteBalance: 800_000,
+              aldersopsparingBalance: 250_000,
+              ratepensionAnnual: 35_000,
+              folkepensionAge: 69,
+            },
+            ratepensionYears: 12,
+          },
+        })
+      )
+      // As above: the fixture is only worth its size while it still reaches the
+      // branches it was built for, and nothing else here would notice if a later
+      // edit left it describing a quieter household.
+      expect(r.points.some((p) => p.borrowed > 0)).toBe(true)
+      expect(r.points.every((p) => p.age === 40 || p.propertyTax > 0)).toBe(true)
+      // Two dwellings at once between 48 and 54, which is where the per-property
+      // ejendomsskat and the pensionistnedslag's two slots are both exercised.
+      expect(r.points.find((p) => p.age === 50)!.propertyTax).toBeGreaterThan(
+        r.points.find((p) => p.age === 47)!.propertyTax
+      )
+
+      expectMatchesReference(r, LIST_ONLY)
+    })
+
+    /**
      * One household exercising every branch the loan touches: afdragsfrihed, a
      * move that swaps the loan for a bigger one, a sale that settles what is left
      * of it out of the proceeds, a second property that outlives the first, bank
@@ -3762,17 +4041,15 @@ describe("simulatePlanning", () => {
      * same household.
      */
     it("reproduces the whole projection of a plan that uses every loan branch", () => {
-      // Named rather than left to the shorthand, because this is the one fixture
-      // with a property that outlives the home: the mortgage has to say it is
-      // the *home's*, or it would be settled by the last sale the plan makes —
-      // the summer house's, which never comes — instead of at 78. Naming it is
-      // the plan saying what the engine used to assume, and the figures below
-      // are unchanged by it.
+      // Named rather than left to the shorthand, because this plan owns more
+      // than one property at a time: the mortgage has to say it is the *first*
+      // home's, or it would be settled by the last sale the plan makes — the
+      // summer house's, which never comes — instead of by the move at 52.
       const home = property({
         value: 3_600_000,
         landValue: 1_100_000,
         acquisitionAge: 0,
-        disposalAge: 78,
+        disposalAge: 52,
       })
       const r = simulatePlanning(
         makeState({
@@ -3785,6 +4062,17 @@ describe("simulatePlanning", () => {
           annualSpending: 700_000,
           properties: [
             home,
+            // The move: bought the year the first home is sold, financed at
+            // 78 %, appreciating at a rate of its own, and sold at 78 — which
+            // is what settles the loan it draws.
+            property({
+              value: 5_200_000,
+              landValue: 1_250_000,
+              acquisitionAge: 52,
+              disposalAge: 78,
+              financing: { ltv: 0.78 },
+              housingReturn: 0.03,
+            }),
             property({
               value: 1_400_000,
               landValue: 500_000,
@@ -3822,15 +4110,6 @@ describe("simulatePlanning", () => {
               label: "Bil",
               age: 47,
               amount: 250_000,
-            },
-            {
-              id: "e2",
-              type: "property",
-              label: "Nyt hus",
-              age: 52,
-              newValue: 5_200_000,
-              mortgageLtv: 0.78,
-              housingReturnOverride: 0.03,
             },
             {
               id: "e3",
@@ -3877,75 +4156,390 @@ describe("simulatePlanning", () => {
     })
 
     /**
-     * Two moves at the same age, which is the one case where the loan a move
-     * leaves behind is read again before the year is out: the second sale
-     * realises the equity in the home the first one bought, so it has to see the
-     * first move's loan and not the one the household woke up with.
+     * A household that moves twice, where the second move is the one case in
+     * which a loan the projection itself minted is read again: the sale at 44
+     * has to settle the mortgage drawn at 41 and nothing else, and the loan the
+     * purchase at 44 draws has to be priced off *that* mortgage rather than off
+     * the one the household woke up with.
      *
-     * Paired at the starting age as well as mid-plan, because those are two
-     * different loops — events at `currentAge` fire before year 1 — and the
-     * first of them is the only reader of today's balance.
+     * This is also, exactly, what a version-3 plan with four chained move events
+     * migrates to — see `foldPropertyEvents` and the migration tests in
+     * `normalize.test.ts`. Two moves at one age collapse, because a home owned
+     * for no year at all is a window the engine reads as never owned.
      */
-    it("chains a second move at the same age onto the first one's loan", () => {
+    it("chains a second move onto the loan the first one drew", () => {
+      const home = property({ value: 2_000_000, disposalAge: 41 })
       const r = simulatePlanning(
         makeState({
           currentAge: 40,
           endAge: 50,
           startInvestments: 300_000,
           monthlyContribution: 5_000,
-          homeValue: 2_000_000,
-          loans: [loan({ principal: 1_200_000, bidragssats: 0.008 })],
+          properties: [
+            home,
+            property({
+              value: 2_100_000,
+              acquisitionAge: 41,
+              disposalAge: 44,
+              financing: { ltv: 0.5 },
+            }),
+            property({
+              value: 4_500_000,
+              acquisitionAge: 44,
+              financing: { ltv: 0.85 },
+            }),
+          ],
+          // Named, so the first home's sale is what settles it — the plan ends
+          // owning a house it never sells, which is where an unattributed loan
+          // would otherwise come due.
+          loans: [
+            loan({
+              principal: 1_200_000,
+              bidragssats: 0.008,
+              propertyId: home.id,
+            }),
+          ],
           // The loan's own rate, as above.
           assumptions: {
             ...DEFAULT_PLANNING_STATE.assumptions,
             equityBorrowingRate: 0.04,
           },
-          events: [
-            {
-              id: "m0a",
-              type: "property",
-              label: "Straks-flytning",
-              age: 40,
-              newValue: 2_600_000,
-              mortgageLtv: 0.7,
-            },
-            {
-              id: "m0b",
-              type: "property",
-              label: "Straks-flytning igen",
-              age: 40,
-              newValue: 2_100_000,
-              mortgageLtv: 0.5,
-            },
-            {
-              id: "m1",
-              type: "property",
-              label: "Første flytning",
-              age: 44,
-              newValue: 3_000_000,
-              mortgageLtv: 0.6,
-            },
-            {
-              id: "m2",
-              type: "property",
-              label: "Anden flytning",
-              age: 44,
-              newValue: 4_500_000,
-              mortgageLtv: 0.85,
-            },
-          ],
         })
       )
       expectMatchesReference(r, CHAINED_MOVES)
     })
 
-    // The two references, kept below the fixtures that produce them so the
-    // plans stay readable. Both were recorded from the engine itself and
+    // The three references, kept below the fixtures that produce them so the
+    // plans stay readable. All were recorded from the engine itself and
     // written out in full — every entry is the shortest decimal that reads back
     // as the same double, so nothing here is rounded and the whole of the slack
     // in the comparison is {@link TOLERANCE} rather than the way the numbers
     // were written down. They are meant to be re-recorded, never edited, when a
     // deliberate change moves them.
+    const LIST_ONLY: Record<string, number[]> = {
+      age: [
+        40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
+        58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75,
+        76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
+      ],
+      investments: [
+        800000, 955189.36, 1120096.597112, 1295258.0173266903,
+        1481238.3314893602, 1678632.1373875777, 1836061.594372414,
+        1783925.4445642151, 632267.3145517504, 735372.3394220134,
+        846130.3588957633, 964994.9968412601, 1092444.993771761,
+        1228985.5608104477, 1375149.8057354132, 2133831.903244482,
+        2486162.387008019, 2859028.584269447, 3236713.9712087256,
+        3636003.1648354162, 4058054.6313989107, 4504087.560842568,
+        4975385.02283847, 5823297.2863215655, 6367340.310982784,
+        6941849.931118156, 6878258.336673848, 6775917.859299246,
+        6631330.674219212, 7582362.025662536, 7481742.891081948,
+        7335252.67211137, 9276253.739996826, 9183358.674102986,
+        9039459.237472689, 8837939.034349745, 8569254.468514139,
+        8185829.114136607, 7233233.876252037, 6180724.783973305,
+        5022073.518343655, 3750717.6091781356, 2359741.535538804,
+        841851.84004407, 0, 0, 0, 0, 0, 0, 0,
+      ],
+      homeEquity: [
+        1300000, 1364000, 1429280, 1495865.6, 1563782.912, 1633058.5702400003,
+        1756760.8771423777, 1884202.667709847, 3315514.2307481077,
+        3476830.894901212, 3642813.2362006074, 3813617.694447077,
+        3989406.6068075513, 4170348.4471854474, 4356618.075703745,
+        3893291.3679440646, 3971157.1953029456, 4050580.3392090043,
+        4131591.945993185, 4214223.784913048, 4298508.26061131,
+        4384478.425823536, 4472167.994340006, 4561611.354226807,
+        4652843.581311343, 4745900.4529375695, 4840818.461996321,
+        4937634.831236248, 5036387.527860973, 5137115.278418193,
+        5239857.583986556, 5344654.735666288, 3360579.4060618198,
+        3427790.994183056, 3496346.8140667174, 3566273.750348052,
+        3637599.2253550133, 3710351.2098621135, 3784558.2340593557,
+        3860249.398740543, 3937454.386715354, 4016203.474449661,
+        4096526.5005744146, 4178457.0514531876, 3682983.732672398,
+        2495913.16018902, 1242668.9522759262, 0, 0, 0, 0,
+      ],
+      cash: [
+        100000, 102000, 104040, 106120.8, 108243.216, 110408.08032000001,
+        112616.2419264, 114868.56676492801, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0,
+      ],
+      otherDebt: [
+        300000, 271111.2003386136, 240103.21545520393, 206820.5890463636,
+        171096.46105689486, 132751.73113891698, 91594.16074514535,
+        47417.4093547526, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0,
+      ],
+      netWorth: [
+        1900000, 2150078.159661386, 2413313.381656796, 2690423.828280327,
+        2982167.998432466, 3289347.0568086607, 3613844.5526960464,
+        3735579.269684238, 3947781.545299858, 4212203.234323225,
+        4488943.59509637, 4778612.691288337, 5081851.600579312,
+        5399334.007995895, 5731767.881439158, 6027123.271188546,
+        6457319.582310964, 6909608.923478451, 7368305.91720191,
+        7850226.949748464, 8356562.89201022, 8888565.986666104,
+        9447553.017178476, 10384908.640548373, 11020183.892294127,
+        11687750.384055726, 11719076.798670169, 11713552.690535493,
+        11667718.202080185, 12719477.304080728, 12721600.475068504,
+        12679907.407777658, 12636833.146058645, 12611149.668286042,
+        12535806.051539406, 12404212.784697797, 12206853.693869151,
+        11896180.323998721, 11017792.110311393, 10040974.182713848,
+        8959527.90505901, 7766921.083627797, 6456268.036113218,
+        5020308.891497258, 3682983.732672398, 2495913.16018902,
+        1242668.9522759262, 0, 0, 0, 0,
+      ],
+      bandLow: [
+        1900000, 1776685.3790752208, 1865349.3918134451, 2037327.402703314,
+        2233834.63062095, 2411266.9455245943, 2680887.9079483827,
+        2657131.1116320426, 2871716.7283316753, 3053538.874436577,
+        3132324.7561121257, 3298764.5011291117, 3474883.3541713995,
+        3664329.3039227827, 3884780.8560087, 4010318.0835605254,
+        4286258.787861148, 4740009.908099864, 5010552.0990002435,
+        5253196.787808608, 5500340.08705232, 5753465.662706818,
+        6185232.117629123, 6902292.142547013, 7228292.333985981,
+        7637674.91678727, 7214831.990584453, 6989378.599309404,
+        6827835.824996428, 7665301.071454879, 7366946.875171311,
+        7209750.6960298335, 6662712.689169868, 6371671.095977999,
+        6012112.214867519, 5471599.983067714, 4941748.136772618,
+        4406776.232869859, 3244731.8138906946, 2032103.2075997835,
+        1040140.0743944808, 0, 0, 0, 0, -163179.42094095936,
+        -281968.18036782974, -425515.948761872, -511595.36545170285,
+        -594348.8263712367, -628934.524006695,
+      ],
+      bandHigh: [
+        1900000, 2483049.857895348, 2907833.5705769095, 3393342.94213923,
+        3790416.8144178838, 4328142.97951756, 4773103.966104621,
+        5038639.46674816, 5193746.906514598, 5582675.32562244,
+        5958085.100323929, 6475424.942307571, 6750454.2606930565,
+        7264691.857200675, 7695719.932634304, 8138617.0468508545,
+        8538795.712073937, 9328575.935778512, 9789124.993673522,
+        10668225.756893419, 11483299.329097558, 12200650.492906604,
+        13011160.757636864, 14331754.302844819, 15131250.544991467,
+        16135461.555530736, 16456089.663619386, 16541335.631554015,
+        16843621.354021017, 18084585.80014901, 18263887.517142344,
+        18453958.880272947, 18508776.699433565, 18996389.796134517,
+        19441888.586764213, 19566295.929691598, 21200548.097832557,
+        21701189.479090694, 21085695.61390402, 20880812.000619803,
+        21067916.249369342, 19417630.62122993, 18976694.333147943,
+        18085302.1037636, 15967215.591232453, 15276838.913537754,
+        14227160.393534034, 12569091.972309517, 10946785.697845614,
+        9593603.973881407, 7979863.6717027575,
+      ],
+      investmentsBandLow: [
+        800000, 830024.4246764886, 933758.1469056756, 1036261.5608242673,
+        1157107.560949118, 1260788.6437722452, 1392706.786339682,
+        1267700.1411306043, 143631.08315028623, 224006.861506416,
+        299908.8093778203, 372570.00214955735, 461931.44473236403,
+        558147.6389552862, 684678.3212041591, 382748.0872866334,
+        655007.1260801306, 970323.8366444352, 1201627.2506206883,
+        1473401.5365644793, 1752315.1641301902, 2016152.1635844521,
+        2339133.780926285, 2859063.028087725, 3321384.956413072,
+        3601885.2527514203, 3236026.962313482, 2960492.666664652,
+        2532159.099770738, 3187010.814301351, 2993001.6796752475,
+        2701014.9497194933, 3854221.3716356414, 3396159.5363869662,
+        2984272.925839004, 2496624.7373927673, 1795355.1889046067,
+        1263106.0043066042, 188429.67609093105, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0,
+      ],
+      investmentsBandHigh: [
+        800000, 1081211.0172185127, 1316373.2629275285, 1567100.1883261676,
+        1834057.1572310305, 2138692.46767867, 2402125.159036262,
+        2412963.123424069, 1167747.6455355326, 1353276.358276845,
+        1572325.851570692, 1718813.0819806964, 1893734.448579985,
+        2027639.4729493323, 2346405.789856832, 3998960.990352235,
+        4413129.596939649, 4785065.282215605, 5430224.267682266,
+        6181098.837502454, 6849632.357772097, 7827584.70484066,
+        8637093.89670278, 9611904.59818818, 10144038.244590001,
+        10981259.16800315, 10949951.90286629, 10970583.863560732,
+        10834436.356211806, 12056444.03751568, 13110230.87595068,
+        12876227.654253935, 14778019.77382183, 15005097.721995905,
+        15188815.4575277, 16050193.430459978, 16080984.916937543,
+        16747018.422076385, 16997551.300328087, 15703422.236504693,
+        16194115.059071932, 14753683.928568011, 13949751.389788352,
+        12840797.179759346, 10221871.909445418, 9933141.339424487,
+        8539811.300970744, 7019259.807170804, 5811742.2349751275,
+        4028274.6246423777, 2198794.9937969125,
+      ],
+      contributionsTotal: [
+        0, 113829.36, 229353.30719999998, 346605.73334399995, 465621.2080108799,
+        586434.9921710975, 657079.1676529963, 730018.6334157435,
+        730018.6334157435, 800435.4381236809, 873174.7076493127,
+        948294.4060398985, 1025854.1616337062, 1105915.3224943927,
+        1188541.013925458, 1428277.6554605537, 1670289.0298263512,
+        1914620.6316794646, 2144494.240812013, 2376445.3221272123,
+        2610515.4250687156, 2846746.930069049, 3085183.065169389,
+        3325867.9229717357, 3568846.4779301295, 3814164.603987691,
+        3814164.603987691, 3814164.603987691, 3814164.603987691,
+        3814164.603987691, 3814164.603987691, 3814164.603987691,
+        3814164.603987691, 3814164.603987691, 3814164.603987691,
+        3814164.603987691, 3814164.603987691, 3814164.603987691,
+        3814164.603987691, 3814164.603987691, 3814164.603987691,
+        3814164.603987691, 3814164.603987691, 3814164.603987691,
+        3814164.603987691, 3814164.603987691, 3814164.603987691,
+        3814164.603987691, 3814164.603987691, 3814164.603987691,
+        3814164.603987691,
+      ],
+      housingGainsTotal: [
+        0, 64000, 129280, 195865.6000000001, 263782.912, 333058.57024000026,
+        456760.87714237766, 584202.667709847, 715514.2307481077,
+        876830.8949012118, 1042813.2362006074, 1213617.6944470769,
+        1389406.6068075513, 1570348.4471854474, 1756618.0757037448,
+        1741141.5789615167, 1819007.4063203977, 1898430.5502264565,
+        1979442.1570106372, 2062073.9959305003, 2146358.471628762,
+        2232328.636840988, 2320018.2053574584, 2409461.5652442593,
+        2500693.7923287954, 2593750.6639550216, 2688668.673013773,
+        2785485.0422537, 2884237.738878425, 2984965.489435645,
+        3087707.7950040083, 3192504.9466837402, 3299398.041397066,
+        3366609.629518302, 3435165.4494019635, 3505092.385683298,
+        3576417.8606902594, 3649169.8451973596, 3723376.869394602,
+        3799068.034075789, 3876273.0220506, 3955022.109784907,
+        4035345.1359096607, 4117275.6867884337, 3621802.368007644,
+        2434731.795524266, 1181487.5876111723, -61181.3646647539,
+        -61181.3646647539, -61181.3646647539, -61181.3646647539,
+      ],
+      investmentGainsTotal: [
+        0, 41360, 90743.28991200001, 148652.28398269042, 215617.12347848032,
+        292197.14521648025, 378982.426719418, 473906.81114847184,
+        566135.7566324418, 598823.9767947673, 636842.7267428854,
+        680587.6662977964, 730477.9076344896, 786957.3138124896,
+        850495.8673063897, 921591.1122629106, 1031910.2216606503,
+        1160444.817068965, 1308256.5948756954, 1475594.7071871865,
+        1663576.0708091776, 1873377.4952525012, 2106238.822148062,
+        2363466.227828811, 2664530.697531636, 2993722.191609446,
+        3352615.8330482547, 3708221.7890542927, 4058536.742380064,
+        4401376.538237197, 4793384.654963951, 5180190.762432887,
+        5559423.325581045, 6039005.64393888, 6513785.287390005,
+        6981125.329967343, 7438046.778043225, 7881077.234065406,
+        8304284.599266268, 8678242.790668499, 8997786.261999918,
+        9257427.462898286, 9451339.563292796, 9573338.200680152,
+        9616861.94081043, 9616861.94081043, 9616861.94081043, 9616861.94081043,
+        9616861.94081043, 9616861.94081043, 9616861.94081043,
+      ],
+      contributionYoY: [
+        0, 113829.36, 115523.9472, 117252.42614399998, 119015.47466688,
+        120813.7841602176, 70644.17548189868, 72939.46576274728, 0,
+        70416.8047079374, 72739.26952563178, 75119.69839058584,
+        77559.75559380773, 80061.16086068653, 82625.69143106524,
+        239736.64153509558, 242011.37436579744, 244331.60185311342,
+        229873.6091325484, 231951.08131519935, 234070.1029415033,
+        236231.5050003334, 238436.13510034006, 240684.85780234687,
+        242978.55495839377, 245318.1260575617, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      ],
+      housingGainYoY: [
+        0, 64000, 65280, 66585.6000000001, 67917.31199999992, 69275.65824000025,
+        123702.3069023774, 127441.79056746932, 131311.56303826068,
+        161316.66415310418, 165982.34129939554, 170804.4582464695,
+        175788.91236047447, 180941.8403778961, 186269.62851829734,
+        -15476.496742228046, 77865.82735888101, 79423.14390605874,
+        81011.60678418074, 82631.8389198631, 84284.47569826152,
+        85970.1652122261, 87689.56851647049, 89443.35988680087,
+        91232.2270845361, 93056.87162622623, 94918.00905875117,
+        96816.36923992727, 98752.69662472513, 100727.75055721961,
+        102742.30556836352, 104797.1516797319, 106893.09471332561,
+        67211.5881212363, 68555.81988366134, 69926.93628133461,
+        71325.47500696126, 72751.98450710019, 74207.02419724222,
+        75691.16468118737, 77204.98797481088, 78749.08773430716,
+        80323.02612475352, 81930.55087877298, -495473.3187807896,
+        -1187070.572483378, -1253244.2079130937, -1242668.9522759262, 0, 0, 0,
+      ],
+      investmentGainYoY: [
+        0, 41360, 49383.289912, 57908.9940706904, 66964.83949578989,
+        76580.02173799992, 86785.28150293777, 94924.38442905381,
+        92228.94548396993, 32688.2201623255, 38018.74994811809,
+        43744.93955491096, 49890.24133669315, 56479.40617800004,
+        63538.553493900145, 71095.24495652087, 110319.10939773972,
+        128534.59540831458, 147811.77780673042, 167338.11231149113,
+        187981.36362199104, 209801.4244433237, 232861.32689556078,
+        257227.4056807489, 301064.46970282495, 329191.49407780997,
+        358893.6414388087, 355605.956006038, 350314.953325771,
+        342839.7958571333, 392008.1167267531, 386806.1074689367,
+        379232.56314815785, 479582.31835783593, 474779.64345112443,
+        467340.04257733806, 456921.44807588187, 443030.456022181,
+        423207.36520086264, 373958.1914022303, 319543.4713314199,
+        259641.200898367, 193912.10039450962, 121998.63738735617,
+        43523.74013027842, 0, 0, 0, 0, 0, 0,
+      ],
+      retirementIncome: [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 692964.2343801497, 690033.18009127, 686888.1900639491,
+        1736726.6495126707, 735534.8821247433, 731360.859867944,
+        726615.1963624933, 721066.1186706724, 714316.731394554,
+        705579.2158138579, 692909.5805501663, 647504.2618724299,
+        262515.45568062493, 262875.8188090438, 263225.8863421037,
+        263559.1841639026, 263868.80601370416, 264143.88684037456,
+        264369.5633306281, 272341.1897925742, 289567.1902352607,
+        306710.2624650557, 319352.80077984714, 317213.9829449129,
+        308268.629390608,
+      ],
+      taxPaid: [
+        0, 17270.64, 17616.0528, 17968.373856000002, 18327.74133312,
+        18694.2961597824, 19068.182082978048, 19449.54572463761,
+        156182.19548760203, 27518.201485097336, 28068.565514799284,
+        28629.93682509527, 29202.53556159717, 29786.586272829118,
+        30382.3179982857, 20850.19229731742, 21267.19614326377,
+        21692.540066129044, 22126.390867451628, 22568.918684800658,
+        23020.297058496675, 23480.702999666606, 23950.317059659938,
+        24429.32340085314, 24917.909868870203, 25416.26806624761,
+        408054.6400946573, 417238.15789605846, 427146.3607911239,
+        379979.2642276264, 454481.48962103634, 465156.35061740095,
+        429705.4076485313, 439906.50125519844, 450684.91407264466,
+        461868.49251873634, 473015.19692282897, 477074.04236611386,
+        403427.77744766197, 427078.16583847767, 451221.73741834983,
+        475849.41693203105, 500957.8034615826, 526533.3900717794,
+        320969.7931233162, 73152.50830150634, 54727.379413432085,
+        36104.84993880823, 21516.66439619877, 20783.281683317386,
+        19110.275006422613,
+      ],
+      spending: [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 1037519.2308994957, 1058269.6155174857, 1079435.0078278354,
+        1101023.707984392, 1123044.18214408, 1145505.0657869615,
+        1168415.1671027008, 1191783.470444755, 1215619.13985365,
+        1239931.522650723, 1264730.1531037374, 1290024.7561658123,
+        1315825.2512891283, 1342141.756314911, 1368984.5914412092,
+        1396364.2832700335, 1424291.568935434, 1452777.400314143,
+        1481832.9483204258, 1511469.6072868344, 1541698.999432571,
+        1572532.9794212223, 1603983.639009647, 1636063.31178984,
+        1668784.578025637,
+      ],
+      investmentsSold: [
+        0, 0, 0, 0, 0, 0, 0, 0, 1243887.0754964347, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 422485.23588311556, 457946.43338064,
+        494902.1384058055, 0, 492627.25130734144, 533296.3264395144,
+        529199.9195804948, 572477.384251677, 618679.0800814226,
+        668860.2457002811, 725606.0139114881, 826455.8103997122,
+        1375802.6030854343, 1426467.2836809624, 1478194.7369610688,
+        1530997.1100638867, 1584888.1740338418, 1639888.33288209,
+        885375.5801743484, 0, 0, 0, 0, 0, 0,
+      ],
+      borrowed: [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        1.0433642398566008, 0, 579042.4806771381, 1272311.1176176532,
+        1340189.5639500548, 1331353.2154336264, 90457.94842085429,
+        92267.10738927126, 94112.4495370565,
+      ],
+      propertyTax: [
+        0, 17270.64, 17616.0528, 17968.373856000002, 18327.74133312,
+        18694.2961597824, 19068.182082978048, 19449.54572463761,
+        26978.628906958173, 27518.201485097336, 28068.565514799284,
+        28629.93682509527, 29202.53556159717, 29786.586272829118,
+        30382.3179982857, 20850.19229731742, 21267.19614326377,
+        21692.540066129044, 22126.390867451628, 22568.918684800658,
+        23020.297058496675, 23480.702999666606, 23950.317059659938,
+        24429.32340085314, 24917.909868870203, 25416.26806624761,
+        25924.59342757256, 26443.085296124013, 26971.947002046494,
+        27511.38594208742, 28061.61366092917, 28622.845934147757,
+        17710.912484566423, 18065.130734257753, 18426.43334894291,
+        18794.962015921767, 19170.8612562402, 19554.278481365007,
+        19945.364050992303, 20344.27133201215, 20751.156758652392,
+        21166.179893825443, 21589.50349170195, 22021.293561535993,
+        22461.719432766713, 8283.828589613973, 8449.505161406252,
+        8618.495264634377, 8790.865169927067, 8966.682473325607,
+        9146.01612279212,
+      ],
+      scalars: [51, -1, 55, 87, 0.20750000000000002],
+    }
     const EVERY_LOAN_BRANCH: Record<string, number[]> = {
       age: [
         40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
@@ -3956,17 +4550,17 @@ describe("simulatePlanning", () => {
         900000, 1051770.48, 1213156.303416, 1384689.9596946072,
         1566932.1755106584, 1760473.3887823962, 1965935.2991762396,
         1867450.4309852743, 2016442.3122527339, 2175770.0127143506,
-        2346034.269651303, 2527868.7932904153, 4196643.765466826,
-        4413610.248141461, 4641793.897970375, 4881774.642495443,
-        5134162.391512457, 5399598.587153652, 4034089.228646774,
-        4213117.675936936, 4404004.323097466, 5007482.245134855,
-        5245250.621467101, 5498235.925930495, 5767354.963116427,
-        6053563.766986535, 5541494.95952065, 4958340.708592186,
-        4298939.253594552, 5037905.477965486, 4385767.1539230365,
-        3649846.001841573, 2823698.034533712, 1899413.432348398,
-        864507.5997546103, 0, 0, 0, 8859353.390247978, 7986986.351204075,
-        7021313.375515396, 5952133.278815002, 4763390.024732107,
-        3449643.5797724267, 2003521.3865763806, 416499.30157295265, 0, 0, 0, 0,
+        2346034.269651303, 2527868.7932904153, 4295595.239373023,
+        4517677.5132486075, 4751241.44068356, 4996880.6231669,
+        5255219.351384629, 5526914.191851214, 4150959.7827607673,
+        4337677.715151308, 4536762.587031671, 5148977.826207816,
+        5396033.803415061, 5658899.601771084, 5938521.711938892,
+        6235893.015679875, 5725952.026789547, 5145013.67529073,
+        4487937.046333793, 5238959.968705758, 4591020.826287815,
+        3859515.455565623, 3038020.402860864, 2118642.966277327,
+        1088879.5355197215, 0, 0, 0, 8864549.357898086, 7997715.99340244,
+        7037933.129430924, 5975174.001409212, 4793305.278943675,
+        3486841.1187015697, 2048476.2323262403, 469718.26918676845, 0, 0, 0, 0,
         0,
       ],
       homeEquity: [
@@ -3980,18 +4574,18 @@ describe("simulatePlanning", () => {
         5987980.878984617, 6356016.73721346, 6736240.683091454,
         7129074.667110978, 7534955.853171639, 7954337.187255932,
         8387687.988030063, 8835494.560237126, 9298260.831784876,
-        9776509.015466725, 10270780.29629263, 10573189.764092663,
-        10166739.054279054, 9665141.508982893, -109976.47960460279,
-        -68369.95251720818, -25931.294888066128, 17356.135893658735,
-        61509.31529101776, 106545.55827632407, 152482.5261213365,
-        199338.23332324903, 0, 0, 0, 0, 0,
+        9776509.015466725, 10270780.29629263, 10737793.670360519,
+        10338896.589581173, 9845475.027144453, 70357.03855695622,
+        111963.56564435083, 154402.22327349288, 197689.65405521775,
+        241842.83345257677, 286879.0764378831, 332816.0442828955,
+        379671.75148480805, 0, 0, 0, 0, 0,
       ],
       cash: [
         120000, 122400, 124848, 127344.96, 129891.8592, 132489.696384,
         135139.49031168, 137842.28011791361, 140599.1257202719,
         143411.10823467735, 146279.3303993709, 149204.9170073583,
-        152189.01534750548, 129181.97644270619, 108186.23340124369,
-        89293.76257317301, 65249.99670741278, 43214.529727528236, 0, 0, 0, 0, 0,
+        152189.01534750548, 130606.23734283583, 111104.92042513877,
+        93780.88761314565, 71383.60323775762, 51074.084813455294, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0,
       ],
@@ -4006,151 +4600,150 @@ describe("simulatePlanning", () => {
         1800000, 2061056.7071053712, 2335701.511540812, 2624673.638096089,
         2928753.748968672, 3248766.32746621, 3585582.202380847,
         3691416.829424999, 4053062.3764886023, 4433803.184727762,
-        4769889.788799858, 5122617.981493402, 5492832.780814332,
-        5911772.48151701, 6351574.242375217, 6813176.834424397,
-        7290212.094423832, 7790767.537937511, 8047958.639302706,
-        8529969.931116356, 9033786.002351215, 9960481.413508594,
-        10532109.046793915, 11129961.74966619, 11755335.842101045,
-        12409580.504199995, 12277735.642612103, 12087415.375703163,
-        11833895.10676619, 12992242.66522142, 12773455.1419531,
-        12485340.5620787, 12121958.866318587, 11675922.447815124,
-        11135287.89604724, 10573189.764092663, 10166739.054279054,
-        9665141.508982893, 8749376.910643376, 7918616.398686867,
-        6995382.08062733, 5969489.414708661, 4824899.340023125,
-        3556189.138048751, 2156003.912697717, 615837.5348962017, 0, 0, 0, 0, 0,
+        4769889.788799858, 5122617.981493402, 5591784.254720529,
+        6017264.007524286, 6463940.472112298, 6932769.940135827,
+        7417402.660826349, 7925942.697721001, 8164829.1934167,
+        8654529.970330726, 9166544.26628542, 10101976.994581554,
+        10682892.228741877, 11290625.425506778, 11926502.590923509,
+        12591909.752893336, 12462192.709881, 12274088.342401708,
+        12022892.899505433, 13193297.15596169, 12978708.814317878,
+        12695010.015802749, 12336281.23464574, 11895151.981744053,
+        11359659.83181235, 10737793.670360519, 10338896.589581173,
+        9845475.027144453, 8934906.396455042, 8109679.559046791,
+        7192335.352704417, 6172863.655464429, 5035148.112396251,
+        3773720.195139453, 2381292.276609136, 849390.0206715765, 0, 0, 0, 0, 0,
       ],
       bandLow: [
         1800000, 1641001.176445935, 1722746.4755846974, 1894672.9219763475,
         2083931.1184522584, 2274769.074876596, 2548293.2724697413,
         2492975.4909819793, 2798269.032355214, 2999511.469204924,
-        3176257.935095505, 3332241.3134110477, 3613196.3929965417,
-        3767124.6037609987, 4011259.543249519, 4218811.00987291,
-        4270298.379564274, 4617917.6608688515, 4730816.004127557,
-        4816798.099483011, 4992832.427552246, 5482538.918281749,
-        5823151.505414728, 6180309.7754011955, 6297859.222741865,
-        6790300.63260125, 6380707.890908861, 6001217.526619455,
-        5637622.077211678, 6278605.536890329, 5872731.01778208,
-        5474115.982439546, 4756580.487329607, 4296960.485179695,
-        3892444.2199191963, 3359664.268301932, 2246489.586839269,
-        1592732.8287434112, -10295.778464850038, -1373388.9506597025,
-        -2629065.982574136, -3477126.4328195034, -3927978.397576104,
-        -4392100.728311874, -4452379.2754920395, -4842958.264463956,
-        -4893874.5261434475, -4778023.031967991, -4830269.209782914,
-        -4756988.601189813, -4719422.048134677,
+        3176257.935095505, 3332241.3134110477, 3702968.332793695,
+        3861198.46718828, 4101779.2180853686, 4322842.0559383705,
+        4398592.716137446, 4707559.44981229, 4803260.58096155,
+        4907949.507054707, 5099858.107220837, 5569052.79768603,
+        5907643.468156347, 6255616.288979294, 6396357.825723277,
+        6898304.800030877, 6505277.898764101, 6068708.936375869,
+        5720967.128762992, 6342502.865899529, 6012751.787722166,
+        5639051.95935461, 4921979.237318874, 4436805.264488223,
+        3953571.1468307734, 3451786.638261142, 2451049.2584146177,
+        1797286.079986577, 76037.71007430647, -1269637.984548987,
+        -2437889.0904286383, -3351475.636645717, -3798593.3588323556,
+        -4211328.381555043, -4332885.6197653515, -4606297.7694556415,
+        -4799906.814047801, -4586225.384210662, -4664560.41916841,
+        -4616820.600937723, -4576188.28385435,
       ],
       bandHigh: [
         1800000, 2435642.9826185782, 2891040.410514124, 3408407.0619665524,
         3844410.5357520226, 4406090.729590356, 4873141.807756215,
         5128737.106252438, 5448231.238562058, 5999716.605053401,
-        6484373.0162494825, 6997654.974404663, 7374795.85230264,
-        8186811.689378431, 8978529.578933991, 9600311.408003619,
-        10455108.385737281, 11015439.761415591, 11060324.792493893,
-        12081427.247972103, 13396825.599890672, 14309428.166855192,
-        15517122.308780242, 16549417.092392495, 17647050.03403633,
-        18612771.11548637, 18375478.393617906, 18213496.75039091,
-        18331978.361305594, 20242857.89319262, 20658450.50193937,
-        20060812.85734187, 20952827.11840425, 20143435.723059736,
-        20256879.907253183, 20296703.120879453, 20222260.644604344,
-        19889471.776856367, 19159882.5981712, 18154691.90862251,
-        17746774.08302421, 17434804.369605653, 16641347.050998386,
-        15256577.222736541, 13996188.670926128, 12670040.062734703,
-        11494698.72192089, 9673809.23896584, 8604535.32897495,
-        6563968.214511424, 4756400.786154389,
+        6484373.0162494825, 6997654.974404663, 7481335.216865705,
+        8301405.734013877, 9102945.86852672, 9728457.696672268,
+        10588536.433962664, 11207916.613854142, 11226203.113401953,
+        12221474.151555065, 13504337.585769929, 14611963.773524398,
+        15748335.238400605, 16781340.617700726, 17951237.710577536,
+        18808909.19677526, 18658208.49007409, 18449392.48075977,
+        18709809.352058735, 20581597.416542146, 21029743.24447222,
+        20344658.95680296, 21172543.98927981, 20484977.93556031,
+        20526949.274770234, 21040479.99742851, 20547852.641270272,
+        20240953.67745101, 19746310.299984664, 18795266.922015622,
+        18084540.134995043, 18020837.3777188, 17035194.465061326,
+        15989212.743477548, 14378450.917685298, 12984291.797942901,
+        11733642.512887854, 10118880.43273617, 8851762.736983292,
+        7267120.782302799, 5257945.672191035,
       ],
       investmentsBandLow: [
         900000, 910955.4652610498, 1007415.5656719212, 1095321.86665991,
         1209061.1343854596, 1314357.3257726356, 1480472.9596479915,
         1312184.7387365322, 1353993.479133304, 1407041.087991839,
-        1478142.735679965, 1582307.5130001009, 2317007.3776490362,
-        2329185.2807193534, 2313769.3698610114, 2340488.1816842826,
-        2423859.93504723, 2508131.36003634, 1062050.7011810194,
-        1173411.1608750813, 1156556.469965274, 1552852.178273249,
-        1593504.571003345, 1611815.503952672, 1643952.6550864773,
-        1746877.0149305991, 1153590.5692304764, 370888.19843745546, 0,
-        144202.20636499382, 0, 0, 0, 0, 0, 0, 0, 0, 4197965.121216737,
-        2828402.8082169537, 1322618.2536339436, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        1478142.735679965, 1582307.5130001009, 2410146.725559466,
+        2412401.361600881, 2410964.9318002053, 2420020.380910962,
+        2508247.27625089, 2611784.729688351, 1145404.1719461055,
+        1276183.1848117912, 1300413.8044869774, 1632478.9357434874,
+        1675901.1043439829, 1791223.151122166, 1826457.7736002426,
+        1813890.9217565572, 1197011.2626227045, 454607.2778114744, 0,
+        236022.02993007482, 0, 0, 0, 0, 0, 0, 0, 0, 4201688.857459381,
+        2833374.8995712185, 1322618.2536339436, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
       ],
       investmentsBandHigh: [
         900000, 1193543.8243708268, 1431441.117699259, 1686536.1227907431,
         1944579.440570611, 2245494.7154691294, 2572022.2830376243,
         2535974.9231767077, 2719974.4745450304, 3052575.199152102,
-        3356819.619768479, 3622200.1627127435, 6078606.836955134,
-        6769762.150113864, 7321470.7047399655, 7617459.433407829,
-        8174695.793456485, 8263047.835452204, 7098145.39890666,
-        7648229.189342222, 8293616.644882884, 8994920.976884665,
-        9410715.967826746, 10633412.677858502, 10427997.100876316,
-        11216855.957206277, 10568912.262700817, 10917130.059450692,
-        10769592.882893087, 11182292.28223032, 10741941.921437705,
-        10958228.3186346, 10606222.407986574, 9539828.316412939,
-        8390613.351685299, 7201584.675806573, 6704853.521419317,
-        5769288.415999751, 18338304.50127512, 17637177.396805678,
-        16886393.784867298, 16845194.73697128, 15418880.46679404,
-        13802315.01263488, 12981904.079004599, 11115848.351135336,
-        10028592.657385066, 8370285.026185488, 6585788.253272203,
-        4760110.613665327, 3160202.0800745236,
+        3356819.619768479, 3622200.1627127435, 6185146.201518199,
+        6889997.714667551, 7436043.636864054, 7764400.5501603,
+        8324518.566881953, 8417030.745360656, 7308603.0402005175,
+        7829781.706247489, 8463417.599887114, 9166047.983333288,
+        9694553.005929137, 10812528.73353892, 10750571.708520714,
+        11522264.456147743, 10891232.744988047, 11250530.793665744,
+        11078724.446407283, 11449398.551789016, 11091522.653258134,
+        11458254.490997657, 10888774.474476816, 9823441.952584729,
+        8876387.960842198, 7593698.398011198, 7058490.741555714,
+        6179338.42571011, 18683038.511559073, 18152233.04679902,
+        17286452.2241818, 17068659.89281965, 15837701.95956606,
+        14302018.084241193, 13262058.608924266, 11317791.429663692,
+        10288124.281038348, 8480145.458430802, 6795105.302991191,
+        5129203.751900824, 3504168.873919234,
       ],
       contributionsTotal: [
         0, 105240.48, 212249.7696, 321063.244992, 431716.98989183997,
         544247.8096896767, 658693.2458834703, 708569.5227250934,
         761014.2167106142, 816091.8496287643, 873868.7969083849,
-        934413.3488065249, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565, 997795.7738528565, 997795.7738528565,
-        997795.7738528565,
+        934413.3488065249, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746, 1180381.7568759746, 1180381.7568759746,
+        1180381.7568759746,
       ],
       housingGainsTotal: [
         0, 72000, 145440, 220348.80000000028, 296755.77600000054,
         374690.8915200005, 454184.7093504006, 603086.0794837628,
         756512.941237729, 914622.0637787334, 1077576.188749184,
-        1245544.2711956282, 1418701.7305169646, 1643681.987449808,
-        1876295.8415205642, 2116810.1598727456, 2365501.4367209272,
-        2622656.151573296, 2888571.1411728966, 3191553.9856963838,
-        3504483.409770714, 3827700.898890704, 4161560.1558437794,
-        4506427.554252659, 4862682.609501582, 5230718.467730424,
-        5610942.413608419, 6003776.397627942, 6409657.583688604,
-        6829038.917772897, 7262389.718547028, 7710196.290754091,
-        8172962.562301841, 8651210.74598369, 9145482.026809594,
-        9447891.494609628, 9041440.784796018, 8539843.239499858,
-        8907263.309356695, 8948869.83644409, 8991308.49407323,
-        9034595.924854957, 9078749.104252316, 9123785.347237622,
-        9169722.315082636, 9216578.022284549, 9017239.788961299,
-        9017239.788961299, 9017239.788961299, 9017239.788961299,
-        9017239.788961299,
+        1245544.2711956282, 1335067.2214000435, 1560047.478332887,
+        1792661.332403643, 2033175.6507558245, 2281866.927604006,
+        2539021.642456375, 2804936.6320559755, 3107919.4765794626,
+        3420848.900653793, 3744066.389773783, 4077925.6467268583,
+        4422793.045135738, 4779048.100384661, 5147083.958613504,
+        5527307.904491498, 5920141.888511022, 6326023.074571683,
+        6745404.408655976, 7178755.209430107, 7626561.78163717,
+        8089328.05318492, 8567576.236866768, 9061847.517692672,
+        9528860.891760562, 9129963.810981216, 8636542.248544496,
+        9003962.318401331, 9045568.845488725, 9088007.503117867,
+        9131294.933899593, 9175448.113296952, 9220484.356282258,
+        9266421.324127272, 9313277.031329185, 8933605.279844377,
+        8933605.279844377, 8933605.279844377, 8933605.279844377,
+        8933605.279844377,
       ],
       investmentGainsTotal: [
         0, 46530, 100906.53381600001, 163626.71470260722, 235215.18561881842,
         316225.5790927195, 407242.05329276936, 508880.90826018096,
         605428.0955421197, 709678.163085586, 822165.472742918,
-        943455.4444838903, 1074146.2610970049, 1291112.74377164,
-        1519296.3936005535, 1759277.138125622, 2011664.8871426363,
-        2277101.0827838304, 2556260.329739674, 2764822.742860712,
-        2982640.9267066517, 3210327.9502107906, 3469214.7822842626,
-        3740394.2394141117, 4024653.0367847183, 4322825.288377837,
-        4635794.535131041, 4922289.824538259, 5178636.039172475,
-        5400891.198583313, 5661350.911794129, 5888095.07365195,
-        6076792.111947159, 6222777.300332552, 6320976.974784964,
-        6365672.017692277, 6365672.017692277, 6365672.017692277,
-        6365672.017692277, 6823700.587968098, 7236627.782325349,
-        7599629.683839494, 7907354.97435423, 8153622.23863288,
-        8331968.811707115, 8435550.867393114, 8457083.881284436,
-        8457083.881284436, 8457083.881284436, 8457083.881284436,
-        8457083.881284436,
+        943455.4444838903, 1074146.2610970049, 1296228.5349725902,
+        1529792.462407543, 1775431.6448908832, 2033770.373108612,
+        2305465.2135751974, 2591206.677293905, 2805811.2980626365,
+        3030069.235935959, 3264619.8616854963, 3530822.0153004406,
+        3809796.9629369993, 4102362.0723485644, 4409383.644855805,
+        4731779.313766454, 5027811.033551474, 5293808.2405640045,
+        5525834.585859462, 5796688.816241549, 6034044.59296063,
+        6233581.542013372, 6390647.196841279, 6500181.038197817,
+        6556476.110184187, 6556476.110184187, 6556476.110184187,
+        6556476.110184187, 7014773.311987518, 7428255.228846424,
+        7792116.371638003, 8101032.867510859, 8348846.750432247,
+        8529116.43626912, 8635022.657480385, 8659307.09199734, 8659307.09199734,
+        8659307.09199734, 8659307.09199734, 8659307.09199734,
       ],
       contributionYoY: [
         0, 105240.48, 107009.2896, 108813.47539200001, 110653.74489983998,
         112530.81979783678, 114445.43619379353, 49876.27684162316,
         52444.69398552076, 55077.63291815013, 57776.94727962062,
-        60544.551898140024, 63382.42504633163, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        60544.551898140024, 245968.40806944965, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0,
       ],
@@ -4158,7 +4751,7 @@ describe("simulatePlanning", () => {
         0, 72000, 73440, 74908.80000000028, 76406.97600000026,
         77935.11551999999, 79493.81783040008, 148901.37013336224,
         153426.8617539662, 158109.12254100433, 162954.12497045053,
-        167968.0824464443, 173157.45932133636, 224980.25693284348,
+        167968.0824464443, 89522.95020441525, 224980.25693284348,
         232613.85407075612, 240514.31835218146, 248691.27684818162,
         257154.71485236892, 265914.98959960043, 302982.84452348715,
         312929.42407433037, 323217.4891199898, 333859.2569530755,
@@ -4166,54 +4759,54 @@ describe("simulatePlanning", () => {
         380223.9458779944, 392833.9840195235, 405881.18606066145,
         419381.3340842929, 433350.80077413097, 447806.57220706344,
         462766.27154774964, 478248.1836818494, 494271.28082590364,
-        302409.4678000342, -406450.7098136097, -501597.5452961605,
-        367420.0698568374, 41606.527087394614, 42438.65762914205,
+        467013.3740678895, -398897.0807793457, -493421.56243672036,
+        367420.06985683553, 41606.527087394614, 42438.65762914205,
         43287.43078172486, 44153.179397359025, 45036.24298530631,
-        45936.967845012434, 46855.70720191253, -199338.23332324903, 0, 0, 0, 0,
+        45936.967845012434, 46855.70720191253, -379671.75148480805, 0, 0, 0, 0,
       ],
       investmentGainYoY: [
         0, 46530, 54376.533816, 62720.1808866072, 71588.4709162112,
         81010.39347390104, 91016.4742000499, 101638.8549674116,
         96547.18728193869, 104250.06754346634, 112487.30965733193,
-        121289.97174097238, 130690.81661311448, 216966.48267463493,
-        228183.64982891356, 239980.74452506838, 252387.74901701443,
-        265436.19564119406, 279159.2469558438, 208562.41312103823,
-        217818.18384593964, 227687.02350413898, 258886.832073472,
-        271179.4571298492, 284258.7973706066, 298172.2515931193,
-        312969.24675320386, 286495.28940721764, 256346.214634216,
-        222255.15941083836, 260459.71321081565, 226744.161857821,
-        188697.03829520935, 145985.18838539292, 98199.67445241219,
-        44695.04290731336, 0, 0, 0, 458028.5702758205, 412927.1943572507,
-        363001.90151414595, 307725.2905147356, 246267.26427864996,
-        178346.57307423447, 103582.05568599889, 21533.013891321654, 0, 0, 0, 0,
+        121289.97174097238, 130690.81661311448, 222082.2738755853,
+        233563.92743495302, 245639.1824833401, 258338.72821772876,
+        271694.8404665853, 285741.46371870773, 214604.6207687317,
+        224257.93787332263, 234550.6257495374, 266202.1536149441,
+        278974.9476365587, 292565.10941156506, 307021.5725072407,
+        322395.66891064955, 296031.7197850196, 265997.20701253077,
+        232026.34529545708, 270854.2303820877, 237355.77671908008,
+        199536.9490527427, 157065.6548279067, 109533.84135653781,
+        56295.0719863696, 0, 0, 0, 458297.2018033311, 413481.91685890616,
+        363861.1427915788, 308916.4958728563, 247813.882921388,
+        180269.68583687115, 105906.22121126663, 24284.43451695593, 0, 0, 0, 0,
       ],
       retirementIncome: [
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 837437.0120244767, 834681.9527068245, 831674.6885343273,
         2074624.2815070753, 873993.230189053, 869822.5630462336,
         865015.710128552, 858767.35118216, 848110.7517347882, 834988.3679101084,
-        819846.009536373, 775111.0570356192, 301690.32347340166,
-        301995.09788988414, 302283.52785367245, 302554.8480414853,
-        302791.96459445223, 302991.3138162689, 303135.6909132821,
-        303195.9066937403, 303138.2795115822, 306151.64733931737,
+        817675.3097477464, 773162.1904513603, 299312.2833607233,
+        299616.2513036647, 299906.7594224305, 300176.4456608923,
+        300414.8684901242, 300616.28523196036, 300756.3508605597,
+        300820.10391966865, 300761.8916525013, 306151.64733931737,
         306226.33978954627, 305657.84189514484, 299489.1905914968,
       ],
       taxPaid: [
         0, 19559.52, 19950.7104, 20349.724608000004, 20756.71910016,
         21171.853482163202, 21595.290551806465, 22027.196362842595,
         22467.74029009945, 22917.095095901437, 23375.436997819466,
-        23842.945737775855, 24319.804652531373, 28530.494234658483,
-        29384.79205341017, 30267.233060571358, 31174.59057690272,
-        32110.336224920688, 301025.7486166608, 45407.34743651896,
-        46487.86428318283, 47538.87487635831, 48314.95667108781,
-        49355.37006992657, 50361.778718318805, 51349.3270207516,
-        590084.0423197452, 605779.1312193583, 622118.4385679235,
-        442275.8959632594, 642872.1511757057, 659908.8401005265,
-        677526.2645910141, 696429.9260620113, 720049.3071062871,
-        661232.2879184192, 418223.0463053591, 380347.15387476503,
-        64974.892219277586, 81687.3585198042, 98750.13655252176,
-        120527.28102126946, 152319.74806677073, 182649.8073028042,
-        213130.15502849835, 244483.1111565019, 95466.93251742003,
+        23842.945737775855, 26316.01723717282, 27106.233334528853,
+        27918.851147647318, 28757.168784971684, 29617.851587329966,
+        30507.05979994536, 326070.0465679108, 43759.69400039002,
+        44728.50256634446, 45665.51127530049, 46343.832590848564,
+        47269.132343401354, 48166.26187278512, 49036.07256855634,
+        597383.4921345573, 613098.2604311955, 629444.6684275034,
+        439990.38384684664, 649067.0077933392, 666103.805399855,
+        683713.2113548821, 702602.2111000728, 726241.1220154127,
+        732600.3464947317, 417582.7813343454, 379401.7874980132,
+        67352.93233195593, 83996.93327343967, 100990.00652461959,
+        122540.82692784676, 154209.82834430147, 184488.2455247387,
+        214871.35089218605, 246117.80625216188, 102858.81534723559,
         51520.821168890776, 49237.20042844383, 46553.99604445161,
         40756.10589265663,
       ],
@@ -4231,20 +4824,20 @@ describe("simulatePlanning", () => {
       ],
       investmentsSold: [
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        1644668.6054627218, 29533.96583087527, 26931.536685411294,
-        24209.101466750108, 21118.455741225764, 18194.152666455084,
-        15139.760184675222, 11963.447723011344, 825038.0542190884,
-        869649.5403356819, 915747.6696318496, 0, 912598.0372532652,
-        962665.3139392846, 1014845.0056030705, 1070269.790570707,
-        1133105.5070461999, 909202.6426619237, 0, 0, 1283184.6681963538,
-        1330395.6093197244, 1378600.1700459295, 1432181.9982145394,
-        1496468.5445976304, 1560013.7092383306, 1624468.7662702808,
-        1690604.1406894268, 438032.3154642743, 0, 0, 0, 0,
+        1661695.8728091537, 27886.68837819075, 25173.06599295966,
+        22335.386573393156, 19146.17640769885, 16109.149280536083,
+        12942.999243756618, 9650.268766257375, 832336.657800978,
+        876970.0712838371, 923073.8359694675, 0, 918793.3728000305,
+        968861.1474412727, 1021032.0017575016, 1076443.091411444,
+        1139297.2721141432, 1145174.607506091, 0, 0, 1277988.7005462467,
+        1325130.5662989763, 1373264.7808304226, 1426620.2708132896,
+        1490785.2183383931, 1554278.0431634933, 1618634.5722122006,
+        1684664.1843507385, 494002.7037037244, 0, 0, 0, 0,
       ],
       borrowed: [
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 208445.78135321068, 934471.2262907866,
-        1047385.8263303019, 0, 0, 0, 0, 0, 0, 0, 0, 247131.05466919998,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 43841.87508535595, 926917.5972565231,
+        1039209.8434708611, 0, 0, 0, 0, 0, 0, 0, 0, 427464.572830759,
         48748.67777286982, 49723.6513283276, 50718.12435489381,
         51732.48684199201,
       ],
@@ -4252,106 +4845,106 @@ describe("simulatePlanning", () => {
         0, 19559.52, 19950.7104, 20349.724608000004, 20756.71910016,
         21171.853482163202, 21595.290551806465, 22027.196362842595,
         22467.74029009945, 22917.095095901437, 23375.436997819466,
-        23842.945737775855, 24319.804652531373, 28530.494234658483,
-        29384.79205341017, 30267.233060571358, 31174.59057690272,
-        32110.336224920688, 40824.9907407202, 41972.186691698415,
-        43151.912379211426, 44366.58521857997, 45614.13018624235,
-        46900.13791558056, 48219.3403020178, 49580.75375871862,
-        50979.00943568102, 52416.776811171716, 53896.88635052629,
-        55420.561094801466, 56985.435435891544, 58598.126881450444,
-        60254.416351249434, 61959.28484329965, 63714.12833658743,
-        65518.381634774734, 67375.43907558604, 69286.81351664766,
+        23842.945737775855, 26316.01723717282, 27106.233334528853,
+        27918.851147647318, 28757.168784971684, 29617.851587329966,
+        30507.05979994536, 39173.93807852203, 40272.08805335847,
+        41401.46634674892, 42561.42660299754, 43755.86262196974,
+        44985.78220885221, 46249.00467141065, 47549.68353757129,
+        48887.23679273849, 50262.686077650644, 51678.821511860704,
+        53135.0489783887, 54630.66537655718, 56172.24276632418,
+        57757.40006671544, 59387.33922482371, 61065.25501732569,
+        62790.53228494315, 64564.474315945794, 66392.58055563695,
         7273.117961561037, 7418.580320792258, 7566.951927208103,
-        8607.910146222692, 11787.16135517373, 12716.488631459442,
+        8569.62273845561, 11736.621976921182, 12716.488631459442,
         12970.81840408863, 13230.234772170405, 8521.616888799066,
         8692.049226575047, 8865.890211106549, 9043.20801532868,
         9224.072175635254,
       ],
-      scalars: [51, -1, -1, 86, 0.1775],
+      scalars: [51, -1, -1, 86, 0.18999999999999995],
     }
     const CHAINED_MOVES: Record<string, number[]> = {
       age: [40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50],
       investments: [
-        50000, 43915.60566522069, 38788.086123289715, 34735.42764417947,
-        658597.4708883043, 505352.31706029363, 343645.48749971297,
-        173196.63456937353, 0, 0, 0,
+        300000, 163492.300015129, 164395.03640271936, 166676.23986904672,
+        780237.7936535688, 631282.2497132112, 474155.6792899496,
+        308592.82806246023, 134316.6771301569, 0, 0,
       ],
       homeEquity: [
-        1050000, 1110490.8825491457, 1172575.1121832926, 1236300.181425037,
-        675000, 832359.6435718881, 994263.6229534224, 1160859.7466197778,
-        1326324.5642397031, 1325387.4347939014, 1324561.2448453596,
+        800000, 1050000, 1110490.8825491457, 1172575.1121832926, 675000,
+        832359.6435718881, 994263.6229534224, 1160859.7466197778,
+        1332301.0982959182, 1463150.167152389, 1467834.4864981868,
       ],
       cash: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       otherDebt: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       netWorth: [
-        1100000, 1154406.4882143664, 1211363.1983065824, 1271035.6090692165,
-        1333597.4708883043, 1337711.9606321817, 1337909.1104531353,
-        1334056.3811891512, 1326324.5642397031, 1325387.4347939014,
-        1324561.2448453596,
+        1100000, 1213492.300015129, 1274885.918951865, 1339251.3520523394,
+        1455237.7936535687, 1463641.8932850994, 1468419.302243372,
+        1469452.574682238, 1466617.775426075, 1463150.167152389,
+        1467834.4864981868,
       ],
       bandLow: [
-        1100000, 924345.8688538995, 889280.4539106498, 902944.6417208313,
-        882611.6154809858, 728294.7109410884, 608628.4781878231,
-        407928.1103676057, 264719.4286839113, 206773.4823998023,
-        150692.4125670276,
+        1100000, 988686.9710907971, 953892.4105893639, 958845.9816938278,
+        984859.1866366866, 810381.6612452907, 691521.6241455029,
+        483840.98795780184, 391418.8985374971, 267868.7574813516,
+        225349.92498181522,
       ],
       bandHigh: [
-        1100000, 1342657.1178856522, 1483888.7781337346, 1649818.9633361008,
-        1779772.6247057207, 2002910.8257628367, 2216106.2658782513,
-        2430753.6124560647, 2501407.2543431055, 2698125.5858897367,
-        2890477.404768124,
+        1100000, 1410156.5475634683, 1553641.6705352645, 1736341.8810015484,
+        1891265.3397411578, 2149110.6339710164, 2358496.8591833017,
+        2556839.315893633, 2684958.2781783575, 2885377.2490282953,
+        3020876.7021300173,
       ],
       investmentsBandLow: [
-        50000, 35442.72472191697, 28915.11165493095, 23135.220034726215,
-        207611.61548098584, 28589.819603273558, 0, 0, 0, 0, 0,
+        300000, 0, 0, 0, 309859.1866366865, 121185.22879439956, 0, 0, 0, 0, 0,
       ],
       investmentsBandHigh: [
-        50000, 51234.88929777518, 48424.58372642381, 46309.09165018957,
-        1104772.6247057207, 962289.6826832867, 828286.2423483108,
-        656868.0884127261, 506607.0205614066, 333836.40201353986,
-        159563.40632805365,
+        300000, 360156.5475634683, 364918.2681998273, 398265.46336711984,
+        1216265.3397411578, 1102101.7361924718, 969318.891816916,
+        825060.3390224071, 666086.7097267419, 538934.8555314676,
+        324178.24875216297,
       ],
-      contributionsTotal: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      contributionsTotal: [
+        0, 0, 0, 0, 63672.48, 63672.48, 63672.48, 63672.48, 63672.48, 63672.48,
+        63672.48,
+      ],
       housingGainsTotal: [
-        0, 60490.882549145725, 122575.11218329263, 186300.1814250371,
-        251715.1692577037, 409074.8128295918, 570978.7922111261,
-        737574.9158774815, 903039.7334974068, 902102.6040516051,
-        901276.4141030633,
+        0, 40000, 100490.88254914572, 162575.11218329263, 206271.91218329244,
+        363631.55575518054, 525535.5351367148, 692131.6588030702,
+        863573.0104792106, 994422.0793356814, 999106.3986814793,
       ],
       investmentGainsTotal: [
-        0, 2585, 4855.43681289191, 6860.780865465989, 8656.602474670068,
-        42706.091719595395, 68832.80651161258, 86599.27821534775,
-        95553.54422258436, 95553.54422258436, 95553.54422258436,
+        0, 15510, 23962.551910782167, 32461.77529280276, 41078.93689403248,
+        81417.23082592199, 114054.523136095, 138568.3717553854,
+        154522.6209662146, 161466.7931738437, 161466.7931738437,
       ],
-      contributionYoY: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      contributionYoY: [0, 0, 0, 0, 63672.48, 0, 0, 0, 0, 0, 0],
       housingGainYoY: [
-        0, 60490.882549145725, 62084.229634146905, 63725.069241744466,
-        65414.98783266661, 157359.6435718881, 161903.97938153427,
-        166596.1236663554, 165464.81761992536, -937.1294458017219,
-        -826.1899485418107,
+        0, 40000, 60490.882549145725, 62084.229634146905, 43696.799999999814,
+        157359.6435718881, 161903.97938153427, 166596.1236663554,
+        171441.35167614045, 130849.06885647075, 4684.319345797878,
       ],
       investmentGainYoY: [
-        0, 2585, 2270.43681289191, 2005.3440525740784, 1795.8216092040789,
-        34049.48924492533, 26126.71479201718, 17766.471703735162,
-        8954.266007236612, 0, 0,
+        0, 15510, 8452.55191078217, 8499.223382020591, 8617.161601229716,
+        40338.29393188951, 32637.29231017302, 24513.848619290395,
+        15954.249210829195, 6944.172207629112, 0,
       ],
       retirementIncome: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       taxPaid: [
-        0, 115.26, 191.4336, 229.22092800000004, 229.47561792, 2507.3675040672,
-        4884.166412347969, 7151.716966784417, 8998.344046097402, 0, 0,
+        0, 2017.56, 195.5952, 235.58817600000003, 0, 4505.7537578592,
+        6814.408798966464, 9012.58774837625, 11101.472634996468,
+        9713.712397762145, 0,
       ],
       spending: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       investmentsSold: [
-        0, 8669.394334779314, 7397.956354822881, 6058.002531684325,
-        4648.9476227829755, 187294.64307293596, 187833.54435259776,
-        188215.3246340746, 182150.90057661015, 0, 0,
+        0, 152017.699984871, 7549.81552319183, 6218.01991569325, 0,
+        189293.83787224707, 189763.86273343462, 190076.69984677975,
+        190230.40014313255, 141260.849337786, 0,
       ],
       borrowed: [
-        0, 0, 0, 0, 0, 0, 0, 0, 5976.53405621514, 177382.2680943895,
-        182439.35760697268,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 45596.06979211702, 176928.84831263317,
       ],
       propertyTax: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      scalars: [11, -1, -1, -1, 0.895],
+      scalars: [11, -1, -1, -1, 0.9225],
     }
   })
 

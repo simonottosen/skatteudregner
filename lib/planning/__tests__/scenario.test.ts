@@ -385,6 +385,8 @@ describe("mortgageBudgetNotice", () => {
         saleCostsPct: 0,
         acquisitionAge: 0,
         disposalAge: null,
+        financing: null,
+        housingReturn: null,
       },
     ],
     loans: [theLoan],

@@ -3,14 +3,17 @@ import {
   PROPERTY_USES,
   PROPERTY_USE_LABEL,
   SALE_COSTS_HELPER_TEXT,
+  clampHousingReturn,
   clampSaleCostsPct,
   newPlannedProperty,
+  offersFinancing,
   ownershipSummary,
   pensionerNedslagNotice,
   propertySummary,
   removeProperty,
   rentalExclusionNotice,
   replaceProperty,
+  withAcquisitionAge,
 } from "../properties"
 import { normalizeProperties } from "../normalize"
 import type { PlannedProperty } from "../types"
@@ -25,6 +28,8 @@ const at = (fields: Partial<PlannedProperty> = {}): PlannedProperty => ({
   saleCostsPct: 0,
   acquisitionAge: 0,
   disposalAge: null,
+  financing: null,
+  housingReturn: null,
   ...fields,
 })
 
@@ -120,6 +125,66 @@ describe("clampSaleCostsPct", () => {
     // copy has to name the range the user is actually looking for.
     expect(SALE_COSTS_HELPER_TEXT).toContain("2–4 %")
     expect(SALE_COSTS_HELPER_TEXT).toContain("salgsprisen")
+  })
+})
+
+describe("clampHousingReturn", () => {
+  it("holds the rate at both ends and leaves a real figure alone", () => {
+    // Past −1 the house is worth less than nothing after one year; past 1 it
+    // doubles every year until it is the whole of the household's net worth.
+    expect(clampHousingReturn(-2)).toBe(-1)
+    expect(clampHousingReturn(3)).toBe(1)
+    expect(clampHousingReturn(0.03)).toBe(0.03)
+    expect(clampHousingReturn(NaN)).toBe(0)
+  })
+
+  it("agrees with what a reload makes of the same figure", () => {
+    // Same bargain as the sale-cost share above: the field writes into the plan
+    // the projection reads, so the live clamp and the normalizer have to reach
+    // the same number or one saved plan projects two ways.
+    for (const typed of [-2, -0.05, 0, 0.03, 1, 3]) {
+      const reloaded = normalizeProperties({
+        properties: [at({ housingReturn: typed })],
+      })[0].housingReturn
+      expect(reloaded).toBe(clampHousingReturn(typed))
+    }
+  })
+})
+
+describe("offersFinancing", () => {
+  it("offers to finance a purchase the projection still has to make", () => {
+    expect(offersFinancing(at({ acquisitionAge: 60 }), 45)).toBe(true)
+  })
+
+  it("stops at the current year, which it does not count as a purchase", () => {
+    // The boundary, both sides of it. `acquisitionAge === currentAge` is the
+    // opening position — `simulatePlanning` reads ownership transitions from
+    // year 1 on, so nothing is ever bought in year 0 — and what is owed on a
+    // house the household already lives in is a `PlannedLoan` with real terms.
+    // An LTV offered here would mint a second mortgage beside it.
+    expect(offersFinancing(at({ acquisitionAge: 45 }), 45)).toBe(false)
+    expect(offersFinancing(at({ acquisitionAge: 44 }), 45)).toBe(false)
+    expect(offersFinancing(at({ acquisitionAge: 46 }), 45)).toBe(true)
+  })
+})
+
+describe("withAcquisitionAge", () => {
+  it("keeps the financing on a purchase that is still a purchase", () => {
+    const p = at({ acquisitionAge: 60, financing: { ltv: 0.8 } })
+    expect(withAcquisitionAge(p, 55, 45)).toMatchObject({
+      acquisitionAge: 55,
+      financing: { ltv: 0.8 },
+    })
+  })
+
+  it("drops financing the entry can no longer carry", () => {
+    // Pulled back to today, the purchase becomes part of the opening position
+    // and the LTV is read by nothing — but it would still be *there*, inert
+    // until the age is pushed out again and then silently back in force. The
+    // form shows what the plan says, so the plan has to stop saying it.
+    const p = at({ acquisitionAge: 60, financing: { ltv: 0.8 } })
+    expect(withAcquisitionAge(p, 45, 45).financing).toBeNull()
+    expect(withAcquisitionAge(p, 30, 45).financing).toBeNull()
   })
 })
 
