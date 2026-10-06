@@ -414,6 +414,8 @@ const summerHouse: PlannedProperty = {
   saleCostsPct: 0,
   acquisitionAge: 55,
   disposalAge: null,
+  financing: null,
+  housingReturn: null,
 }
 const theHome: PlannedProperty = {
   id: "prop-home",
@@ -425,6 +427,8 @@ const theHome: PlannedProperty = {
   saleCostsPct: 0,
   acquisitionAge: 0,
   disposalAge: 80,
+  financing: null,
+  housingReturn: null,
 }
 
 describe("propertiesFromBudget", () => {

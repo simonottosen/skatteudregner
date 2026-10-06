@@ -13,24 +13,36 @@ import {
 import { Add, ChevronDown, ChevronUp, TrashCan } from "@carbon/icons-react"
 import { MoneyInput, PercentField, num } from "./money-input"
 import {
+  DEFAULT_LTV,
+  FINANCING_HELPER_TEXT,
+  HOUSING_RETURN_HELPER_TEXT,
   PROPERTY_KINDS,
   PROPERTY_KIND_LABEL,
   PROPERTY_USES,
   PROPERTY_USE_LABEL,
   SALE_COSTS_HELPER_TEXT,
+  clampHousingReturn,
+  clampLtv,
   clampSaleCostsPct,
   newPlannedProperty,
+  offersFinancing,
   pensionerNedslagNotice,
   propertySummary,
   removeProperty,
   rentalExclusionNotice,
   replaceProperty,
+  withAcquisitionAge,
 } from "@/lib/planning/properties"
 import type { PlannedProperty, PropertyKind } from "@/lib/planning/types"
 
 /**
- * The household's properties: what each is worth, what its plot is worth, and
- * the years it is owned.
+ * The household's properties: what each is worth, what its plot is worth, the
+ * years it is owned, how a future purchase is paid for and what it is expected
+ * to appreciate by.
+ *
+ * The whole of the household's housing plan, moves included: selling up and
+ * buying elsewhere is one entry given a salgsalder and a second one bought the
+ * same year, which is also how a plan says "keep both" (issue #9).
  *
  * Every entry is edited in place rather than in a modal. A property is a handful
  * of numbers the user checks against each other — a value against a grundværdi,
@@ -41,11 +53,14 @@ export function PropertyList({
   properties,
   currentAge,
   endAge,
+  housingReturn,
   onChange,
 }: {
   properties: PlannedProperty[]
   currentAge: number
   endAge: number
+  /** The plan's own appreciation, which a per-property rate starts out at. */
+  housingReturn: number
   onChange: (next: PlannedProperty[]) => void
 }) {
   const [openId, setOpenId] = useState<string | null>(null)
@@ -77,7 +92,7 @@ export function PropertyList({
                   {/* Not "Bolig med lån" any more: each loan names the property
                       that secures it, and selling that property is what settles
                       it. What is still true of the first entry alone is that a
-                      flytning rewrites it. */}
+                      lån uden pant lands on it. */}
                   {i === 0 && (
                     <Tag type="cool-gray" size="sm">
                       Primær bolig
@@ -150,19 +165,61 @@ export function PropertyList({
                       value={p.landValue}
                       onChange={(v) => patch({ landValue: v })}
                     />
-                    <NumberInput
-                      id={`prop-buy-${p.id}`}
-                      label="Købsalder"
-                      helperText="Din alder ved købet. Er den i dag eller tidligere, ejes boligen allerede."
-                      min={0}
-                      max={endAge}
-                      value={p.acquisitionAge}
-                      onChange={(_e, { value }) =>
-                        patch({
-                          acquisitionAge: num(value ?? 0, p.acquisitionAge),
-                        })
-                      }
-                    />
+                    <div className="space-y-2">
+                      <NumberInput
+                        id={`prop-buy-${p.id}`}
+                        label="Købsalder"
+                        helperText="Din alder ved købet. Er den i dag eller tidligere, ejes boligen allerede."
+                        min={0}
+                        max={endAge}
+                        value={p.acquisitionAge}
+                        // Not a bare `{ acquisitionAge }`: moving the age back
+                        // to today ends the purchase, and the belåningsgrad has
+                        // to go with it — see {@link withAcquisitionAge}.
+                        onChange={(_e, { value }) =>
+                          patch(
+                            withAcquisitionAge(
+                              p,
+                              num(value ?? 0, p.acquisitionAge),
+                              currentAge
+                            )
+                          )
+                        }
+                      />
+                      {/* Only on a purchase the fremskrivning actually makes:
+                          an already-owned home's debt is a lån with its own
+                          terms, not an LTV. */}
+                      {offersFinancing(p, currentAge) && (
+                        <>
+                          <Checkbox
+                            id={`prop-finance-toggle-${p.id}`}
+                            labelText="Købet finansieres med lån"
+                            checked={p.financing !== null}
+                            onChange={(_e, { checked }) =>
+                              patch({
+                                financing: checked
+                                  ? { ltv: DEFAULT_LTV }
+                                  : null,
+                              })
+                            }
+                          />
+                          {p.financing !== null && (
+                            <PercentField
+                              id={`prop-ltv-${p.id}`}
+                              label="Belåningsgrad"
+                              helperText={FINANCING_HELPER_TEXT}
+                              value={p.financing.ltv}
+                              // Bounded where it is typed, like the sale costs
+                              // below: this writes straight into the plan the
+                              // projection reads.
+                              onChange={(v) =>
+                                patch({ financing: { ltv: clampLtv(v) } })
+                              }
+                            />
+                          )}
+                        </>
+                      )}
+                    </div>
                     <div className="space-y-2">
                       <Checkbox
                         id={`prop-sell-toggle-${p.id}`}
@@ -207,6 +264,36 @@ export function PropertyList({
                           // share does to it.
                           onChange={(v) =>
                             patch({ saleCostsPct: clampSaleCostsPct(v) })
+                          }
+                        />
+                      )}
+                    </div>
+                    {/* Offered on every entry and not only on a purchase: a
+                        sommerhus på Mors and a lejlighed i København do not
+                        appreciate alike whether or not either was bought
+                        today. */}
+                    <div className="space-y-2">
+                      <Checkbox
+                        id={`prop-return-toggle-${p.id}`}
+                        labelText="Eget forventet afkast"
+                        checked={p.housingReturn !== null}
+                        onChange={(_e, { checked }) =>
+                          patch({
+                            housingReturn: checked ? housingReturn : null,
+                          })
+                        }
+                      />
+                      {p.housingReturn !== null && (
+                        <PercentField
+                          id={`prop-return-${p.id}`}
+                          label="Værdistigning pr. år"
+                          helperText={HOUSING_RETURN_HELPER_TEXT}
+                          value={p.housingReturn}
+                          // Bounded here like the two fields above it, and for
+                          // the same reason: the form writes straight into the
+                          // plan the projection reads.
+                          onChange={(v) =>
+                            patch({ housingReturn: clampHousingReturn(v) })
                           }
                         />
                       )}

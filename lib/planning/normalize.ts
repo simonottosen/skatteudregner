@@ -5,7 +5,7 @@
  */
 
 import { normalizeLoans } from "./loans"
-import { clampSaleCostsPct } from "./properties"
+import { clampHousingReturn, clampLtv, clampSaleCostsPct } from "./properties"
 import {
   DEFAULT_ASSUMPTIONS,
   DEFAULT_PENSION,
@@ -125,20 +125,11 @@ function normalizeEvent(raw: unknown): PlanningEvent | null {
   if (o.type === "recurring") {
     return { id, type: "recurring", label, age, monthlyDelta: clampNum(o.monthlyDelta, 0) }
   }
-  if (o.type === "property") {
-    return {
-      id,
-      type: "property",
-      label,
-      age,
-      newValue: clampNum(o.newValue, 0, 0),
-      mortgageLtv: clampNum(o.mortgageLtv, 0.8, 0, 1),
-      housingReturnOverride:
-        typeof o.housingReturnOverride === "number"
-          ? clampNum(o.housingReturnOverride, 0, -1, 1)
-          : undefined,
-    }
-  }
+  // `"property"` lands here and is dropped: a version-3 move is not an event any
+  // more, and {@link foldPropertyEvents} has already replayed it into the
+  // property list. Leaving it on `events` would describe the move twice over —
+  // which is the half of issue #9 that was a live bug rather than a missing
+  // feature.
   return null
 }
 
@@ -194,6 +185,24 @@ function normalizeProperty(raw: unknown): PlannedProperty | null {
       o.disposalAge === null || o.disposalAge === undefined
         ? null
         : clampNum(o.disposalAge, 0, acquisitionAge, 120),
+    // Absent on every plan saved before the field existed, and an all-equity
+    // purchase is what those plans were projected with — see
+    // {@link PlannedProperty.financing}. The absence is the whole of the
+    // all-equity reading: a `financing` block that *is* there with no usable
+    // number in it asked to be financed and said nothing about how much, so
+    // {@link clampLtv} answers with the realkreditlovens 80 %, which is the most
+    // the household could have been lent rather than a guess at what it chose.
+    financing:
+      o.financing && typeof o.financing === "object"
+        ? { ltv: clampLtv((o.financing as Record<string, unknown>).ltv) }
+        : null,
+    // Likewise: absent is "follow the plan's own appreciation", which is what
+    // every entry did before the field existed. Held to a share per year that a
+    // projection can survive — see {@link PlannedProperty.housingReturn}.
+    housingReturn:
+      typeof o.housingReturn === "number"
+        ? clampHousingReturn(o.housingReturn)
+        : null,
   }
 }
 
@@ -213,6 +222,10 @@ export function homeProperty(value: number, landValue: number): PlannedProperty 
     saleCostsPct: 0,
     acquisitionAge: 0,
     disposalAge: null,
+    // Already owned, so there is nothing to finance: whatever is owed on it is a
+    // {@link PlannedLoan} with its real terms.
+    financing: null,
+    housingReturn: null,
   }
 }
 
@@ -242,6 +255,233 @@ export function normalizeProperties(blob: unknown): PlannedProperty[] {
   const homeValue = clampNum(o.homeValue, 0, 0)
   if (homeValue <= 0) return []
   return [homeProperty(homeValue, clampNum(o.landValue, 0, 0))]
+}
+
+/** One version-3 move, as much of it as the migration needs. */
+interface LegacyMove {
+  age: number
+  label: string
+  newValue: number
+  ltv: number
+  housingReturn: number | null
+}
+
+/**
+ * The version-3 moves in a raw `events` array, earliest first, each dated at a
+ * year the property list can state a transaction in.
+ *
+ * Read off the blob rather than off {@link normalizeEvents}' output, which drops
+ * them: `PropertyEvent` is no longer a type, so there is nothing left for it to
+ * return. The bounds are the ones `normalizeEvent` held these fields to while it
+ * still had a branch for them, so a move migrates to the figures it was last
+ * projected with and not to the ones that were typed.
+ *
+ * The dates are the one thing that cannot migrate unchanged, because the two
+ * vocabularies disagree about the current year:
+ *
+ * - A move *before* `currentAge` is dropped. The engine only ever looked up
+ *   events from `currentAge` forward, so such a move has never fired and
+ *   migrating it would invent a transaction the plan was not projected with.
+ * - A move *at* `currentAge` is dated to `currentAge + 1`. The list reads
+ *   `acquisitionAge <= currentAge` as "owned today" — part of the opening
+ *   position, bought before the projection starts and so never paid for inside
+ *   it — and a disposal in the same year as "never owned at all". Migrating a
+ *   move to that year would therefore hand the household its new home for free
+ *   and leave the old home's mortgage standing, which is strictly worse than the
+ *   old projection. The projection's first year is the earliest one that can
+ *   carry the sale, the settlement and the down payment the move describes, so
+ *   that is where it goes.
+ *
+ * The cost of the second rule is that such a move lands a year later than the
+ * old engine put it, which applied events at `currentAge` before it recorded
+ * year 0 — i.e. treated an immediate move as an opening-position rewrite. The
+ * alternative was to migrate it as one: fold the down payment into
+ * `startInvestments`, mint a {@link PlannedLoan} for the new mortgage and delete
+ * the old one. That is rejected on two counts. It would have to restate
+ * `drawLoansAt`'s term-inheritance rule here, in a second place that can drift
+ * from the engine; and taking the down payment off `startInvestments` is
+ * precisely the untaxed, unrecorded withdrawal that issue #9 exists to remove —
+ * the projection's own purchase routes it through the year's `fundShortfall`, so
+ * it realises gains, pays the tax and shows up in `investmentsSold`. A year's
+ * delay is the honest price of putting the money through the books.
+ */
+function legacyMoves(events: unknown, currentAge: number): LegacyMove[] {
+  if (!Array.isArray(events)) return []
+  const out: LegacyMove[] = []
+  for (const raw of events) {
+    if (!raw || typeof raw !== "object") continue
+    const e = raw as Record<string, unknown>
+    if (e.type !== "property") continue
+    const age = clampNum(e.age, 0, 0, 120)
+    if (age < currentAge) continue
+    out.push({
+      age: Math.max(age, currentAge + 1),
+      label: typeof e.label === "string" ? e.label : "",
+      newValue: clampNum(e.newValue, 0, 0),
+      ltv: clampLtv(e.mortgageLtv),
+      housingReturn:
+        typeof e.housingReturnOverride === "number"
+          ? clampNum(e.housingReturnOverride, 0, -1, 1)
+          : null,
+    })
+  }
+  // Stable, so two moves at one age fold in the order the plan listed them —
+  // which is the order the engine used to apply them in.
+  return out.sort((a, b) => a.age - b.age)
+}
+
+/**
+ * Whether a blob's `events` still describe a move this migration has somewhere
+ * to put — so a plan whose only move is dated in the household's past reads as
+ * having none, which is how it was projected.
+ */
+export function hasPropertyEvents(
+  events: unknown,
+  currentAge: number
+): boolean {
+  return legacyMoves(events, currentAge).length > 0
+}
+
+/**
+ * The entry a move dated `age` sells: the home the household is living in then.
+ *
+ * Not simply `list[0]`. {@link normalizePlanning} hands a scenario the plan's
+ * list with the *plan's* own moves already replayed into it, and a scenario's
+ * `addEvents` are appended to the plan's events rather than replacing them (see
+ * `applyScenario`) — so the two chains are one chain on one timeline, and the
+ * second half of it has to start where the first half left the household. The
+ * first entry there is a house sold years before the scenario's move lands.
+ *
+ * The most recently acquired entry still owned at the move is where the chain
+ * has got to, ownership being the half-open `[acquisitionAge, disposalAge)` the
+ * projection reads (`ownsAt` in `./simulate`). Ties go to the earliest entry, so
+ * a plan that simply lists a home and a summer house still moves out of the
+ * home — the first entry is the only one the old vocabulary could touch, and the
+ * one every migrated loan is secured on.
+ *
+ * Falls back to the first entry when the household owns nothing that year: a
+ * list whose every window has closed still has to say what the new house is
+ * worth and what it will cost to sell, and the entry the old engine would have
+ * rewritten is the only figure there is. Nothing of that entry's own is
+ * disturbed — its sale has already fired, so the move does not close it.
+ */
+function homeAt(
+  list: readonly PlannedProperty[],
+  age: number
+): PlannedProperty | null {
+  let home: PlannedProperty | null = null
+  for (const p of list)
+    if (
+      age >= p.acquisitionAge &&
+      (p.disposalAge === null || age < p.disposalAge) &&
+      (!home || p.acquisitionAge > home.acquisitionAge)
+    )
+      home = p
+  return home ?? list[0] ?? null
+}
+
+/**
+ * Replay a version-3 plan's moves into its property list (issue #9).
+ *
+ * A move said "sell the home, buy one worth `newValue` at `mortgageLtv`", where
+ * "the home" was the list's first entry and the move rewrote it in place. The
+ * list says the same thing in its own vocabulary: a `disposalAge` on the home
+ * and a new entry acquired that same year, carrying the
+ * {@link PlannedProperty.financing} the move's LTV becomes. So each move closes
+ * the current home's window and appends its successor, and a chain of moves
+ * walks that forward from whichever entry {@link homeAt} says the household is
+ * living in when the first of them lands.
+ *
+ * Appended rather than inserted, so the first entry stays the first entry:
+ * {@link normalizeLoans} secures a migrated mortgage on it, and reordering the
+ * list here would move that pant to a house the household had not bought yet.
+ *
+ * Three details are what make the migrated plan project as the old one did:
+ *
+ * - `landValue` scales by the change in value, which is what the move itself
+ *   did. Not an approximation: `simulate.ts` grows `value` and `landValue` by
+ *   one factor, so their ratio is the same in the year of the move as it is
+ *   today, and the figure can be computed here from today's numbers.
+ * - `saleCostsPct` carries onto the successor, and so does `disposalAge` when
+ *   the move has not reached it yet. The move left the first entry's own fields
+ *   standing and the engine read them at the sale, so "sold at 78" stated on a
+ *   home that is moved out of at 52 was a sale of the *new* home at 78 — and
+ *   what it cost to sell was the old entry's figure. A disposal dated at or
+ *   before the move is the one that does not travel: it was a sale the
+ *   household had already made, so it stays on the entry that made it.
+ * - a successor with `acquisitionAge === disposalAge` is dropped. Two moves at
+ *   one age leave the first purchase owned for no year at all, and the engine
+ *   reads such a window as never owned — so its value would hang on the list
+ *   while every charge against it vanished. Dropping it is also exact: paying
+ *   `(1 − ltv) · V` for it and taking `V − ltv · V` back the same year cancel,
+ *   and `drawLoansAt` prices the next loan off the mortgage the household
+ *   actually carries either way.
+ *
+ * When each move lands is {@link legacyMoves}' to explain: the current year is
+ * the one date the two vocabularies disagree about.
+ */
+export function foldPropertyEvents(
+  base: readonly PlannedProperty[],
+  events: unknown,
+  currentAge: number
+): PlannedProperty[] {
+  const moves = legacyMoves(events, currentAge)
+  // Copied, not aliased: a move closes the window on the entry it replaces, and
+  // {@link normalizeScenarioChanges} folds a scenario's move against the *plan's*
+  // list — which must not come back carrying a disposal age the plan never had.
+  const out = base.map((p) => ({ ...p }))
+  if (moves.length === 0) return out
+  // The entry a move replaces, and then the entry that replaced it. Chosen only
+  // once: from the second move on, the entry the household is living in is the
+  // one the move before it bought. Null for a plan that listed no property at
+  // all — there was no home to sell, and the engine likewise reserved a slot
+  // worth nothing until the first move filled it, so the first purchase is
+  // simply an acquisition.
+  let home: PlannedProperty | null = homeAt(out, moves[0].age)
+  const added: PlannedProperty[] = []
+  for (const move of moves) {
+    // The entry the move actually takes over from — `home`, unless that entry's
+    // own sale has already fired by the year the move lands. There is then no
+    // window for the move to close and no date for it to hand on: closing it
+    // anyway would keep a home the plan sold at 45 until the move at 50, and
+    // handing the date on would date the new purchase's sale before its own
+    // acquisition, which the drop below reads as a house never bought. What the
+    // successor is worth and what it costs to sell still come from `home`: the
+    // move stated neither, and the entry it rewrote is the only figure there is.
+    const succeeded =
+      home && (home.disposalAge === null || home.disposalAge > move.age)
+        ? home
+        : null
+    const next: PlannedProperty = {
+      id: newId("prop"),
+      label: move.label.trim() || DEFAULT_PROPERTY_LABEL.helaarsbolig,
+      // A move left the household in a helårsbolig whatever the entry it
+      // replaced had been, which is what the old engine's § 25 count assumed.
+      kind: "helaarsbolig",
+      use: "own",
+      value: move.newValue,
+      landValue:
+        home && home.value > 0
+          ? (home.landValue * move.newValue) / home.value
+          : 0,
+      saleCostsPct: home?.saleCostsPct ?? 0,
+      acquisitionAge: move.age,
+      disposalAge: succeeded?.disposalAge ?? null,
+      financing: { ltv: move.ltv },
+      housingReturn: move.housingReturn,
+    }
+    if (succeeded) succeeded.disposalAge = move.age
+    added.push(next)
+    home = next
+  }
+  // Only now: a successor's own window is not closed until the move after it has
+  // been folded, so whether it is held for no year at all cannot be known while
+  // it is being built. Entries the plan itself listed are never dropped — a
+  // window of the user's own that happens to be empty is theirs to state, and
+  // the first entry in particular is what every migrated loan is secured on.
+  for (const p of added)
+    if (p.disposalAge === null || p.disposalAge > p.acquisitionAge) out.push(p)
+  return out
 }
 
 export function normalizePensionPerson(value: unknown): PensionPerson {
@@ -319,18 +559,27 @@ export function normalizeTaxProfile(value: unknown): PlanningTaxProfile {
  * caller has no home to offer and cannot be given one here: `propertyId` has no
  * "unresolved" value to defer with, since null is already the user's deliberate
  * "uden pant", so the only honest reading of an absent list is an empty one.
+ *
+ * `currentAge` is the plan's, for the same reason and with the same caveat: a
+ * scenario's `addEvents` fire on the plan's timeline, so a version-3 move among
+ * them is dated against it (see {@link legacyMoves}). 0 for a caller with no
+ * plan, which is the age that drops nothing.
  */
 export function normalizeScenarioChanges(
   value: unknown,
-  baseProperties: readonly PlannedProperty[] = []
+  baseProperties: readonly PlannedProperty[] = [],
+  currentAge = 0
 ): ScenarioChanges {
   if (!value || typeof value !== "object") return {}
   const o = value as Partial<ScenarioChanges>
   const changes: ScenarioChanges = {}
+  // Hoisted out of the block below, because `addEvents` can write to it too: a
+  // scenario that carries nothing but a version-3 move still comes out of here
+  // overriding the property list.
+  const out: NonNullable<ScenarioChanges["overrides"]> = {}
 
   if (o.overrides && typeof o.overrides === "object") {
     const ov = o.overrides as Record<string, unknown>
-    const out: NonNullable<ScenarioChanges["overrides"]> = {}
     if ("monthlyContribution" in ov) out.monthlyContribution = clampNum(ov.monthlyContribution, 0, 0)
     if ("annualSpending" in ov) out.annualSpending = clampNum(ov.annualSpending, 0, 0)
     if ("retirementAge" in ov) out.retirementAge = clampNum(ov.retirementAge, 65, 0, 120)
@@ -358,7 +607,6 @@ export function normalizeScenarioChanges(
     // and against the base plan's where it does not.
     if ("loans" in ov || "mortgageBalance" in ov || "otherDebtBalance" in ov)
       out.loans = normalizeLoans(ov, out.properties ?? baseProperties)
-    if (Object.keys(out).length > 0) changes.overrides = out
   }
 
   if (o.assumptionOverrides && typeof o.assumptionOverrides === "object") {
@@ -406,7 +654,25 @@ export function normalizeScenarioChanges(
       return rest as NewPlanningEvent
     })
     if (events.length > 0) changes.addEvents = events
+    // "What if I moved" could be saved as a scenario, and `normalizeEvents` no
+    // longer has anywhere to put it. Folded into the list the scenario presents
+    // — its own override where it states one, the base plan's where it does not
+    // — because that override is what `applyScenario` lays over the plan, so a
+    // top-level `properties` here would be read by nothing and the move would be
+    // lost in silence.
+    //
+    // The base plan's list has the base plan's own moves folded into it already,
+    // so this is the second half of one chain rather than a chain of its own —
+    // `applyScenario` appends `addEvents` to the plan's events, it does not
+    // replace them. {@link homeAt} is what picks the entry it continues from.
+    if (hasPropertyEvents(o.addEvents, currentAge))
+      out.properties = foldPropertyEvents(
+        out.properties ?? baseProperties,
+        o.addEvents,
+        currentAge
+      )
   }
+  if (Object.keys(out).length > 0) changes.overrides = out
 
   return changes
 }
@@ -414,7 +680,8 @@ export function normalizeScenarioChanges(
 export function normalizeScenarios(
   value: unknown,
   /** The plan these scenarios belong to — see {@link normalizeScenarioChanges}. */
-  baseProperties: readonly PlannedProperty[] = []
+  baseProperties: readonly PlannedProperty[] = [],
+  currentAge = 0
 ): PlanningScenario[] {
   if (!Array.isArray(value)) return []
   const out: PlanningScenario[] = []
@@ -426,7 +693,7 @@ export function normalizeScenarios(
       name: typeof o.name === "string" && o.name.trim() ? o.name : "Scenarie",
       createdAt:
         typeof o.createdAt === "string" ? o.createdAt : new Date().toISOString(),
-      changes: normalizeScenarioChanges(o.changes, baseProperties),
+      changes: normalizeScenarioChanges(o.changes, baseProperties, currentAge),
     })
   }
   return out
@@ -441,9 +708,15 @@ export function normalizePlanning(raw: unknown): PlanningState {
   // *normalized* list, not the blob's own: a property that arrives without an id
   // gets a fresh one, so a second normalization of the same blob would mint ids
   // this plan does not keep.
-  const properties = normalizeProperties(o)
+  // A version-3 plan states its moves on `events`; the list is where they live
+  // now, so they are replayed into it before anything is secured against it.
+  const properties = foldPropertyEvents(
+    normalizeProperties(o),
+    o.events,
+    currentAge
+  )
   return {
-    version: 3,
+    version: 4,
     currentAge,
     endAge,
     retirementAge: clampNum(
@@ -484,6 +757,6 @@ export function normalizePlanning(raw: unknown): PlanningState {
     pension: normalizePension(o.pension),
     tax: normalizeTaxProfile(o.tax),
     events: normalizeEvents(o.events),
-    scenarios: normalizeScenarios(o.scenarios, properties),
+    scenarios: normalizeScenarios(o.scenarios, properties, currentAge),
   }
 }

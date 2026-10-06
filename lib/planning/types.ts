@@ -117,40 +117,27 @@ export interface RecurringEvent {
 }
 
 /**
- * Sell the home and buy a new one. Realised equity (its value − mortgage) moves
- * into investments; the down payment (newValue × (1 − ltv)) is taken back out of
- * investments; the new mortgage is newValue × ltv.
+ * Moving house is not an event.
  *
- * "The home" is the first entry of {@link PlanningState.properties}. Any other
- * property the household owns is left alone, and which of them a move sells is
- * issue #9's question, not this one's.
+ * It used to be: a `PropertyEvent` sold "the home" — the first entry of
+ * {@link PlanningState.properties} — and bought another, settling *every*
+ * secured loan whatever property it named as security and leaving one fresh
+ * 30-year mortgage behind. Alongside it, the property list could already say
+ * when a property was acquired and when it was disposed of. Two mechanisms for
+ * one subject, neither able to say what the other said: the event could finance
+ * a purchase but could not keep the old house, the list could keep both houses
+ * but could only buy for cash. A plan could even state both about the same
+ * property, and the projection would apply both (issue #9).
  *
- * The move settles *every* secured loan on {@link PlanningState.loans} and leaves
- * one fresh 30-year loan behind, whichever property each of them names as
- * security. That is this event's limit and no longer the engine's: a disposal
- * stated on a {@link PlannedProperty} settles the loans naming that property and
- * leaves the rest alone. A move cannot, because it names no property — it is one
- * event for the household — so the rest of issue #9 is replacing it with an
- * entry in the list that can.
+ * So the event is gone and the list carries all of it:
+ * {@link PlannedProperty.disposalAge} says whether and when a property is sold
+ * — for any number of properties, not just the first — and
+ * {@link PlannedProperty.financing} says how the purchase is paid for. A move is
+ * one property disposed of and another acquired the same year, which is what a
+ * move is. Plans holding the old events are folded into that list by
+ * `foldPropertyEvents` in `./normalize`.
  */
-export interface PropertyEvent {
-  id: string
-  type: "property"
-  label: string
-  age: number
-  /** Purchase price of the new home in DKK. */
-  newValue: number
-  /** Loan-to-value of the new mortgage (0–1, e.g. 0.8 = 80 %). */
-  mortgageLtv: number
-  /** Optional housing return for the new home; falls back to the global rate. */
-  housingReturnOverride?: number
-}
-
-export type PlanningEvent =
-  | ExpenseEvent
-  | WindfallEvent
-  | RecurringEvent
-  | PropertyEvent
+export type PlanningEvent = ExpenseEvent | WindfallEvent | RecurringEvent
 
 /**
  * What a dwelling counts as under ejendomsskatteloven. These are the two kinds
@@ -214,12 +201,39 @@ export interface PlannedProperty {
   /**
    * Age the household acquires it. At or below `currentAge` it is already owned
    * and costs nothing; later, it is bought that year and paid for out of the
-   * portfolio — all-equity, because every {@link PlannedLoan} is drawn today and
-   * none can be taken out to fund a purchase decades out (see there).
+   * portfolio, less whatever {@link financing} borrows against it.
    */
   acquisitionAge: number
   /** Age it is sold at; null means held for the whole projection. */
   disposalAge: number | null
+  /**
+   * How a purchase after `currentAge` is paid for: a loan of
+   * `value × ltv` drawn in the acquisition year, leaving `value × (1 − ltv)` to
+   * come out of the portfolio. Null is an all-equity purchase, and is also what
+   * a property already owned at `currentAge` carries — its mortgage is a
+   * {@link PlannedLoan} the household can state the real terms of, so
+   * synthesising a second one from an LTV would double the debt.
+   *
+   * The LTV lives here rather than as a draw date on {@link PlannedLoan} because
+   * the loan does not exist until the purchase does. A loan with a start age
+   * would be a loan five call sites have to ask "has it been drawn yet?" about,
+   * the `debtFreeAge` gate among them; an LTV is a number the engine turns into
+   * a loan at the moment it is borrowed, and only then.
+   *
+   * What that loan costs is inherited rather than asked for: the rate,
+   * bidragssats and afdragsfrihed of the largest realkreditlån it replaces, over
+   * a fresh 30-year term. A household moving house keeps its lender's terms far
+   * more often than it renegotiates them, and the alternative is four more
+   * inputs on a form that already has to be filled in correctly.
+   */
+  financing: { ltv: number } | null
+  /**
+   * Yearly appreciation for this property, as a share (0.03 = 3 %), or null for
+   * {@link PlanningAssumptions.housingReturn}. Per-property because a
+   * Copenhagen flat and a summer house on Mors do not appreciate alike, and a
+   * household moving between them is making exactly that bet.
+   */
+  housingReturn: number | null
   /**
    * What selling it costs, as a share of the price it fetches: ejendomsmægler,
    * advokat, tingbogsafgift. 0.03 is 3 %. Taken off the proceeds the sale pays
@@ -251,11 +265,11 @@ export type LoanType = "realkredit" | "bank"
  * One debt the household carries through the projection.
  *
  * No acquisition/disposal ages of the kind {@link PlannedProperty} carries: every
- * loan is drawn today and repaid over {@link PlannedLoan.termMonths}. Financing a
- * property bought at 60 needs the simulation to hold a loan that does not exist
- * yet, and a start age it ignored would let a plan describe borrowing that is
- * silently dropped — worse than the all-equity purchase the projection admits to
- * today. That belongs with the purchase itself.
+ * loan on this list is drawn today and repaid over
+ * {@link PlannedLoan.termMonths}. Financing a property bought at 60 needs a loan
+ * that does not exist yet, and that belongs with the purchase —
+ * {@link PlannedProperty.financing} states the LTV and the engine draws the loan
+ * in the acquisition year.
  */
 export interface PlannedLoan {
   id: string
@@ -414,8 +428,15 @@ export interface PlanningState {
    * `normalizeLoans` migrates a version-2 blob into a list of up to two entries,
    * and `normalizeAssumptions` takes the old `mortgageRate` as the plan's
    * {@link PlanningAssumptions.equityBorrowingRate}, which used to read it.
+   *
+   * 4 removed the `PropertyEvent` — "sell the home, buy another" as an
+   * {@link events} entry — in favour of saying the same thing in
+   * {@link properties}: a disposal age on the old home and a new entry acquired
+   * the same year, financed by its {@link PlannedProperty.financing}.
+   * `foldPropertyEvents` migrates a version-3 blob by replaying its property
+   * events into that list.
    */
-  version: 3
+  version: 4
   /** User's current age (simulation start). */
   currentAge: number
   /** Age the simulation runs to (inclusive). */
@@ -434,13 +455,16 @@ export interface PlanningState {
   /**
    * Every property the household owns or plans to own; empty if renting.
    *
-   * The first entry is "the home": the one a {@link PropertyEvent} move replaces,
-   * settling every secured loan against it whichever property each names. That
-   * is the move's doing and not the list's — a {@link PlannedLoan} names the
-   * entry that secures it, and selling that entry settles that loan and no
-   * other. Secured balances are still subtracted from the portfolio's equity as
-   * a whole, because that is what the household can borrow against; it is the
-   * *settlement* that is per property.
+   * The whole of the household's housing plan, moves included: each entry says
+   * when it is acquired, when it is disposed of, and how the purchase is
+   * financed. Order carries no meaning to the projection — the first entry is
+   * merely where `homeProperty` puts the budget's home and what
+   * `normalizeLoans` attaches a migrated mortgage to.
+   *
+   * A {@link PlannedLoan} names the entry that secures it, and selling that
+   * entry settles that loan and no other. Secured balances are still subtracted
+   * from the portfolio's equity as a whole, because that is what the household
+   * can borrow against; it is the *settlement* that is per property.
    */
   properties: PlannedProperty[]
   /** Whether to model ongoing property tax (ejendomsværdiskat + grundskyld). */
@@ -501,7 +525,7 @@ export interface PlanningState {
 }
 
 export const DEFAULT_PLANNING_STATE: PlanningState = {
-  version: 3,
+  version: 4,
   currentAge: 30,
   endAge: 90,
   retirementAge: 65,

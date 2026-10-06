@@ -15,11 +15,17 @@ import type {
 } from "@/lib/planning/types"
 import { MoneyInput, num } from "./money-input"
 
+/**
+ * No "Køb/salg af bolig" here any more: moving house is stated in the property
+ * list — a salgsalder on the home being left and a second entry bought the same
+ * year, with its own belåningsgrad — so that the plan can also say "keep both"
+ * and so that each sale settles the loans secured on that house and no others
+ * (issue #9).
+ */
 const TYPE_LABEL: Record<PlanningEventType, string> = {
   expense: "Stor engangsudgift (fx bryllup)",
   windfall: "Engangsindtægt (fx arv, bonus)",
   recurring: "Ændring i månedlig opsparing",
-  property: "Køb/salg af bolig",
 }
 
 interface Draft {
@@ -28,9 +34,6 @@ interface Draft {
   age: number
   amount: number
   monthlyDelta: number
-  newValue: number
-  mortgageLtv: number
-  housingReturnPct: number
 }
 
 function toDraft(event: PlanningEvent | null, fallbackAge: number): Draft {
@@ -40,22 +43,11 @@ function toDraft(event: PlanningEvent | null, fallbackAge: number): Draft {
     age: fallbackAge,
     amount: 100000,
     monthlyDelta: 2000,
-    newValue: 3000000,
-    mortgageLtv: 80,
-    housingReturnPct: 2,
   }
   if (!event) return base
   const d: Draft = { ...base, type: event.type, label: event.label, age: event.age }
   if (event.type === "expense" || event.type === "windfall") d.amount = event.amount
   if (event.type === "recurring") d.monthlyDelta = event.monthlyDelta
-  if (event.type === "property") {
-    d.newValue = event.newValue
-    d.mortgageLtv = Math.round(event.mortgageLtv * 100)
-    d.housingReturnPct =
-      event.housingReturnOverride != null
-        ? Math.round(event.housingReturnOverride * 1000) / 10
-        : 2
-  }
   return d
 }
 
@@ -71,15 +63,6 @@ function fromDraft(d: Draft): NewPlanningEvent {
         label: d.label,
         age: d.age,
         monthlyDelta: d.monthlyDelta,
-      }
-    case "property":
-      return {
-        type: "property",
-        label: d.label,
-        age: d.age,
-        newValue: d.newValue,
-        mortgageLtv: d.mortgageLtv / 100,
-        housingReturnOverride: d.housingReturnPct / 100,
       }
   }
 }
@@ -169,40 +152,6 @@ export function EventEditor({
             value={draft.monthlyDelta}
             onChange={(_e, { value }) => set("monthlyDelta", num(value, 0))}
           />
-        )}
-
-        {draft.type === "property" && (
-          <>
-            <MoneyInput
-              id="event-newvalue"
-              label="Pris på ny bolig"
-              value={draft.newValue}
-              onChange={(v) => set("newValue", v)}
-            />
-            <NumberInput
-              id="event-ltv"
-              label="Belåningsgrad / LTV (%)"
-              min={0}
-              max={100}
-              step={5}
-              value={draft.mortgageLtv}
-              onChange={(_e, { value }) => set("mortgageLtv", num(value, 80))}
-            />
-            <NumberInput
-              id="event-housing-roi"
-              label="Forventet afkast på den nye bolig (% pr. år)"
-              step={0.5}
-              value={draft.housingReturnPct}
-              onChange={(_e, { value }) =>
-                set("housingReturnPct", num(value, 2))
-              }
-            />
-            <p className="text-muted-foreground text-xs">
-              Den nuværende friværdi frigøres til investeringer, udbetalingen
-              (boligpris × (1 − LTV)) trækkes fra igen, og restgælden bliver
-              boligpris × LTV.
-            </p>
-          </>
         )}
       </div>
     </Modal>

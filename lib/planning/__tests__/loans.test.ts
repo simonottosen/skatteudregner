@@ -42,6 +42,8 @@ const property = (fields: Partial<PlannedProperty> = {}): PlannedProperty => ({
   saleCostsPct: 0,
   acquisitionAge: 0,
   disposalAge: null,
+  financing: null,
+  housingReturn: null,
   ...fields,
 })
 

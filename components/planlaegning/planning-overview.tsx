@@ -226,11 +226,12 @@ function comparisonRows(
   return rows
 }
 
+// No "Bolighandel" row: a bolighandel is two entries in the property list now,
+// not an event (issue #9).
 const EVENT_TYPE_LABEL: Record<PlanningEvent["type"], string> = {
   expense: "Engangsudgift",
   windfall: "Engangsindtægt",
   recurring: "Opsparingsændring",
-  property: "Bolighandel",
 }
 
 function eventSummary(e: PlanningEvent): string {
@@ -241,8 +242,6 @@ function eventSummary(e: PlanningEvent): string {
       return `+${formatDKK(e.amount)}`
     case "recurring":
       return `${e.monthlyDelta >= 0 ? "+" : ""}${formatDKK(e.monthlyDelta)}/md.`
-    case "property":
-      return `${formatDKK(e.newValue)} · ${Math.round(e.mortgageLtv * 100)}% lån`
   }
 }
 
@@ -821,12 +820,14 @@ export function PlanningOverview() {
             <h3 className="text-sm font-medium">Boliger</h3>
             <p className="text-muted-foreground text-xs">
               Den første bolig på listen er den, dine lån som standard har pant
-              i — og den, en flytning ændrer værdien af.
+              i. Skal du flytte, så sæt en salgsalder på den nuværende bolig og
+              tilføj den nye med samme købsalder.
             </p>
             <PropertyList
               properties={state.properties}
               currentAge={state.currentAge}
               endAge={state.endAge}
+              housingReturn={state.assumptions.housingReturn}
               onChange={(properties) => planning.patch({ properties })}
             />
           </div>
