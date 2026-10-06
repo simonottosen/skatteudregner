@@ -635,11 +635,26 @@ function debtCost(
    * The new loan's terms are the biggest replaced one's, measured by what was
    * still owed as the year opened rather than by what was borrowed, because that
    * is the loan the household is actually paying and so the best evidence about
-   * the next one it will be offered. The *opening* balance because a move's sale
-   * has already zeroed the mortgage it discharges by the time this runs, and
-   * that mortgage is exactly the one being replaced. A blend would not help: two
-   * rates average, but two afdragsfrihed windows do not. With nothing to
-   * replace — the household owed nothing, or owed it all to a bank — the plan's
+   * the next one it will be offered. The *opening* balance because the sale has
+   * already zeroed the mortgage it discharges by the time this runs. A blend
+   * would not help: two rates average, but two afdragsfrihed windows do not.
+   *
+   * Replaced means surrendered: a mortgage on a property the household has
+   * already let go of by this year. Not merely any secured realkredit it holds.
+   * The point of issue #9 is that it may now buy *without* selling, and a
+   * mortgage on a house it is keeping was never offered up for this one —
+   * inheriting that house's rate and afdragsfrihed would price the purchase off
+   * a loan nobody terminated.
+   *
+   * "By this year" and not "this year": a household that sells at 45 and buys
+   * again at 50 surrendered that mortgage all the same, and its own former
+   * lender is still the only evidence there is about the next loan it will be
+   * offered. Such a loan was zeroed at its sale, so it ranks last on opening
+   * balance — which is right where two candidates compete, since the one being
+   * handed back right now is the live relationship.
+   *
+   * With nothing replaced — the household has sold nothing, owed nothing, or
+   * owed it all to a bank — the plan's
    * {@link PlanningAssumptions.equityBorrowingRate} stands in, which is the rate
    * it applies to the other debt it was never given terms for, and the loan
    * carries no afdragsfrihed and no bidrag rather than a guess at either.
@@ -652,8 +667,9 @@ function debtCost(
       let replaced: LiveLoan | undefined
       for (const loan of live)
         if (
-          loan.secured &&
           loan.realkredit &&
+          loan.propertyIndex >= 0 &&
+          schedule.disposalYearByProperty[loan.propertyIndex] <= y &&
           (!replaced || loan.opening > replaced.opening)
         )
           replaced = loan

@@ -967,6 +967,60 @@ describe("simulatePlanning", () => {
         expect(chargedAfterMove("big first")).toBeCloseTo(atBigRate, 6)
         expect(chargedAfterMove("small first")).toBeCloseTo(atBigRate, 6)
       })
+
+      /**
+       * Buying a second house is not a move, and prices nothing off the first.
+       *
+       * The rule above borrows the terms of the mortgage the household hands
+       * back, because a move hands one back. Issue #9's whole point is that it
+       * may now buy *without* selling — and then nothing is surrendered, so the
+       * loan still running on the house it keeps is not evidence about anything.
+       * That is a contract the household is still a party to, at a rate it was
+       * offered years ago, on a property no institut is being asked about.
+       *
+       * Picked to be unmistakable: the retained home borrows at 6 %, well above
+       * the plan's own `equityBorrowingRate`, so pricing the second house off it
+       * shows up in the first year the second house is billed.
+       */
+      it("does not price a kept-both purchase off the home it keeps", () => {
+        const keeping = property({ value: 3_000_000 })
+        const second = property({
+          value: 5_000_000,
+          acquisitionAge: 45,
+          financing: { ltv: 0.8 },
+        })
+        const r = simulatePlanning(
+          makeState({
+            ...base,
+            // Deep enough that neither year floors at nothing: the household
+            // services both loans out of the deposit, so the deposit is where
+            // the difference between them shows.
+            monthlyContribution: 60_000,
+            startInvestments: 6_000_000,
+            homeValue: undefined,
+            properties: [keeping, second],
+            loans: [
+              loan({
+                principal: 2_000_000,
+                rate: 0.06,
+                propertyId: keeping.id,
+              }),
+            ],
+            mortgageBudgetedMonthly: 0,
+          })
+        )
+        const { equityBorrowingRate } = DEFAULT_PLANNING_STATE.assumptions
+        const atOwnRate = serviceOf(4_000_000, equityBorrowingRate, 30 * 12)
+        const atKeptHomesRate = serviceOf(4_000_000, 0.06, 30 * 12)
+        expect(atKeptHomesRate).toBeGreaterThan(atOwnRate)
+        // The kept home's own loan runs through both years and is billed in
+        // both, so differencing them leaves only what the new loan costs.
+        // Age 44 against 46, skipping the purchase year itself: the down
+        // payment comes out of 45's deposit and would swamp the comparison.
+        // Either side of it the kept home's own loan is billed the same level
+        // annuity, so differencing leaves only what the new loan costs.
+        expect(contribAt(r, 44) - contribAt(r, 46)).toBeCloseTo(atOwnRate, 6)
+      })
     })
   })
 
