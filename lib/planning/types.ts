@@ -235,18 +235,34 @@ export interface PlannedProperty {
    */
   housingReturn: number | null
   /**
-   * What selling it costs, as a share of the price it fetches: ejendomsmægler,
-   * advokat, tingbogsafgift. 0.03 is 3 %. Taken off the proceeds the sale pays
-   * into the portfolio, and off nothing else — the household stops owning the
-   * whole house, not the house less the agent's fee.
+   * What selling it costs, as a share of the price it fetches: salær,
+   * tilstandsrapport, elinstallationsrapport, energimærke, and the seller's
+   * half of the ejerskifteforsikring. 0.03 is 3 %. Taken off the proceeds the
+   * sale pays into the portfolio, and off nothing else — the household stops
+   * owning the whole house, not the house less the agent's fee.
    *
-   * Defaults to 0, a sale that costs nothing, which no real sale is. That is
-   * deliberate rather than an oversight: a default worth having would move the
-   * projection of every plan already saved, in the same commit that reorganised
-   * the settlement those projections are the regression lock on — leaving no way
-   * to tell a refactor that changed nothing from one that changed something. So
-   * the mechanism ships opt-in, with an input in the form asking for the figure,
-   * and a default can be chosen later against numbers known to be unchanged.
+   * Not tinglysningsafgift, which this doc and the helper text both named until
+   * the default made the figure matter. The afgift on the skødet is the buyer's
+   * by kutyme — both parties are liable to the state and a købsaftale can move
+   * it, but the household reading a fremskrivning is the one selling. Worth
+   * writing down because it is a tempting thing to add back: it is the one sale
+   * cost with a published rate, so it looks like the easy half of the figure,
+   * and at 0,6 % of the price it is a fifth of a typical 3 % charge.
+   *
+   * Defaults to `DEFAULT_SALE_COSTS_PCT` (`./properties`). It shipped
+   * defaulting to 0 instead — a sale that costs nothing, which no real sale is —
+   * because the mechanism arrived in the same commit that reorganised the
+   * settlement the recorded fixtures lock, and a default worth having would have
+   * moved every recorded number alongside a refactor that was supposed to move
+   * none, leaving no way to tell the two apart. The condition set then was that
+   * a default could be chosen later against numbers known to be unchanged.
+   *
+   * That condition was met, and checked rather than assumed: every property in
+   * `EVERY_LOAN_BRANCH`, `CHAINED_MOVES` and `LIST_ONLY` states its own share
+   * literally and none of them is read through `normalizeProperty`, so all three
+   * fixtures are byte-identical across the change. What moved is what should
+   * have — a plan saved before the field existed now sells at what a Danish sale
+   * actually nets, which on one worked household is a year of runway.
    */
   saleCostsPct: number
 }
