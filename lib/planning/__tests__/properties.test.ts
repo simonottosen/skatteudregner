@@ -148,6 +148,20 @@ describe("clampSaleCostsPct", () => {
     expect(SALE_COSTS_HELPER_TEXT).toContain("2–4 %")
     expect(SALE_COSTS_HELPER_TEXT).toContain("salgsprisen")
   })
+
+  it("names costs the seller actually carries, and says whose the afgift is", () => {
+    // The share is charged on the seller's proceeds, so every cost the copy
+    // names has to be the seller's. It read "Mægler, advokat og tinglysning"
+    // until the default made the figure matter, and tinglysningsafgiften på
+    // skødet is the buyer's by kutyme — so of the three things the sentence
+    // told the user to add up, one belonged to the other party.
+    //
+    // Asserted rather than left to review because the afgift is the one sale
+    // cost with a published rate, which makes it the obvious thing to put back.
+    expect(SALE_COSTS_HELPER_TEXT).toContain("Mægler")
+    expect(SALE_COSTS_HELPER_TEXT).toContain("tilstandsrapport")
+    expect(SALE_COSTS_HELPER_TEXT).toMatch(/[Tt]inglysning\S*\s+betaler\s+køber/)
+  })
 })
 
 /**

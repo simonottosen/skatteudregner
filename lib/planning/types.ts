@@ -235,10 +235,19 @@ export interface PlannedProperty {
    */
   housingReturn: number | null
   /**
-   * What selling it costs, as a share of the price it fetches: ejendomsmægler,
-   * advokat, tingbogsafgift. 0.03 is 3 %. Taken off the proceeds the sale pays
-   * into the portfolio, and off nothing else — the household stops owning the
-   * whole house, not the house less the agent's fee.
+   * What selling it costs, as a share of the price it fetches: salær,
+   * tilstandsrapport, elinstallationsrapport, energimærke, and the seller's
+   * half of the ejerskifteforsikring. 0.03 is 3 %. Taken off the proceeds the
+   * sale pays into the portfolio, and off nothing else — the household stops
+   * owning the whole house, not the house less the agent's fee.
+   *
+   * Not tinglysningsafgift, which this doc and the helper text both named until
+   * the default made the figure matter. The afgift on the skødet is the buyer's
+   * by kutyme — both parties are liable to the state and a købsaftale can move
+   * it, but the household reading a fremskrivning is the one selling. Worth
+   * writing down because it is a tempting thing to add back: it is the one sale
+   * cost with a published rate, so it looks like the easy half of the figure,
+   * and at 0,6 % of the price it is a fifth of a typical 3 % charge.
    *
    * Defaults to `DEFAULT_SALE_COSTS_PCT` (`./properties`). It shipped
    * defaulting to 0 instead — a sale that costs nothing, which no real sale is —

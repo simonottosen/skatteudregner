@@ -31,7 +31,7 @@ export const PROPERTY_USES: PropertyUse[] = ["own", "vacant", "rented"]
 /**
  * Most of a property a sale may cost, as a share of the price.
  *
- * Far above any real sale — Danish ejendomsmægler, advokat and tingbogsafgift
+ * Far above any real sale — a Danish salær, tilstandsrapport and energimærke
  * together land in the low single digits — because the bound is here to stop a
  * typed-in percentage from handing the household nothing, or less than nothing,
  * for the house it sold, not to tell it what a sale costs.
@@ -180,9 +180,18 @@ export const HOUSING_RETURN_HELPER_TEXT =
  * drift from what the field does. The typical range is named because the bound
  * is not a hint — 20 % would pass and ruin the projection — so the sentence has
  * to be where the user looks for the figure.
+ *
+ * The costs named are the seller's own, which is what this field is charged on:
+ * salær, tilstandsrapport, energimærke. It said "advokat og tinglysning" until
+ * the household's own money started riding on the figure — but tinglysnings-
+ * afgiften på skødet is the buyer's by kutyme, so the sentence named as the
+ * seller's the one cost that is not. Hence the last clause: the skødets 0,6 %
+ * is a fifth of the whole charge on a 2–4 % base, so a user who adds it in
+ * overstates what the sale costs by more than the range is wide.
  */
 export const SALE_COSTS_HELPER_TEXT =
-  "Mægler, advokat og tinglysning i procent af salgsprisen. Typisk 2–4 %."
+  "Mægler, tilstandsrapport og energimærke i procent af salgsprisen. " +
+  "Typisk 2–4 %. Tinglysningsafgiften betaler køber."
 
 /**
  * A blank entry for the form to fill in, owned from today and never sold.
