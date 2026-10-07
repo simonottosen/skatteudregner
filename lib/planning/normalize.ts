@@ -5,7 +5,12 @@
  */
 
 import { normalizeLoans } from "./loans"
-import { clampHousingReturn, clampLtv, clampSaleCostsPct } from "./properties"
+import {
+  DEFAULT_SALE_COSTS_PCT,
+  clampHousingReturn,
+  clampLtv,
+  clampSaleCostsPct,
+} from "./properties"
 import {
   DEFAULT_ASSUMPTIONS,
   DEFAULT_PENSION,
@@ -172,11 +177,14 @@ function normalizeProperty(raw: unknown): PlannedProperty | null {
     use,
     value: clampNum(o.value, 0, 0),
     landValue: clampNum(o.landValue, 0, 0),
-    // Absent on a plan saved before the field existed, and 0 is what that plan
-    // was projected with — see {@link PlannedProperty.saleCostsPct} for why the
-    // default is a free sale rather than a realistic one. The bound is the
-    // form's own, so a reload cannot change a figure the form accepted.
-    saleCostsPct: clampSaleCostsPct(o.saleCostsPct),
+    // Absent on a plan saved before the field existed, which is read as having
+    // no opinion rather than as having chosen a free sale — so it lands where a
+    // fresh entry lands, per `boolOr` above. An explicit 0 survives, because
+    // {@link clampNum} falls back only on a value that is not a number at all:
+    // a household that saw the input and typed zero said something, and this
+    // does not overrule it. The bound is the form's own, so a reload cannot
+    // change a figure the form accepted.
+    saleCostsPct: clampSaleCostsPct(o.saleCostsPct, DEFAULT_SALE_COSTS_PCT),
     acquisitionAge,
     // A disposal before the purchase would describe a property that is never
     // owned, which is a typo rather than a plan; the floor reads it as a sale in
@@ -219,7 +227,7 @@ export function homeProperty(value: number, landValue: number): PlannedProperty 
     use: "own",
     value,
     landValue,
-    saleCostsPct: 0,
+    saleCostsPct: DEFAULT_SALE_COSTS_PCT,
     acquisitionAge: 0,
     disposalAge: null,
     // Already owned, so there is nothing to finance: whatever is owed on it is a
@@ -396,7 +404,11 @@ function homeAt(
  * {@link normalizeLoans} secures a migrated mortgage on it, and reordering the
  * list here would move that pant to a house the household had not bought yet.
  *
- * Three details are what make the migrated plan project as the old one did:
+ * Three details are what keep the shape of the migrated plan faithful to the
+ * old one. Faithful, no longer identical: the old engine sold for free, and
+ * {@link DEFAULT_SALE_COSTS_PCT} now charges a legacy plan the 3 % a Danish
+ * sale costs. That is the one deliberate departure, and it is the same one
+ * every saved plan takes — see {@link PlannedProperty.saleCostsPct}.
  *
  * - `landValue` scales by the change in value, which is what the move itself
  *   did. Not an approximation: `simulate.ts` grows `value` and `landValue` by
@@ -408,7 +420,11 @@ function homeAt(
  *   home that is moved out of at 52 was a sale of the *new* home at 78 — and
  *   what it cost to sell was the old entry's figure. A disposal dated at or
  *   before the move is the one that does not travel: it was a sale the
- *   household had already made, so it stays on the entry that made it.
+ *   household had already made, so it stays on the entry that made it. With no
+ *   first entry to carry anything from — a v3 plan that listed no property but
+ *   did state a move — the successor takes the same default the list itself
+ *   would have taken, so that one plan does not sell at two different costs
+ *   depending on which half of it the house came from.
  * - a successor with `acquisitionAge === disposalAge` is dropped. Two moves at
  *   one age leave the first purchase owned for no year at all, and the engine
  *   reads such a window as never owned — so its value would hang on the list
@@ -464,7 +480,7 @@ export function foldPropertyEvents(
         home && home.value > 0
           ? (home.landValue * move.newValue) / home.value
           : 0,
-      saleCostsPct: home?.saleCostsPct ?? 0,
+      saleCostsPct: home?.saleCostsPct ?? DEFAULT_SALE_COSTS_PCT,
       acquisitionAge: move.age,
       disposalAge: succeeded?.disposalAge ?? null,
       financing: { ltv: move.ltv },

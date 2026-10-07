@@ -17,7 +17,7 @@ import {
 // for the next one.
 import { simulatePlanning } from "../simulate"
 import { applyScenario } from "../scenario"
-import { DEFAULT_LTV } from "../properties"
+import { DEFAULT_LTV, DEFAULT_SALE_COSTS_PCT } from "../properties"
 
 describe("normalizePlanning", () => {
   describe("loans", () => {
@@ -304,7 +304,10 @@ describe("normalizePlanning", () => {
           use: "own",
           value: 4_000_000,
           landValue: 1_500_000,
-          saleCostsPct: 0,
+          // Stated by neither entry, so both are read as having no opinion and
+          // land on the typical Danish sale — unlike `financing` and
+          // `housingReturn` below, whose absence *is* the answer.
+          saleCostsPct: DEFAULT_SALE_COSTS_PCT,
           acquisitionAge: 0,
           disposalAge: 80,
           // Both are additive fields with a default, and the default is what the
@@ -320,7 +323,7 @@ describe("normalizePlanning", () => {
           use: "own",
           value: 1_800_000,
           landValue: 900_000,
-          saleCostsPct: 0,
+          saleCostsPct: DEFAULT_SALE_COSTS_PCT,
           acquisitionAge: 55,
           disposalAge: null,
           financing: null,
@@ -687,11 +690,17 @@ describe("normalizePlanning", () => {
         expect(points[0].homeEquity).toBeCloseTo(1_500_000, 6)
 
         const at41 = points.find((p) => p.age === 41)!
-        // 2.000.000 of house sold, less the 500.000 mortgage it secured, less
-        // the 600.000 down payment on a 3.000.000 home financed at 80 %. Each
-        // of the three is the difference between this figure and a projection
-        // that skipped that half of the transaction.
-        expect(at41.investments).toBeCloseTo(2_000_000 - 500_000 - 600_000, 6)
+        // 2.000.000 of house sold at the 3 % a sale costs, so 1.940.000 in;
+        // less the 500.000 mortgage it secured, less the 600.000 down payment
+        // on a 3.000.000 home financed at 80 %. Each of the four is the
+        // difference between this figure and a projection that skipped that
+        // part of the transaction. Written out rather than derived from
+        // `DEFAULT_SALE_COSTS_PCT`, so that moving the default has to come back
+        // through here and be re-derived by hand.
+        expect(at41.investments).toBeCloseTo(
+          1_940_000 - 500_000 - 600_000,
+          6
+        )
         // And the new mortgage — and only it — stands against the new house: an
         // unsettled old loan would leave 100.000 here instead.
         expect(at41.homeEquity).toBeCloseTo(3_000_000 - 2_400_000, 6)
@@ -699,14 +708,15 @@ describe("normalizePlanning", () => {
 
       it("costs the price of the house when the move borrows nothing", () => {
         // At an LTV of zero the down payment is the whole price, so the
-        // portfolio has to carry it: 3.000.000 in, plus the 1.500.000 the sale
-        // realised, less the 3.000.000 the house cost. That the figure moves
+        // portfolio has to carry it: 3.000.000 in, plus the 1.440.000 the sale
+        // realised — 2.000.000 less 3 % in salgsomkostninger, less the 500.000
+        // mortgage — less the 3.000.000 the house cost. That the figure moves
         // with the LTV at all is what says the down payment above was really
         // paid out rather than netted off the price.
         const at41 = simulatePlanning(moved(0, 3_000_000)).points.find(
           (p) => p.age === 41
         )!
-        expect(at41.investments).toBeCloseTo(1_500_000, 6)
+        expect(at41.investments).toBeCloseTo(1_440_000, 6)
         // Nothing is owed on the house, so it is worth its price.
         expect(at41.homeEquity).toBeCloseTo(3_000_000, 6)
       })

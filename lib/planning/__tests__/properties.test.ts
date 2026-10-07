@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import {
+  DEFAULT_SALE_COSTS_PCT,
   PROPERTY_USES,
   PROPERTY_USE_LABEL,
   SALE_COSTS_HELPER_TEXT,
@@ -32,6 +33,18 @@ const at = (fields: Partial<PlannedProperty> = {}): PlannedProperty => ({
   housingReturn: null,
   ...fields,
 })
+
+/**
+ * A stored plan from before `saleCostsPct` existed. The field is deleted rather
+ * than set to anything, because its absence is the whole point: `clampNum`
+ * falls back only on a value that is not a number, so absent and 0 are read
+ * differently and no literal could stand in for "not there".
+ */
+const planSavedWithoutSaleCosts = (): unknown => {
+  const saved: Record<string, unknown> = { ...at() }
+  delete saved.saleCostsPct
+  return { properties: [saved] }
+}
 
 describe("newPlannedProperty", () => {
   it("starts at nothing rather than at a guess", () => {
@@ -100,23 +113,32 @@ describe("removeProperty", () => {
  */
 describe("clampSaleCostsPct", () => {
   it("holds the share at both ends and leaves a real figure alone", () => {
-    expect(clampSaleCostsPct(-0.03)).toBe(0)
-    expect(clampSaleCostsPct(0.5)).toBe(0.2)
+    expect(clampSaleCostsPct(-0.03, DEFAULT_SALE_COSTS_PCT)).toBe(0)
+    expect(clampSaleCostsPct(0.5, DEFAULT_SALE_COSTS_PCT)).toBe(0.2)
     // A typical Danish sale, untouched.
-    expect(clampSaleCostsPct(0.03)).toBe(0.03)
+    expect(clampSaleCostsPct(0.03, DEFAULT_SALE_COSTS_PCT)).toBe(0.03)
+  })
+
+  it("leaves a half-typed field on the figure the row already carries", () => {
     // Carbon's NumberInput reports a half-typed field as something that is not
     // a number at all, and NaN would reach the projection as a NaN sale price.
-    expect(clampSaleCostsPct(NaN)).toBe(0)
+    // The form passes the row's own share, so clearing 4 % to retype it holds
+    // at 4 % instead of jumping to the shared default mid-keystroke — which is
+    // the whole reason the fallback is the caller's and not this function's.
+    expect(clampSaleCostsPct(NaN, 0.04)).toBe(0.04)
+    expect(clampSaleCostsPct(undefined, 0)).toBe(0)
   })
 
   it("agrees with what a reload makes of the same figure", () => {
     // One bound with one owner: the live clamp and the normalizer have to reach
     // the same number, or the plan on screen is not the plan that was saved.
+    // Only finite values here — the fallback is deliberately *not* shared, so
+    // what this locks is the bound.
     for (const typed of [-0.03, 0, 0.025, 0.2, 0.5]) {
       const reloaded = normalizeProperties({
         properties: [at({ saleCostsPct: typed })],
       })[0].saleCostsPct
-      expect(reloaded).toBe(clampSaleCostsPct(typed))
+      expect(reloaded).toBe(clampSaleCostsPct(typed, DEFAULT_SALE_COSTS_PCT))
     }
   })
 
@@ -125,6 +147,51 @@ describe("clampSaleCostsPct", () => {
     // copy has to name the range the user is actually looking for.
     expect(SALE_COSTS_HELPER_TEXT).toContain("2–4 %")
     expect(SALE_COSTS_HELPER_TEXT).toContain("salgsprisen")
+  })
+})
+
+/**
+ * What a sale costs when the plan does not say. The field shipped defaulting to
+ * 0 — a sale that costs nothing, which no real sale is — because the mechanism
+ * arrived alongside a refactor the recorded fixtures lock, and a default worth
+ * having would have moved every recorded number in the same commit. These tests
+ * are what that deferred decision came back as.
+ */
+describe("DEFAULT_SALE_COSTS_PCT", () => {
+  it("reads a plan that predates the field as the default, and an explicit 0 as 0", () => {
+    // The distinction this whole default turns on. `clampNum` falls back only
+    // on a value that is not a number, so a plan saved before the field existed
+    // — which had no way to say anything — is read as the typical sale, while a
+    // household that saw the input and chose a free sale keeps it.
+    //
+    // Stated against the constant and not against 3 %: what has to hold here is
+    // that absent and zero are told apart, which stays true whatever the
+    // default becomes. The figure itself is locked by the range test below.
+    expect(
+      normalizeProperties(planSavedWithoutSaleCosts())[0].saleCostsPct
+    ).toBe(DEFAULT_SALE_COSTS_PCT)
+    expect(
+      normalizeProperties({ properties: [at({ saleCostsPct: 0 })] })[0]
+        .saleCostsPct
+    ).toBe(0)
+  })
+
+  it("reads a plan with no figure the way a fresh entry starts", () => {
+    // `boolOr` in ./normalize states the rule: a saved plan that predates a
+    // field has no opinion about it, so it has to land wherever a fresh plan
+    // lands. Spelling the two defaults out separately is how they drift.
+    expect(
+      normalizeProperties(planSavedWithoutSaleCosts())[0].saleCostsPct
+    ).toBe(newPlannedProperty("helaarsbolig", 40).saleCostsPct)
+  })
+
+  it("sits in the range the form asks for the figure in", () => {
+    // The copy named 2–4 % before the engine agreed with it. Now that the
+    // default is a figure rather than a free sale, the two have to stay in
+    // step: a helper text promising 2–4 % over an engine assuming something
+    // outside it would be the form contradicting the projection again.
+    expect(DEFAULT_SALE_COSTS_PCT).toBeGreaterThanOrEqual(0.02)
+    expect(DEFAULT_SALE_COSTS_PCT).toBeLessThanOrEqual(0.04)
   })
 })
 
@@ -208,8 +275,11 @@ describe("ownershipSummary", () => {
   })
 
   it("names the sale costs only where there are any to name", () => {
-    // The field defaults to zero, so "0,00% i salgsomkostninger" would stand on
-    // every row with a sale age and bury the one row that was given a figure.
+    // Since the default became a figure this stands on nearly every row that is
+    // sold, which is the point: the share is an assumption the projection makes
+    // for the household and it costs real money. What stays quiet is the row
+    // that typed 0 — reporting that back as "0,00% i salgsomkostninger" would
+    // dress a household's claim that its sale is free up as a charge.
     expect(
       ownershipSummary(at({ disposalAge: 70, saleCostsPct: 0.03 }), 45)
     ).toBe("Ejes i dag · sælges som 70-årig · 3,00% i salgsomkostninger")

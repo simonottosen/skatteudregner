@@ -240,13 +240,20 @@ export interface PlannedProperty {
    * into the portfolio, and off nothing else — the household stops owning the
    * whole house, not the house less the agent's fee.
    *
-   * Defaults to 0, a sale that costs nothing, which no real sale is. That is
-   * deliberate rather than an oversight: a default worth having would move the
-   * projection of every plan already saved, in the same commit that reorganised
-   * the settlement those projections are the regression lock on — leaving no way
-   * to tell a refactor that changed nothing from one that changed something. So
-   * the mechanism ships opt-in, with an input in the form asking for the figure,
-   * and a default can be chosen later against numbers known to be unchanged.
+   * Defaults to `DEFAULT_SALE_COSTS_PCT` (`./properties`). It shipped
+   * defaulting to 0 instead — a sale that costs nothing, which no real sale is —
+   * because the mechanism arrived in the same commit that reorganised the
+   * settlement the recorded fixtures lock, and a default worth having would have
+   * moved every recorded number alongside a refactor that was supposed to move
+   * none, leaving no way to tell the two apart. The condition set then was that
+   * a default could be chosen later against numbers known to be unchanged.
+   *
+   * That condition was met, and checked rather than assumed: every property in
+   * `EVERY_LOAN_BRANCH`, `CHAINED_MOVES` and `LIST_ONLY` states its own share
+   * literally and none of them is read through `normalizeProperty`, so all three
+   * fixtures are byte-identical across the change. What moved is what should
+   * have — a plan saved before the field existed now sells at what a Danish sale
+   * actually nets, which on one worked household is a year of runway.
    */
   saleCostsPct: number
 }

@@ -83,8 +83,11 @@ function property(
     // carry it — so no recorded number here turns on this line.
     use: "own",
     landValue: 0,
-    // A sale that costs nothing, which is the field's own default and so the
-    // value every expectation below was recorded against.
+    // A sale that costs nothing. Deliberately *not* DEFAULT_SALE_COSTS_PCT:
+    // zero is what the field defaulted to when every expectation below was
+    // recorded, and stating it here is what holds the fixtures at those numbers
+    // now that the default is a real 3 %. Change this line and all three locks
+    // move.
     saleCostsPct: 0,
     acquisitionAge: 0,
     disposalAge: null,

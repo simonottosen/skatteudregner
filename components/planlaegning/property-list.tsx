@@ -261,9 +261,12 @@ export function PropertyList({
                           // Bounded here and not only on reload: this writes
                           // straight into the plan the projection reads — see
                           // {@link clampSaleCostsPct} for what an unbounded
-                          // share does to it.
+                          // share does to it, and for why the row's own figure
+                          // is the fallback rather than the shared default.
                           onChange={(v) =>
-                            patch({ saleCostsPct: clampSaleCostsPct(v) })
+                            patch({
+                              saleCostsPct: clampSaleCostsPct(v, p.saleCostsPct),
+                            })
                           }
                         />
                       )}

@@ -187,9 +187,10 @@ const eventSchema = z.object({
  * changes no figure that comes back. Say so when reporting a let-out property's
  * numbers — see `PropertyUse` in `@/lib/planning/types`.
  *
- * `saleCostsPct` is a share, not a percentage: 0.03 is 3 %. It defaults to 0 —
- * a sale that costs nothing — so a disposal sent without it pays the full market
- * value into the portfolio.
+ * `saleCostsPct` is a share, not a percentage: 0.03 is 3 %. Omitting it is not
+ * the same as sending 0: a disposal sent without it is charged the 3 % a Danish
+ * sale typically costs, while an explicit 0 says this sale costs nothing and is
+ * honoured. Send the figure when the household knows it.
  *
  * `financing` is how a purchase *after* the plan's `currentAge` is paid for: a
  * loan of `value × ltv` drawn in the acquisition year, with the rest coming out

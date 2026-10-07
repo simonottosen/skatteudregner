@@ -39,20 +39,43 @@ export const PROPERTY_USES: PropertyUse[] = ["own", "vacant", "rented"]
 const MAX_SALE_COSTS_PCT = 0.2
 
 /**
- * A sale-cost share held inside what a sale can cost, and defaulted to the free
- * sale {@link PlannedProperty.saleCostsPct} describes when it is no figure at
- * all.
+ * What a sale costs when the plan does not say — 3 %.
  *
- * One function for the form and the normalizer both, the way
+ * Bolius puts the average ejendomsmægler fee at about 85.000 kr., which on a
+ * 3 mio. kr. bolig is 2,8 %, and the trade press puts the whole of a sale in the
+ * 2–4 % range. So this is the middle of what a Danish sale observably costs,
+ * the way {@link DEFAULT_LTV} is the most a household can be lent rather than a
+ * guess at what it borrows.
+ *
+ * It is a share and not a kroner figure because the fee is partly fixed, which
+ * makes the percentage fall as the price rises: nearer 3 % on a 3 mio. kr. hus
+ * and nearer 2 % on a 6 mio. kr. one. A household at either end should type its
+ * own — {@link SALE_COSTS_HELPER_TEXT} names the range for exactly that reason,
+ * and named it for some time before the engine agreed with it.
+ */
+export const DEFAULT_SALE_COSTS_PCT = 0.03
+
+/**
+ * A sale-cost share held inside what a sale can cost.
+ *
+ * One bound for the form and the normalizer both, the way
  * `maxInterestOnlyYears` (`./loans`) is one bound for the loan's afdragsfrihed.
  * The form writes straight into the plan, so a bound only the normalizer
  * applied would let the live projection credit the household extra proceeds on
  * a negative share, or deduct half the house on 50 — and then quietly change
  * the figure to the bound on the next reload, so that the two projections of
  * one saved plan disagree.
+ *
+ * The fallback is the caller's, for the reason `clampLoanRate` (`./loans`)
+ * gives: the two callers are not asking the same question. The normalizer is
+ * reading a blob that may hold no figure at all and answers with
+ * {@link DEFAULT_SALE_COSTS_PCT}; the form is bounding a figure the row already
+ * carries, and Carbon's `NumberInput` reports a half-typed field as something
+ * that is not a number — so a shared fallback would jump the input to 3 % in
+ * the middle of typing a 4.
  */
-export function clampSaleCostsPct(value: unknown): number {
-  return clampNum(value, 0, 0, MAX_SALE_COSTS_PCT)
+export function clampSaleCostsPct(value: unknown, fallback: number): number {
+  return clampNum(value, fallback, 0, MAX_SALE_COSTS_PCT)
 }
 
 /**
@@ -75,7 +98,12 @@ export const DEFAULT_LTV = 0.8
  * `./simulate`, which holds the same bound for a state it did not normalize.
  *
  * One function for the form and the normalizer both, like
- * {@link clampSaleCostsPct} above and for the same reason.
+ * {@link clampSaleCostsPct} above and for the same reason — but not the same
+ * shape: only the bound is shared there, because its default is a figure a
+ * household would be startled to be given mid-keystroke. This one still
+ * defaults in the function, so clearing the belåningsgrad to retype it snaps
+ * the field to 80 % on the way. Same defect, left alone here because changing
+ * it changes what the form does rather than what a saved plan means.
  */
 export function clampLtv(value: unknown): number {
   return clampNum(value, DEFAULT_LTV, 0, 1)
@@ -90,8 +118,10 @@ export function clampLtv(value: unknown): number {
  * Defaulted to 0 rather than to the plan's own rate, because an entry that
  * states a rate at all has opted out of the plan's: `null` is how it follows it.
  *
- * One function for the form and the normalizer both, like {@link clampLtv} and
- * {@link clampSaleCostsPct} above and for the same reason.
+ * One function for the form and the normalizer both, like {@link clampLtv}
+ * above — and defaulting in the function as it does, with the same snap on a
+ * half-typed field that {@link clampSaleCostsPct} takes a caller's fallback to
+ * avoid.
  */
 export function clampHousingReturn(value: unknown): number {
   return clampNum(value, 0, -1, 1)
@@ -160,7 +190,12 @@ export const SALE_COSTS_HELPER_TEXT =
  * Zero kroner rather than a guessed value: an amount the user did not type is
  * one they would have to notice to correct, and a property worth nothing is
  * charged no tax in the meantime. Owner-occupied for the same reason: it is the
- * one use the projection models, so an entry left alone carries no assumption.
+ * one use the projection models.
+ *
+ * {@link DEFAULT_SALE_COSTS_PCT} is the one field here that does carry an
+ * assumption, and deliberately. A value or a use left alone is visibly blank; a
+ * sale cost left alone is not, and zero is a claim about the world rather than
+ * an absence of one. See {@link PlannedProperty.saleCostsPct}.
  */
 export function newPlannedProperty(
   kind: PropertyKind,
@@ -173,10 +208,7 @@ export function newPlannedProperty(
     use: "own",
     value: 0,
     landValue: 0,
-    // A sale that costs nothing, which the form then asks about — see
-    // {@link PlannedProperty.saleCostsPct} for why the default is not a
-    // realistic figure.
-    saleCostsPct: 0,
+    saleCostsPct: DEFAULT_SALE_COSTS_PCT,
     acquisitionAge: Math.max(0, Math.round(currentAge)),
     disposalAge: null,
     // All-equity, and the plan's own housing return. A row added to the list is
@@ -229,11 +261,14 @@ export function ownershipSummary(
       ? "Ejes i dag"
       : `Købes som ${property.acquisitionAge}-årig${financed}`
   if (property.disposalAge === null) return bought
-  // Sale costs are named only when there are any, and only on a property that is
-  // sold. The field defaults to zero — see {@link PlannedProperty.saleCostsPct} —
-  // so "0,00% i salgsomkostninger" would appear on every row that has a sale age
-  // and tell the user nothing, while the one row that *was* given a figure is the
-  // one worth seeing without opening it.
+  // Named on every row that is sold, which since {@link DEFAULT_SALE_COSTS_PCT}
+  // is nearly all of them — the opposite of what this guard was written for, and
+  // kept anyway. The share is now an assumption the projection makes on the
+  // household's behalf and one that costs it real money, so the row that carries
+  // it silently is the row worth worrying about. What the guard still buys is
+  // the converse: a household that typed 0 said a sale costs it nothing, and
+  // "0,00% i salgsomkostninger" would report that claim back as if it were a
+  // charge.
   const sale = `sælges som ${property.disposalAge}-årig`
   return property.saleCostsPct > 0
     ? `${bought} · ${sale} · ${formatPercent(property.saleCostsPct)} i salgsomkostninger`
