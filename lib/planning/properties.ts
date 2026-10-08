@@ -68,11 +68,21 @@ export const DEFAULT_SALE_COSTS_PCT = 0.03
  *
  * The fallback is the caller's, for the reason `clampLoanRate` (`./loans`)
  * gives: the two callers are not asking the same question. The normalizer is
- * reading a blob that may hold no figure at all and answers with
- * {@link DEFAULT_SALE_COSTS_PCT}; the form is bounding a figure the row already
- * carries, and Carbon's `NumberInput` reports a half-typed field as something
- * that is not a number — so a shared fallback would jump the input to 3 % in
- * the middle of typing a 4.
+ * reading a blob that may hold no figure at all, and answers with
+ * {@link DEFAULT_SALE_COSTS_PCT}. The form is bounding a figure the row already
+ * carries and has no business being handed a different one, so it passes that
+ * figure and an unreadable input leaves the row where it stood.
+ *
+ * This comment used to justify the split by a snap on a half-typed field, which
+ * does not happen: `PercentField`'s `num`
+ * (`@/components/planlaegning/money-input`) substitutes the field's own value
+ * for an unreadable one before any clamp is called. The real argument is the
+ * duller one. That guard lives in a `.tsx`, which `vitest.config.ts` cannot
+ * collect, so it is the one kind of guard this repo can never hold with a test:
+ * a clamp that bakes in a default is correct only while an untestable component
+ * keeps behaving, and one that takes the caller's fallback is correct either
+ * way. The guard is porous even now — `parseFloat("1e999")` is `Infinity`, not
+ * `NaN`, so `num` passes it through and the fallback really is reached.
  */
 export function clampSaleCostsPct(value: unknown, fallback: number): number {
   return clampNum(value, fallback, 0, MAX_SALE_COSTS_PCT)
@@ -97,16 +107,15 @@ export const DEFAULT_LTV = 0.8
  * would pay the household for buying one — see `financedPrincipal` in
  * `./simulate`, which holds the same bound for a state it did not normalize.
  *
- * One function for the form and the normalizer both, like
- * {@link clampSaleCostsPct} above and for the same reason — but not the same
- * shape: only the bound is shared there, because its default is a figure a
- * household would be startled to be given mid-keystroke. This one still
- * defaults in the function, so clearing the belåningsgrad to retype it snaps
- * the field to 80 % on the way. Same defect, left alone here because changing
- * it changes what the form does rather than what a saved plan means.
+ * One bound for the form and the normalizer both, and the fallback the caller's,
+ * exactly as {@link clampSaleCostsPct} above splits them and for the reason set
+ * out there. The normalizer is reading a blob that may name no share at all and
+ * answers with {@link DEFAULT_LTV}; the form passes the share the row already
+ * carries, so an unreadable belåningsgrad leaves it there rather than handing
+ * the household four fifths of a house it did not ask to borrow against.
  */
-export function clampLtv(value: unknown): number {
-  return clampNum(value, DEFAULT_LTV, 0, 1)
+export function clampLtv(value: unknown, fallback: number): number {
+  return clampNum(value, fallback, 0, 1)
 }
 
 /**
@@ -115,16 +124,16 @@ export function clampLtv(value: unknown): number {
  * Below −1 the house would be worth less than nothing after a single year, and
  * above 1 it doubles every year until it is the whole of the household's net
  * worth — in both cases the fremskrivning stops saying anything about the plan.
- * Defaulted to 0 rather than to the plan's own rate, because an entry that
- * states a rate at all has opted out of the plan's: `null` is how it follows it.
  *
- * One function for the form and the normalizer both, like {@link clampLtv}
- * above — and defaulting in the function as it does, with the same snap on a
- * half-typed field that {@link clampSaleCostsPct} takes a caller's fallback to
- * avoid.
+ * Fallback the caller's, like {@link clampLtv} and {@link clampSaleCostsPct}
+ * above. Sharper here than for either of those, because 0 — the figure this
+ * function used to bake in — is a rate a household might actually mean. The
+ * other two fall back to a figure nobody would mistake for a choice; a rate
+ * forced to 0 reads as a deliberate "this bolig does not appreciate", and the
+ * fremskrivning would believe it.
  */
-export function clampHousingReturn(value: unknown): number {
-  return clampNum(value, 0, -1, 1)
+export function clampHousingReturn(value: unknown, fallback: number): number {
+  return clampNum(value, fallback, -1, 1)
 }
 
 /**

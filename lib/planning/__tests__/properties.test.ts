@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest"
 import {
+  DEFAULT_LTV,
   DEFAULT_SALE_COSTS_PCT,
   PROPERTY_USES,
   PROPERTY_USE_LABEL,
   SALE_COSTS_HELPER_TEXT,
   clampHousingReturn,
+  clampLtv,
   clampSaleCostsPct,
   newPlannedProperty,
   offersFinancing,
@@ -119,12 +121,14 @@ describe("clampSaleCostsPct", () => {
     expect(clampSaleCostsPct(0.03, DEFAULT_SALE_COSTS_PCT)).toBe(0.03)
   })
 
-  it("leaves a half-typed field on the figure the row already carries", () => {
-    // Carbon's NumberInput reports a half-typed field as something that is not
-    // a number at all, and NaN would reach the projection as a NaN sale price.
-    // The form passes the row's own share, so clearing 4 % to retype it holds
-    // at 4 % instead of jumping to the shared default mid-keystroke — which is
-    // the whole reason the fallback is the caller's and not this function's.
+  it("leaves an unreadable field on the figure the row already carries", () => {
+    // This said "half-typed" and claimed a mid-keystroke snap until the review
+    // that converted clampLtv checked: PercentField's `num` substitutes the
+    // field's own value first, so an emptied field never arrives here. ±Infinity
+    // does — `parseFloat("1e999")` is not NaN — and so does anything the
+    // normalizer reads out of a blob. See the function's own doc for why the
+    // fallback stays the caller's regardless of what the .tsx happens to do.
+    expect(clampSaleCostsPct(Infinity, 0.04)).toBe(0.04)
     expect(clampSaleCostsPct(NaN, 0.04)).toBe(0.04)
     expect(clampSaleCostsPct(undefined, 0)).toBe(0)
   })
@@ -209,14 +213,63 @@ describe("DEFAULT_SALE_COSTS_PCT", () => {
   })
 })
 
+describe("clampLtv", () => {
+  it("holds the share at both ends and leaves a real figure alone", () => {
+    // Above 1 the purchase hands the household a house and change besides;
+    // below 0 it pays the household for buying one.
+    expect(clampLtv(-0.2, DEFAULT_LTV)).toBe(0)
+    expect(clampLtv(1.5, DEFAULT_LTV)).toBe(1)
+    // Over the realkreditlovens 80 % but reachable with a boligkredit on top,
+    // which is why the bound is 1 and not the law's limit.
+    expect(clampLtv(0.85, DEFAULT_LTV)).toBe(0.85)
+  })
+
+  it("leaves an unreadable belåningsgrad on the share the row already carries", () => {
+    // The function used to answer every unreadable value with DEFAULT_LTV, so a
+    // form passing one got 80 % back whatever the row said. Reachable through
+    // PercentField only as ±Infinity — `parseFloat("1e999")` is not NaN, so its
+    // `num` guard passes it through — but the point of the fallback is that the
+    // lib does not depend on that guard, which lives in a .tsx no test here can
+    // collect.
+    expect(clampLtv(Infinity, 0.85)).toBe(0.85)
+    expect(clampLtv(NaN, 0.85)).toBe(0.85)
+    // And a share the plan stated as something unreadable keeps whatever the
+    // caller says it had, including a 0 nobody would guess.
+    expect(clampLtv(undefined, 0)).toBe(0)
+  })
+
+  it("agrees with what a reload makes of the same figure", () => {
+    // One bound with one owner, as for the sale-cost share above. Finite values
+    // only: the fallback is deliberately not shared, so what this locks is the
+    // bound. The normalizer's own side of the bargain — that a financing block
+    // naming no share at all is read as DEFAULT_LTV — is stated in
+    // ./normalize.test, next to the absent-block case it is a key apart from.
+    for (const typed of [-0.2, 0, 0.8, 0.85, 1.5]) {
+      const reloaded = normalizeProperties({
+        properties: [at({ financing: { ltv: typed } })],
+      })[0].financing?.ltv
+      expect(reloaded).toBe(clampLtv(typed, DEFAULT_LTV))
+    }
+  })
+})
+
 describe("clampHousingReturn", () => {
   it("holds the rate at both ends and leaves a real figure alone", () => {
     // Past −1 the house is worth less than nothing after one year; past 1 it
     // doubles every year until it is the whole of the household's net worth.
-    expect(clampHousingReturn(-2)).toBe(-1)
-    expect(clampHousingReturn(3)).toBe(1)
-    expect(clampHousingReturn(0.03)).toBe(0.03)
-    expect(clampHousingReturn(NaN)).toBe(0)
+    expect(clampHousingReturn(-2, 0)).toBe(-1)
+    expect(clampHousingReturn(3, 0)).toBe(1)
+    expect(clampHousingReturn(0.03, 0)).toBe(0.03)
+  })
+
+  it("leaves an unreadable rate on the rate the row already carries", () => {
+    // Sharper than for either share above, because 0 — what this function used
+    // to bake in — is a rate a household might mean. A row forced to it reads
+    // as a deliberate "this bolig does not appreciate" rather than as an
+    // unreadable input, and the fremskrivning would believe it.
+    expect(clampHousingReturn(Infinity, 0.05)).toBe(0.05)
+    expect(clampHousingReturn(NaN, 0.05)).toBe(0.05)
+    expect(clampHousingReturn(undefined, -0.01)).toBe(-0.01)
   })
 
   it("agrees with what a reload makes of the same figure", () => {
@@ -227,7 +280,7 @@ describe("clampHousingReturn", () => {
       const reloaded = normalizeProperties({
         properties: [at({ housingReturn: typed })],
       })[0].housingReturn
-      expect(reloaded).toBe(clampHousingReturn(typed))
+      expect(reloaded).toBe(clampHousingReturn(typed, 0))
     }
   })
 })
