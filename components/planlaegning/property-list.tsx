@@ -86,6 +86,16 @@ export function PropertyList({
             const open = openId === p.id
             const patch = (fields: Partial<PlannedProperty>) =>
               onChange(replaceProperty(properties, { ...p, ...fields }))
+            // Read out here rather than off `p` in the onChange handlers below:
+            // both fields render behind a `!== null` guard, but TypeScript will
+            // not carry that narrowing into a callback, and the handlers pass
+            // them to a clamp that takes `number`.
+            //
+            // `ownReturn` is renamed and not merely destructured: `housingReturn`
+            // is also the prop holding the *plan's* rate, read below to seed the
+            // checkbox. Destructuring under its own name would shadow it and
+            // seed every row with its own rate instead of the plan's.
+            const { financing, housingReturn: ownReturn } = p
             return (
               <li key={p.id} className="border bg-muted/20">
                 <div className="flex items-center gap-2 p-2">
@@ -194,7 +204,7 @@ export function PropertyList({
                           <Checkbox
                             id={`prop-finance-toggle-${p.id}`}
                             labelText="Købet finansieres med lån"
-                            checked={p.financing !== null}
+                            checked={financing !== null}
                             onChange={(_e, { checked }) =>
                               patch({
                                 financing: checked
@@ -203,17 +213,21 @@ export function PropertyList({
                               })
                             }
                           />
-                          {p.financing !== null && (
+                          {financing !== null && (
                             <PercentField
                               id={`prop-ltv-${p.id}`}
                               label="Belåningsgrad"
                               helperText={FINANCING_HELPER_TEXT}
-                              value={p.financing.ltv}
+                              value={financing.ltv}
                               // Bounded where it is typed, like the sale costs
                               // below: this writes straight into the plan the
-                              // projection reads.
+                              // projection reads. Falling back to the row's own
+                              // share rather than to DEFAULT_LTV, for the
+                              // reason clampSaleCostsPct sets out.
                               onChange={(v) =>
-                                patch({ financing: { ltv: clampLtv(v) } })
+                                patch({
+                                  financing: { ltv: clampLtv(v, financing.ltv) },
+                                })
                               }
                             />
                           )}
@@ -279,24 +293,28 @@ export function PropertyList({
                       <Checkbox
                         id={`prop-return-toggle-${p.id}`}
                         labelText="Eget forventet afkast"
-                        checked={p.housingReturn !== null}
+                        checked={ownReturn !== null}
                         onChange={(_e, { checked }) =>
                           patch({
                             housingReturn: checked ? housingReturn : null,
                           })
                         }
                       />
-                      {p.housingReturn !== null && (
+                      {ownReturn !== null && (
                         <PercentField
                           id={`prop-return-${p.id}`}
                           label="Værdistigning pr. år"
                           helperText={HOUSING_RETURN_HELPER_TEXT}
-                          value={p.housingReturn}
-                          // Bounded here like the two fields above it, and for
-                          // the same reason: the form writes straight into the
-                          // plan the projection reads.
+                          value={ownReturn}
+                          // Bounded here like the two fields above it, and
+                          // falling back to the row's own rate rather than to
+                          // the 0 this clamp used to bake in — on this field 0
+                          // is a rate a household might mean, so being handed
+                          // it is worse than on either share above.
                           onChange={(v) =>
-                            patch({ housingReturn: clampHousingReturn(v) })
+                            patch({
+                              housingReturn: clampHousingReturn(v, ownReturn),
+                            })
                           }
                         />
                       )}

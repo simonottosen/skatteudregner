@@ -6,6 +6,7 @@
 
 import { normalizeLoans } from "./loans"
 import {
+  DEFAULT_LTV,
   DEFAULT_SALE_COSTS_PCT,
   clampHousingReturn,
   clampLtv,
@@ -202,14 +203,25 @@ function normalizeProperty(raw: unknown): PlannedProperty | null {
     // the household could have been lent rather than a guess at what it chose.
     financing:
       o.financing && typeof o.financing === "object"
-        ? { ltv: clampLtv((o.financing as Record<string, unknown>).ltv) }
+        ? {
+            ltv: clampLtv(
+              (o.financing as Record<string, unknown>).ltv,
+              DEFAULT_LTV
+            ),
+          }
         : null,
     // Likewise: absent is "follow the plan's own appreciation", which is what
     // every entry did before the field existed. Held to a share per year that a
     // projection can survive — see {@link PlannedProperty.housingReturn}.
+    //
+    // The `typeof` guard carries most of that: a rate the blob states as a
+    // string, or as null, or not at all, is read as following the plan. So the
+    // 0 below is reached only by NaN and ±Infinity — a number that is not one —
+    // where "follow the plan" would be a guess about an entry that did try to
+    // state a rate of its own.
     housingReturn:
       typeof o.housingReturn === "number"
-        ? clampHousingReturn(o.housingReturn)
+        ? clampHousingReturn(o.housingReturn, 0)
         : null,
   }
 }
@@ -326,10 +338,12 @@ function legacyMoves(events: unknown, currentAge: number): LegacyMove[] {
       age: Math.max(age, currentAge + 1),
       label: typeof e.label === "string" ? e.label : "",
       newValue: clampNum(e.newValue, 0, 0),
-      ltv: clampLtv(e.mortgageLtv),
+      ltv: clampLtv(e.mortgageLtv, DEFAULT_LTV),
+      // The override lands on `PlannedProperty.housingReturn`, so it is held to
+      // that field's bound rather than to a second copy of it written out here.
       housingReturn:
         typeof e.housingReturnOverride === "number"
-          ? clampNum(e.housingReturnOverride, 0, -1, 1)
+          ? clampHousingReturn(e.housingReturnOverride, 0)
           : null,
     })
   }
